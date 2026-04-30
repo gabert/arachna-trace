@@ -841,11 +841,14 @@ State machine summary:
 - Orphan ME (entry failed, exit slipped through somehow) drops silently
   rather than corrupting state.
 
-**Open call leak (acknowledged):** an MS that never gets a matching ME
-(agent crashed mid-call) stays in `openCalls` until eviction. Eviction
-is currently not implemented; a TTL-based sweep will be added once we
-have observability on how often this happens in practice. Memory cost
-is small (Builder + a few strings per leaked call).
+**Open call leak (resolved 2026-04-30):** an MS that never gets a
+matching ME (agent crashed mid-call) used to stay in `openCalls`
+forever. A TTL eviction sweep now runs at the end of every `parse()`,
+dropping entries whose admission age exceeds 10 minutes. The sweep
+itself is throttled to once per minute so the O(n) walk is amortised
+across many batches. Each `Builder` records its admission time on
+construction; the clock is injectable for deterministic tests
+(`RecordParserTest.staleOpenCallIsEvictedAfterTtl`).
 
 **Tests:** `RecordParserTest` rewritten — 15 tests now (was 11). All
 existing scenarios updated with CI/PI/AI tags. Three new tests
@@ -900,13 +903,18 @@ processor logic to populate them.
   existing two.
 - **agent_runs**: every `AgentRunMetadata` from the parser is buffered
   as a row. `ended_at = null`, `completed_clean = false` for now.
-- **sessions**: `seenSessions: Set<SessionKey>` tracks
+- **sessions**: `seenSessions: Map<SessionKey, Long>` tracks
   `(agent_run_id, session_id)` pairs already announced *in this
-  processor instance*. On first sight of a `ParsedCall`, a row is
-  buffered with `first_seen = call.tsIn`, `last_seen = call.tsOut`.
-  Processor restart re-emits; the `ReplacingMergeTree` engine dedupes.
-  Updating `last_seen` on every call would generate one row per call —
-  deferred until a concrete query needs accurate live `last_seen`.
+  processor instance*, mapped to the processor wall-clock time at
+  admission. On first sight of a `ParsedCall`, a row is buffered with
+  `first_seen = call.tsIn`, `last_seen = call.tsOut`. Processor restart
+  re-emits; the `ReplacingMergeTree` engine dedupes. A TTL sweep
+  (1 hour, throttled to every 5 minutes) inside `periodicFlush` keeps
+  the map from growing monotonically over a long-lived processor —
+  any session that re-appears past TTL re-emits one row, which RMT
+  collapses. Updating `last_seen` on every call would generate one row
+  per call — deferred until a concrete query needs accurate live
+  `last_seen`.
 - **requests**: `openRequests: Map<RequestKey, RequestAggregator>`
   tracks running totals per `(agent_run_id, request_id)`. Every
   `ParsedCall` increments `callCount` (and `exceptionCount` if
@@ -916,9 +924,10 @@ processor logic to populate them.
 
 ### Acknowledged limitations (v1)
 
-- **`openRequests` leak**: a request whose root never closes (agent
-  crashed mid-request) stays in memory until eviction. Same TTL-sweep
-  fix applies as for `RecordParser.openCalls`. Not yet implemented.
+- **`openRequests` leak**: resolved by Phase 5 — the in-memory
+  aggregator was deleted entirely; `requests` is now an MV-maintained
+  `AggregatingMergeTree`. There is no per-request state in the
+  processor anymore.
 - **Async after root**: if a worker thread emits more calls *after*
   the originating root closes (fire-and-forget background task in the
   same `request_id`), they are not counted in the row that was already
@@ -1261,10 +1270,11 @@ on next dev start; `01-schema.sql` recreates the schema fresh.
 
 Natural follow-ups, in roughly increasing scope:
 
-- **Eviction / TTL sweep for in-memory state** — `RecordParser.openCalls`
-  and `ClickHouseSink.openRequests` can leak under crash conditions.
-  Add a TTL-keyed expiry pass (e.g. drop entries with no activity for
-  >5 minutes) once we have observability on incidence.
+- ~~**Eviction / TTL sweep for in-memory state**~~ — DONE (2026-04-30).
+  `RecordParser.openCalls` evicts at end of `parse()` (10-min TTL,
+  1-min throttle). `ClickHouseSink.seenSessions` evicts on
+  `periodicFlush` (1-hour TTL, 5-min throttle). `openRequests` was
+  deleted entirely in Phase 5.
 - **Agent shutdown emit** — write an `RH`-style "ended" record on
   graceful shutdown so `agent_runs.ended_at` and `completed_clean`
   get populated.

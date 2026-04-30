@@ -18,7 +18,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +52,10 @@ public class ClickHouseSink implements RecordSink {
 
     private static final int FLUSH_THRESHOLD = 500;
     private static final long FLUSH_INTERVAL_MS = 1000;
+    /** Drop a seenSessions entry whose admission age exceeds this; ReplacingMergeTree dedupes any re-emit. */
+    private static final long SESSION_TTL_MS = 60 * 60 * 1000L;
+    /** Throttle the eviction sweep — periodicFlush ticks every second. */
+    private static final long SESSION_SWEEP_INTERVAL_MS = 5 * 60 * 1000L;
     private static final String EMPTY_HASH = "00000000000000000000000000000000";
     private static final DateTimeFormatter CH_DATETIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").withZone(ZoneOffset.UTC);
@@ -79,12 +83,17 @@ public class ClickHouseSink implements RecordSink {
     private final RecordParser parser = new RecordParser();
 
     /**
-     * Sessions already announced as a row to ClickHouse. Bound to the
-     * processor's lifetime — on restart, sessions are re-emitted; the
-     * {@code sessions} table's {@link "ReplacingMergeTree"} engine
-     * de-duplicates them on the server.
+     * Sessions already announced as a row to ClickHouse, mapped to the
+     * processor wall-clock time at which the admission row was buffered.
+     * Bound to the processor's lifetime — on restart, sessions are re-emitted;
+     * the {@code sessions} table's {@link "ReplacingMergeTree"} engine
+     * de-duplicates them on the server. TTL eviction
+     * ({@link #SESSION_TTL_MS}) keeps this from growing monotonically over
+     * long-lived processor instances; an evicted session that re-appears
+     * simply re-emits one row, which RMT collapses.
      */
-    private final Set<SessionKey> seenSessions = new HashSet<>();
+    private final Map<SessionKey, Long> seenSessions = new HashMap<>();
+    private long nextSessionSweepAt;
 
     public ClickHouseSink(ProcessorConfig config) {
         this.insertCallsUri = buildInsertUri(config, "calls");
@@ -164,6 +173,7 @@ public class ClickHouseSink implements RecordSink {
 
     private void periodicFlush() {
         synchronized (lock) {
+            evictStaleSessions();
             if (anyBufferNonEmpty()) {
                 flushLocked();
             }
@@ -246,7 +256,7 @@ public class ClickHouseSink implements RecordSink {
 
     private void noteSessionIfNew(ParsedCall c, UUID effectiveRunId) {
         SessionKey key = new SessionKey(effectiveRunId, c.sessionId() != null ? c.sessionId() : "");
-        if (seenSessions.add(key)) {
+        if (seenSessions.putIfAbsent(key, System.currentTimeMillis()) == null) {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("session_id",   key.sessionId());
             row.put("agent_run_id", uuidToString(key.agentRunId()));
@@ -257,6 +267,14 @@ public class ClickHouseSink implements RecordSink {
         // Updating last_seen on each call would generate one row per call —
         // ReplacingMergeTree-friendly but wasteful. Defer until we have a
         // concrete query that needs accurate last_seen on the live row.
+    }
+
+    private void evictStaleSessions() {
+        long now = System.currentTimeMillis();
+        if (now < nextSessionSweepAt) return;
+        nextSessionSweepAt = now + SESSION_SWEEP_INTERVAL_MS;
+        long cutoff = now - SESSION_TTL_MS;
+        seenSessions.entrySet().removeIf(e -> e.getValue() < cutoff);
     }
 
     private record SessionKey(UUID agentRunId, String sessionId) {}

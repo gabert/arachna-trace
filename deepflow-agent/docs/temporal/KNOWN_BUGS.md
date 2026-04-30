@@ -167,9 +167,9 @@ Estimated ~250–400 lines including tests.
 | B-04 | High     | Architectural | Pre-existing | No version-aware parsing → rolling deploys mis-parse |
 | B-05 | Medium   | Correctness | New          | JVM crash mid-method leaves orphan UUID on `CALL_STACK` |
 | B-06 | Medium   | Correctness | New          | Failed entry on request's originating root → spurious root |
-| L-01 | Medium   | Leak        | New          | `RecordParser.openCalls` map — never evicts |
+| L-01 | ~~Medium~~ FIXED | Leak | New | ~~`RecordParser.openCalls` map — never evicts~~ — fixed 2026-04-30 (TTL sweep at end of `parse()`) |
 | L-02 | ~~Medium~~ FIXED | Leak | New | ~~`ClickHouseSink.openRequests` map — never evicts~~ — deleted 2026-04-30 (Phase 5: in-memory aggregator removed) |
-| L-03 | Medium   | Leak        | New          | `ClickHouseSink.seenSessions` set — grows monotonically |
+| L-03 | ~~Medium~~ FIXED | Leak | New | ~~`ClickHouseSink.seenSessions` set — grows monotonically~~ — fixed 2026-04-30 (TTL sweep on `periodicFlush`) |
 | L-04 | Low      | Leak        | New          | Long-lived thread `CALL_STACK` accumulates after B-05 |
 | D-01 | ~~Medium~~ Low | Data quality | New | `agent_runs` row missing if its single insert fails — partly mitigated by Phase 4 (per-batch upsert) |
 | D-02 | Medium   | Data quality | New         | `sessions.first_seen` is wrong after processor restart |
@@ -339,20 +339,28 @@ explicitly. Possible paths:
 
 ## Leaks
 
-### L-01 — `RecordParser.openCalls` map — never evicts
+### L-01 — `RecordParser.openCalls` map — never evicts — FIXED (2026-04-30)
 
 **Where:** `RecordParser.openCalls`.
 
-**Trigger:** A traced method whose `MS` arrives but `ME` never does
-(agent crashed mid-call, network drop, etc.). Builder stays in the
-map forever.
-
-**Symptom:** Memory grows monotonically per leaked call. Bounded by
+**Was:** A traced method whose `MS` arrived but `ME` never did (agent
+crashed mid-call, network drop, etc.) left a `Builder` in the map
+forever. Memory grew monotonically per leaked call, bounded only by
 JVM heap.
 
-**Fix:** TTL eviction sweep — drop entries older than N minutes (or:
-no `MS`/`ME` activity for N seconds). Needs a background thread or
-piggyback on `parse()` to do the sweep.
+**Fix landed:** Each `Builder` now records `openedAtMillis` (processor
+wall-clock at admission). At the end of every `parse()` we run an
+eviction sweep that drops entries whose admission age exceeds
+`OPEN_CALL_TTL_MS` (10 minutes). The sweep is throttled to
+`SWEEP_INTERVAL_MS` (60 s) so the O(n) cost is amortised. The clock
+is injectable for tests via a package-private constructor.
+
+A late `ME` for an evicted call is treated as a normal orphan and
+dropped silently — same behaviour as a stray `ME` from a failed-entry
+contract.
+
+**Test added:** `RecordParserTest.staleOpenCallIsEvictedAfterTtl` —
+drives a fake clock past TTL and asserts `openCallCount()` drains.
 
 ---
 
@@ -372,18 +380,24 @@ in-memory state in the processor anymore — `requests` is an
 
 ---
 
-### L-03 — `ClickHouseSink.seenSessions` set — grows monotonically
+### L-03 — `ClickHouseSink.seenSessions` set — grows monotonically — FIXED (2026-04-30)
 
 **Where:** `ClickHouseSink.seenSessions`.
 
-**Trigger:** Many distinct `(agent_run_id, session_id)` pairs over a
+**Was:** Many distinct `(agent_run_id, session_id)` pairs over a
 long-lived processor instance. With short-lived sessions (e.g. one
-per HTTP user session), this grows continuously.
+per HTTP user session), the set grew continuously at ~64 bytes per
+entry. Matters at millions of distinct sessions per processor
+instance.
 
-**Symptom:** ~64 bytes per entry. Matters at millions of distinct
-sessions per processor instance.
-
-**Fix:** LRU cap with a configurable size, or periodic TTL sweep.
+**Fix landed:** Replaced `Set<SessionKey>` with
+`Map<SessionKey, Long>` where the value is the processor wall-clock
+time at admission. `periodicFlush` (which already runs every second)
+calls `evictStaleSessions` first, dropping entries older than
+`SESSION_TTL_MS` (1 hour). The sweep is throttled to
+`SESSION_SWEEP_INTERVAL_MS` (5 minutes). A re-emit of an evicted
+session produces one duplicate `sessions` row, which the
+`ReplacingMergeTree` engine collapses on the server.
 
 ---
 
@@ -600,16 +614,14 @@ Ordered by ratio of (correctness improvement) / (effort):
 
 1. ~~**B-01** — null-pop guard in `recordExit`. 2-line change.~~ DONE
 2. ~~**B-02** — duplicate-CI guard in parser. 2-line change.~~ DONE
-3. **L-03** — LRU cap on `seenSessions`. ~10 lines. *Need to pick a
-   cap size — proposed default 100 000 entries.*
-4. **B-03** — design choice needed (ReplacingMergeTree on requests vs
-   sentinel vs combination). ~30 lines once decided.
-5. **L-01 + L-02** — TTL eviction sweep for in-memory state. ~50 lines.
-   *Need to pick: background thread vs piggyback on `parse()` /
-   `accept()`. Default sweep interval — every 60s? Eviction threshold —
-   no activity in 5 minutes?*
-6. **B-04** — version dispatch in `TraceRecord.parse`. Bigger; requires
-   thinking about backwards compat.
+3. ~~**L-03** — TTL sweep on `seenSessions`.~~ DONE (2026-04-30)
+4. ~~**B-03** — `requests` as MV-maintained `AggregatingMergeTree`.~~ DONE (2026-04-30, Phase 5)
+5. ~~**L-01 + L-02** — TTL eviction for in-memory state.~~ DONE
+   (L-02 deleted in Phase 5; L-01 fixed via TTL sweep at end of `parse()`).
+6. **B-04** — version dispatch in `TraceRecord.parse`. Dismissed for now —
+   agent + processor ship as one product, so a wire-format change can
+   land in lockstep. Revisit only if external consumers of the wire
+   appear.
 
 The remaining items (B-05/B-06, D-*, A-*) are either documented
 trade-offs or beyond a single-sitting fix.

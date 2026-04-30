@@ -302,6 +302,40 @@ class RecordParserTest {
         assertEquals(0, new RecordParser().parse(r).size());
     }
 
+    @Test
+    void staleOpenCallIsEvictedAfterTtl() {
+        // L-01: an MS without a matching ME (agent crash mid-call) used to
+        // sit in openCalls forever. The TTL sweep at the end of parse() must
+        // reap it once admission age exceeds the 10-minute TTL. Sweep is
+        // throttled to once per minute, so we advance the clock past both.
+        long[] now = { 0L };
+        RecordParser parser = new RecordParser(() -> now[0]);
+
+        now[0] = 0L;
+        parser.parse(result(
+                "TS;0", "MS;F.f()V", "TN;t", "RI;1", "CL;1", "CI;" + OUT, "AR;{}"));
+        assertEquals(1, parser.openCallCount(),
+                "MS without ME should leave one builder in openCalls");
+
+        // Inside TTL — sweep runs but evicts nothing.
+        now[0] = 5 * 60 * 1000L;
+        parser.parse(result());
+        assertEquals(1, parser.openCallCount(),
+                "entry under TTL must not be evicted");
+
+        // Past TTL, past sweep interval — eviction fires.
+        now[0] = 11 * 60 * 1000L;
+        parser.parse(result());
+        assertEquals(0, parser.openCallCount(),
+                "entry older than TTL must be evicted by the sweep");
+
+        // A late ME for the evicted call is now an orphan, dropped silently.
+        List<ParsedCall> late = parser.parse(result(
+                "TE;12000", "TN;t", "RI;1", "CI;" + OUT, "RT;VOID"));
+        assertEquals(0, late.size(),
+                "ME for a previously-evicted call must be treated as orphan");
+    }
+
     private static Result result(String... lines) {
         return new Result("test-thread", List.of(lines));
     }

@@ -7,6 +7,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.LongSupplier;
 
 /**
  * Walks a rendered (and hash-enriched) {@link Result} line stream and pairs
@@ -48,14 +49,30 @@ import java.util.UUID;
  *
  * <p>One instance per {@code ClickHouseSink} (or any owner). State accumulates
  * across {@code parse()} calls — open calls live in {@link #openCalls} until
- * their matching {@code TE}. An open call that never closes (agent crashed
- * mid-call) leaks until eviction, which is currently not implemented; in
- * production we will want a TTL eviction (e.g. drop entries older than N
- * minutes) once we have observability on how often this happens.</p>
+ * their matching {@code TE} or until TTL eviction reaps them (an MS without
+ * an ME means the agent crashed mid-call; the entry would otherwise leak
+ * forever).</p>
+ *
+ * <h2>TTL eviction</h2>
+ *
+ * <p>At the end of every {@code parse()} call we sweep entries whose
+ * processor-side admission time is older than {@link #OPEN_CALL_TTL_MS}.
+ * The sweep itself is throttled to {@link #SWEEP_INTERVAL_MS} so the cost
+ * is amortised across many batches. The clock is injectable for tests.
+ * Both knobs are deliberately hard-coded — the TTL is loose enough
+ * (10 minutes) to be safely above any plausible real-world method
+ * duration, and the sweep cadence is decoupled from real-time pressure.</p>
  */
 public final class RecordParser {
 
+    /** Drop open-call entries whose processor-side admission age exceeds this. */
+    private static final long OPEN_CALL_TTL_MS = 10 * 60 * 1000L;
+    /** Skip sweeping more often than this — the eviction itself is O(n). */
+    private static final long SWEEP_INTERVAL_MS = 60 * 1000L;
+
     private final Map<UUID, Builder> openCalls = new HashMap<>();
+    private final LongSupplier clock;
+    private long nextSweepAt;
 
     /** Builder currently accumulating tags from an MS record (entry context). */
     private Builder currentEntry;
@@ -66,6 +83,15 @@ public final class RecordParser {
 
     /** Builder accumulating tags from an ME record (exit context, post-CI). */
     private Builder currentExit;
+
+    public RecordParser() {
+        this(System::currentTimeMillis);
+    }
+
+    /** Test-only: inject a clock so eviction can be exercised deterministically. */
+    RecordParser(LongSupplier clock) {
+        this.clock = clock;
+    }
 
     public List<ParsedCall> parse(Result result) {
         List<ParsedCall> completed = new ArrayList<>();
@@ -81,7 +107,7 @@ public final class RecordParser {
 
                 case "TS" -> {
                     flushExitIfAny(completed);
-                    currentEntry = new Builder();
+                    currentEntry = new Builder(clock.getAsLong());
                     currentEntry.tsIn = parseLongOrZero(value);
                 }
 
@@ -149,6 +175,8 @@ public final class RecordParser {
         // remaining tags may arrive later.
         flushExitIfAny(completed);
 
+        evictStaleOpenCalls();
+
         return completed;
     }
 
@@ -157,6 +185,19 @@ public final class RecordParser {
             completed.add(currentExit.build());
             currentExit = null;
         }
+    }
+
+    private void evictStaleOpenCalls() {
+        long now = clock.getAsLong();
+        if (now < nextSweepAt) return;
+        nextSweepAt = now + SWEEP_INTERVAL_MS;
+        long cutoff = now - OPEN_CALL_TTL_MS;
+        openCalls.entrySet().removeIf(e -> e.getValue().openedAtMillis < cutoff);
+    }
+
+    /** Test-only: visibility on retained state for eviction assertions. */
+    int openCallCount() {
+        return openCalls.size();
     }
 
     private static void apply(Builder b, String tag, String value) {
@@ -206,6 +247,7 @@ public final class RecordParser {
     }
 
     private static final class Builder {
+        final long openedAtMillis;
         UUID callId;
         UUID parentCallId;
         String sessionId;
@@ -221,6 +263,10 @@ public final class RecordParser {
         String argsJson;
         String argsExitJson;
         String returnJson;
+
+        Builder(long openedAtMillis) {
+            this.openedAtMillis = openedAtMillis;
+        }
 
         ParsedCall build() {
             return new ParsedCall(
