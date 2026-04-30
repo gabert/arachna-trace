@@ -167,13 +167,10 @@ These apply globally; per-record specifics are in WIRE-FORMAT.md.
   (`00000000-0000-0000-0000-000000000000`) is a reserved sentinel
   meaning "no UUID present" wherever a nullable UUID is permitted.
   Producers MUST NOT emit a real UUID equal to all-zero.
-- **Timestamps:** signed 64-bit integer with **producer-defined
-  domain**. The reference Java agent emits `System.nanoTime()` for
-  per-record timestamps (METHOD_START, METHOD_END) — JVM-relative
-  monotonic nanoseconds, NOT epoch-ms. The wall-clock anchor lives
-  on the transport-layer `AgentRun.startedAtMillis` field
-  (`X-Deepflow-Started-At-Millis` header). See WIRE-FORMAT.md §4.1
-  for the full discussion.
+- **Timestamps:** signed 64-bit milliseconds since Unix epoch
+  (UTC). MUST. The reference Java agent emits `System.currentTimeMillis()`
+  for METHOD_START / METHOD_END timestamps. The transport-layer
+  `AgentRun.startedAtMillis` field uses the same domain.
 - **Booleans, when needed in CBOR:** standard CBOR major type 7
   (true/false). MUST.
 
@@ -211,9 +208,9 @@ different strategy — see IDENTITY-MODEL.md §3.
 - **Authentication / authorization** at the transport layer. Operators
   MAY layer mTLS, signed headers, etc.
 - **Time-source clock skew** between agents. Consumers MUST treat
-  agent timestamps as authoritative for that agent run — but those
-  timestamps are NOT necessarily wall-clock (see §6). For wall-clock
-  correlation, use `AgentRun.startedAtMillis` as the per-run anchor.
+  agent timestamps as the authoritative wall-clock for that agent
+  run, accepting that two agents on different hosts may disagree by
+  whatever their clock skew is.
 
 ## 9. Reference implementation
 

@@ -82,7 +82,7 @@ public class RequestRecorder {
         try {
             String signature = MethodSignatureFormatter.format(method);
             String threadName = Thread.currentThread().getName();
-            long timestamp = System.nanoTime();
+            long timestamp = System.currentTimeMillis();
             // Stack at this point: [recordEntry, target_method, caller_of_target, ...]
             // ByteBuddy inlines onEnter into target_method's bytecode, so the call
             // to recordEntry lives there at runtime. skip(2) walks past both frames
@@ -146,7 +146,7 @@ public class RequestRecorder {
         long requestId = RequestContext.endRequest();
         try {
             String threadName = Thread.currentThread().getName();
-            long timestamp = System.nanoTime();
+            long timestamp = System.currentTimeMillis();
 
             String sessionId = spi.getSessionIdResolver().resolve();
 

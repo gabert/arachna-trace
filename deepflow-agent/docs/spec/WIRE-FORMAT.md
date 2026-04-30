@@ -17,7 +17,7 @@ the semantic order in which records appear; that is in §5.
 | Endianness | Big-endian (network byte order) for all multi-byte integers. |
 | Strings | UTF-8 bytes, prefixed by a 16-bit unsigned big-endian length. Max 65535 bytes. |
 | UUID | 16 bytes: 64-bit MSB then 64-bit LSB, both big-endian. All-zero UUID = "no UUID" sentinel. |
-| Timestamp | Signed 64-bit integer. **Domain is producer-defined** — see §4.1 / §4.5 notes. The reference Java agent uses `System.nanoTime()` (monotonic nanoseconds, JVM-relative origin); the `AgentRun.startedAtMillis` transport-layer field carries the wall-clock anchor for correlation. |
+| Timestamp | Signed 64-bit milliseconds since Unix epoch (UTC). The reference Java agent emits `System.currentTimeMillis()` for METHOD_START / METHOD_END timestamps. |
 | CBOR payloads | Standard CBOR (RFC 8949) wrapped per [CBOR-ENVELOPE.md](CBOR-ENVELOPE.md). |
 
 ## 2. Naming conventions used in this document
@@ -98,7 +98,7 @@ Carries the entry-half metadata for one call.
 | `sid` (session_id) | string | MAY be empty (zero-length); empty means "no session attribution". |
 | `signature` | string | Method signature in producer-defined form; consumers MUST treat it as opaque text. The reference Java agent emits `<pkg>::<Class>.<method>(<argTypes>) -> <returnType> [<modifiers>]` — note the `::` separator between the package name and the (possibly inner) class name. Example: `com.example::Foo.bar(java.lang::String, int) -> com.example::Bar [public]`. Other-language agents SHOULD pick a stable convention and document it in their `agent_version` string. |
 | `threadName` | string | Producer's name for the executing thread / coroutine / fiber. SHOULD be unique enough to disambiguate concurrent activity within one process. |
-| `timestamp` | int64 | Entry time. **Domain is producer-defined.** The reference Java agent emits `System.nanoTime()` — JVM-relative monotonic nanoseconds, NOT epoch-ms. Useful for duration math (subtract entry from exit) and for ordering on one thread, but NOT directly comparable to wall-clock; correlate via `AgentRun.startedAtMillis` if a real timestamp is required. A future agent or future major version MAY emit epoch-ms; the wire byte width does not change. |
+| `timestamp` | int64 | Entry time, milliseconds since Unix epoch (UTC). The reference Java agent emits `System.currentTimeMillis()`. Producers MUST use the same domain so duration math (`tsOut - tsIn`) and wall-clock comparison both work directly. |
 | `callerLine` | int32 | Source line in the **caller** code at which this call was invoked. `0` if unknown. |
 | `requestId` | int64 | Producer-assigned. Groups all calls in one logical request. `0` is reserved for "not in a request". |
 | `callId` | uuid | This call's UUID. SHOULD be a freshly-generated v4 UUID per call. The all-zero sentinel MAY appear if the producer fails to allocate one, but a consumer SHOULD treat an all-zero `callId` as a malformed record. |
@@ -182,7 +182,7 @@ METHOD_START via `callId`.
 |---|---|---|
 | `sid` | string | SHOULD equal the matching METHOD_START's `sid`. |
 | `threadName` | string | SHOULD equal the matching METHOD_START's `threadName`. |
-| `timestamp` | int64 | Exit time, in the same domain as METHOD_START's `timestamp` (see §4.1). MUST be ≥ the matching START timestamp. |
+| `timestamp` | int64 | Exit time, milliseconds since Unix epoch (UTC). SHOULD be ≥ the matching METHOD_START's timestamp; small negative deltas are possible if the system clock is adjusted backwards mid-call (e.g. NTP correction), and consumers MUST tolerate them — clamp negative durations to zero rather than rejecting the record. |
 | `requestId` | int64 | SHOULD equal the matching METHOD_START's `requestId`. |
 | `callId` | uuid | The same `callId` as the matching METHOD_START. **This is the only field a conforming consumer uses to pair MS↔ME** — the `sid`/`threadName`/`requestId` echoes are convenience for tag rendering, not part of the matching contract. |
 
@@ -331,12 +331,12 @@ Inputs:
 - session id: `"S"` (1 byte)
 - signature: `"M"` (1 byte)
 - thread name: `"T"` (1 byte)
-- timestamp (entry): `0x0102030405060708`
+- timestamp (entry): `0x0102030405060708` (epoch ms)
 - callerLine: `0x0A0B0C0D`
 - requestId: `0x1112131415161718`
 - callId: `aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa`
 - parentCallId: `bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb`
-- timestamp (exit): same `0x0102030405060708` (same domain as entry)
+- timestamp (exit): same `0x0102030405060708` (same byte width)
 - void return
 
 Frames as `type | length | payload-bytes`:
