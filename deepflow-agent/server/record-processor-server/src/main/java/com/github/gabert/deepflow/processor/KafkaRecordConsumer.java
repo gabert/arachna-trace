@@ -1,5 +1,6 @@
 package com.github.gabert.deepflow.processor;
 
+import com.github.gabert.deepflow.recorder.AgentRun;
 import com.github.gabert.deepflow.recorder.destination.RecordHashEnricher;
 import com.github.gabert.deepflow.recorder.destination.RecordRenderer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -7,12 +8,16 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.errors.WakeupException;
+import org.apache.kafka.common.header.Header;
+import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Properties;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class KafkaRecordConsumer implements AutoCloseable {
@@ -40,7 +45,7 @@ public class KafkaRecordConsumer implements AutoCloseable {
             while (running.get()) {
                 ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(500));
                 for (ConsumerRecord<String, byte[]> record : records) {
-                    processRecord(record.value());
+                    processRecord(record);
                 }
             }
         } catch (WakeupException e) {
@@ -61,13 +66,55 @@ public class KafkaRecordConsumer implements AutoCloseable {
         sink.close();
     }
 
-    private void processRecord(byte[] rawBatch) {
+    private void processRecord(ConsumerRecord<String, byte[]> record) {
         try {
-            RecordRenderer.Result rendered = RecordRenderer.render(rawBatch);
+            RecordRenderer.Result rendered = RecordRenderer.render(record.value());
             RecordRenderer.Result enriched = RecordHashEnricher.enrich(rendered);
-            sink.accept(enriched);
+            AgentRunMetadata headerMetadata = extractAgentRun(record.headers());
+            sink.accept(enriched, headerMetadata);
         } catch (Exception e) {
             System.err.println("[DeepFlow] Failed to process record batch: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Build {@link AgentRunMetadata} from Kafka record headers, or {@code null}
+     * if the {@code agent_run_id} header is absent. {@code agent_run_id} is the
+     * required marker — without it we cannot attribute the batch.
+     */
+    private static AgentRunMetadata extractAgentRun(Headers headers) {
+        String runIdString = headerString(headers, AgentRun.Headers.AGENT_RUN_ID);
+        if (runIdString == null) return null;
+
+        UUID runId;
+        try {
+            runId = UUID.fromString(runIdString);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+
+        String hostname     = headerString(headers, AgentRun.Headers.HOSTNAME);
+        String agentVersion = headerString(headers, AgentRun.Headers.AGENT_VERSION);
+        String codeVersion  = headerString(headers, AgentRun.Headers.CODE_VERSION);
+        String env          = headerString(headers, AgentRun.Headers.ENV);
+        long jvmPid         = headerLong(headers, AgentRun.Headers.JVM_PID);
+        long startedAtMs    = headerLong(headers, AgentRun.Headers.STARTED_AT_MS);
+
+        return new AgentRunMetadata(runId, hostname, agentVersion, codeVersion, env, jvmPid, startedAtMs);
+    }
+
+    private static String headerString(Headers headers, String name) {
+        Header h = headers.lastHeader(name);
+        return h != null ? new String(h.value(), StandardCharsets.UTF_8) : null;
+    }
+
+    private static long headerLong(Headers headers, String name) {
+        String v = headerString(headers, name);
+        if (v == null) return 0L;
+        try {
+            return Long.parseLong(v);
+        } catch (NumberFormatException e) {
+            return 0L;
         }
     }
 }

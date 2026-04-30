@@ -13,12 +13,14 @@ import com.github.gabert.deepflow.recorder.record.TraceRecord;
 import com.github.gabert.deepflow.recorder.record.VersionRecord;
 import org.junit.jupiter.api.Test;
 
+import java.util.UUID;
+
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -48,8 +50,11 @@ class TypedRecordTest {
 
     @Test
     void methodStartRecord_roundTrips() {
+        UUID callId = UUID.randomUUID();
+        UUID parentId = UUID.randomUUID();
         MethodStartRecord original = new MethodStartRecord(
-                "session-1", "Foo.bar()", "main", 1234567890L, 42, 99L);
+                "session-1", "Foo.bar()", "main", 1234567890L, 42, 99L,
+                callId, parentId);
         TraceRecord parsed = TraceRecord.parse(MethodStartRecord.TYPE, original.payloadBytes());
         MethodStartRecord r = assertInstanceOf(MethodStartRecord.class, parsed);
         assertEquals("session-1", r.sessionId());
@@ -58,24 +63,32 @@ class TypedRecordTest {
         assertEquals(1234567890L, r.timestamp());
         assertEquals(42, r.callerLine());
         assertEquals(99L, r.requestId());
+        assertEquals(callId, r.callId());
+        assertEquals(parentId, r.parentCallId());
     }
 
     @Test
     void methodStartRecord_nullSessionIdRoundTripsAsNull() {
-        MethodStartRecord original = new MethodStartRecord(null, "M", "T", 0L, 0, 0L);
+        MethodStartRecord original = new MethodStartRecord(null, "M", "T", 0L, 0, 0L,
+                null, null);
         TraceRecord parsed = TraceRecord.parse(MethodStartRecord.TYPE, original.payloadBytes());
-        assertNull(((MethodStartRecord) parsed).sessionId());
+        MethodStartRecord r = (MethodStartRecord) parsed;
+        assertNull(r.sessionId());
+        assertNull(r.callId());
+        assertNull(r.parentCallId());
     }
 
     @Test
     void methodEndRecord_roundTrips() {
-        MethodEndRecord original = new MethodEndRecord("S", "T", 999L, 7L);
+        UUID callId = UUID.randomUUID();
+        MethodEndRecord original = new MethodEndRecord("S", "T", 999L, 7L, callId);
         TraceRecord parsed = TraceRecord.parse(MethodEndRecord.TYPE, original.payloadBytes());
         MethodEndRecord r = assertInstanceOf(MethodEndRecord.class, parsed);
         assertEquals("S", r.sessionId());
         assertEquals("T", r.threadName());
         assertEquals(999L, r.timestamp());
         assertEquals(7L, r.requestId());
+        assertEquals(callId, r.callId());
     }
 
     @Test
@@ -147,9 +160,9 @@ class TypedRecordTest {
         };
         for (byte b : ALL) {
             byte[] payload = (b == RecordType.METHOD_START)
-                    ? new MethodStartRecord(null, "", "", 0L, 0, 0L).payloadBytes()
+                    ? new MethodStartRecord(null, "", "", 0L, 0, 0L, null, null).payloadBytes()
                     : (b == RecordType.METHOD_END)
-                    ? new MethodEndRecord(null, "", 0L, 0L).payloadBytes()
+                    ? new MethodEndRecord(null, "", 0L, 0L, null).payloadBytes()
                     : (b == RecordType.THIS_INSTANCE_REF)
                     ? new ThisInstanceRefRecord(0L).payloadBytes()
                     : (b == RecordType.VERSION)

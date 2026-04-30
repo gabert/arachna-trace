@@ -7,41 +7,191 @@
 --              object-id index. For object-identity search and mutation detection.
 --
 -- Both insert paths are populated by RecordProcessorServer.
+--
+-- Identity columns:
+--   agent_run_id : per-JVM-run UUID (from RH wire record at agent start).
+--                  Disambiguates traces from concurrent / sequential JVM runs that
+--                  may share session_id (e.g. config-resolver users).
+--   call_id      : per-method-invocation UUID. Pairs MS↔ME on the wire and
+--                  serves as a single-field stable handle for tool calls.
+--   parent_call_id : the call that lexically (sync) or by-submitter (async)
+--                    contains this call. Nullable at the root of a request.
 
 CREATE TABLE IF NOT EXISTS deepflow.calls
 (
-    session_id   String,
-    request_id   UInt64,
-    thread_name  LowCardinality(String),
-    ts_in        DateTime64(3),
-    ts_out       DateTime64(3),
-    duration_ms  Int64                     MATERIALIZED dateDiff('millisecond', ts_in, ts_out),
-    signature    LowCardinality(String),
-    caller_line  Int32,
-    return_type  Enum8('VOID' = 0, 'VALUE' = 1, 'EXCEPTION' = 2),
-    this_id      Nullable(Int64),
-    inserted_at  DateTime DEFAULT now()
+    agent_run_id   UUID,
+    call_id        UUID,
+    parent_call_id Nullable(UUID),
+    session_id     String,
+    request_id     UInt64,
+    thread_name    LowCardinality(String),
+    ts_in          DateTime64(3),
+    ts_out         DateTime64(3),
+    duration_ms    Int64                     MATERIALIZED dateDiff('millisecond', ts_in, ts_out),
+    signature      LowCardinality(String),
+    caller_line    Int32,
+    return_type    Enum8('VOID' = 0, 'VALUE' = 1, 'EXCEPTION' = 2),
+    is_exception   Bool                      MATERIALIZED return_type = 'EXCEPTION',
+    this_id        Nullable(Int64),
+    -- Retention escape: rows with retain=true survive the TTL DELETE.
+    -- Currently no agent/sink path sets this; flip via external SQL when
+    -- a debugging or audit need warrants long retention. See SCHEMA_DESIGN.md.
+    retain         Bool DEFAULT false,
+    inserted_at    DateTime DEFAULT now(),
+
+    INDEX idx_call_id     call_id     TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_parent_call parent_call_id TYPE bloom_filter(0.01) GRANULARITY 1
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(ts_in)
 ORDER BY (session_id, request_id, ts_in)
-TTL toDateTime(ts_in) + INTERVAL 30 DAY;
+TTL toDateTime(ts_in) + INTERVAL 30 DAY DELETE WHERE NOT retain;
 
 CREATE TABLE IF NOT EXISTS deepflow.payloads
 (
+    agent_run_id  UUID,
+    call_id       UUID,
     session_id    String,
     request_id    UInt64,
     ts_in         DateTime64(3),
     signature     LowCardinality(String),
     kind          Enum8('TI' = 0, 'AR' = 1, 'AX' = 2, 'RE' = 3),
     payload_json  String,
+    payload_size  UInt32,
     root_hash     FixedString(32),
     object_ids    Array(Int64),
+    retain        Bool DEFAULT false,
     inserted_at   DateTime DEFAULT now(),
 
-    INDEX idx_object_ids object_ids TYPE bloom_filter(0.01) GRANULARITY 1
+    INDEX idx_object_ids object_ids TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_call_id    call_id    TYPE bloom_filter(0.01) GRANULARITY 1
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(ts_in)
 ORDER BY (session_id, request_id, kind, ts_in)
-TTL toDateTime(ts_in) + INTERVAL 30 DAY;
+TTL toDateTime(ts_in) + INTERVAL 30 DAY DELETE WHERE NOT retain;
+
+-- ============================================================
+--  agent_runs : one row per JVM-with-agent run.
+--    Populated when an RH wire record arrives. ReplacingMergeTree so
+--    a re-issued insert (e.g. processor restart re-reading from Kafka)
+--    de-duplicates without us having to track seen-runs persistently.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS deepflow.agent_runs
+(
+    agent_run_id    UUID,
+    hostname        String,
+    jvm_pid         UInt32,
+    agent_version   String,
+    code_version    String,                 -- empty when unset
+    env             LowCardinality(String), -- empty when unset
+    started_at      DateTime64(3),
+    ended_at        Nullable(DateTime64(3)),
+    completed_clean Bool DEFAULT false,
+    inserted_at     DateTime DEFAULT now()
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+ORDER BY (agent_run_id);
+
+-- ============================================================
+--  sessions : one row per (agent_run_id, session_id) pair seen.
+--    Lightweight in v1: just identity + timestamps. Counts and tags
+--    can be added when concrete queries demand them.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS deepflow.sessions
+(
+    session_id    String,
+    agent_run_id  UUID,
+    first_seen    DateTime64(3),
+    last_seen     DateTime64(3),
+    -- Open user-facing bag for arbitrary session metadata (e.g.
+    -- tenant, feature flag, audit reason). Carried opaquely; the
+    -- only convention is that 'retain' here mirrors the boolean column.
+    tags          Map(String, String) DEFAULT map(),
+    retain        Bool DEFAULT false,
+    inserted_at   DateTime DEFAULT now()
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+ORDER BY (session_id, agent_run_id);
+
+-- ============================================================
+--  requests : aggregated rollup, one logical row per
+--    (agent_run_id, session_id, request_id). Maintained by a
+--    materialized view that reads every insert into `calls` and
+--    folds it into the rollup via SimpleAggregateFunction columns.
+--
+--    Why a rollup, not the raw calls?
+--    The UI's bread-and-butter view is "list recent requests, sorted
+--    by duration / show me the failures." Doing that off `calls`
+--    would require a GROUP BY across billions of rows per page-load.
+--
+--    Why CH-side aggregation, not in-process?
+--    The processor cannot reliably tell when a request is "done"
+--    in the presence of fire-and-forget async work. Late calls
+--    that arrive after the synchronous root closes still belong
+--    to the request. The MV folds them in automatically — the
+--    in-memory aggregator can't, which was bug B-03.
+--
+--    Reads should go through `requests_view` below to avoid the
+--    SimpleAggregateFunction column types leaking into queries.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS deepflow.requests
+(
+    agent_run_id     UUID,
+    session_id       String,
+    request_id       UInt64,
+    started_at       SimpleAggregateFunction(min, DateTime64(3)),
+    ended_at         SimpleAggregateFunction(max, DateTime64(3)),
+    call_count       SimpleAggregateFunction(sum, UInt64),
+    exception_count  SimpleAggregateFunction(sum, UInt64),
+    -- Only the root call carries the request's entrypoint signature
+    -- and originating thread. Every other call inserts an empty
+    -- string for these — empty sorts before any non-empty value,
+    -- so SimpleAggregateFunction(max) deterministically picks the
+    -- root's value across all calls in the request.
+    entry_signature  SimpleAggregateFunction(max, String),
+    thread_name      SimpleAggregateFunction(max, String),
+    retain           Bool DEFAULT false
+)
+ENGINE = AggregatingMergeTree
+ORDER BY (agent_run_id, session_id, request_id)
+TTL toDateTime(started_at) + INTERVAL 30 DAY DELETE WHERE NOT retain;
+
+-- The materialized view that maintains `requests`. Fires on every
+-- insert into `calls`; aggregates that batch's rows by request and
+-- writes the partial state into `requests` (which merges across
+-- batches via the SimpleAggregateFunction columns).
+CREATE MATERIALIZED VIEW IF NOT EXISTS deepflow.requests_mv TO deepflow.requests AS
+SELECT
+    agent_run_id,
+    session_id,
+    request_id,
+    min(ts_in)                                        AS started_at,
+    max(ts_out)                                       AS ended_at,
+    toUInt64(count())                                 AS call_count,
+    toUInt64(countIf(return_type = 'EXCEPTION'))      AS exception_count,
+    max(if(parent_call_id IS NULL, signature,    '')) AS entry_signature,
+    max(if(parent_call_id IS NULL, thread_name, '')) AS thread_name
+FROM deepflow.calls
+GROUP BY agent_run_id, session_id, request_id;
+
+-- Clean-read view: collapses any unmerged parts at query time and
+-- exposes the derived columns (`has_exception`, `duration_ms`) so
+-- UI / ad-hoc queries don't need to know about SimpleAggregateFunction.
+CREATE VIEW IF NOT EXISTS deepflow.requests_view AS
+SELECT
+    agent_run_id,
+    session_id,
+    request_id,
+    min(started_at)                                          AS started_at,
+    max(ended_at)                                            AS ended_at,
+    sum(call_count)                                          AS call_count,
+    sum(exception_count)                                     AS exception_count,
+    max(entry_signature)                                     AS entry_signature,
+    max(thread_name)                                         AS thread_name,
+    sum(exception_count) > 0                                 AS has_exception,
+    dateDiff('millisecond', min(started_at), max(ended_at))  AS duration_ms,
+    -- retain is a regular column, not aggregated — `any` is fine
+    any(retain)                                              AS retain
+FROM deepflow.requests
+GROUP BY agent_run_id, session_id, request_id;

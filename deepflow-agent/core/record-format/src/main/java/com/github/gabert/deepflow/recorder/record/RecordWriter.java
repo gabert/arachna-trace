@@ -1,5 +1,7 @@
 package com.github.gabert.deepflow.recorder.record;
 
+import java.util.UUID;
+
 /**
  * Convenience facade for writing records to bytes. Each method builds the
  * matching {@link TraceRecord}, calls {@link TraceRecord#toFrame()}, and
@@ -18,9 +20,11 @@ public final class RecordWriter {
     public static byte[] logEntry(String sessionId, String signature, String threadName,
                                   long timestamp, int callerLine,
                                   long requestId,
+                                  UUID callId, UUID parentCallId,
                                   byte[] thisInstanceCbor, byte[] argsCbor) {
         return BinaryUtil.concat(
-                logEntrySimple(sessionId, signature, threadName, timestamp, callerLine, requestId),
+                logEntrySimple(sessionId, signature, threadName, timestamp, callerLine, requestId,
+                        callId, parentCallId),
                 thisInstanceCbor != null ? thisInstance(thisInstanceCbor) : null,
                 arguments(argsCbor));
     }
@@ -28,9 +32,11 @@ public final class RecordWriter {
     public static byte[] logEntryWithThisRef(String sessionId, String signature, String threadName,
                                              long timestamp, int callerLine,
                                              long requestId,
+                                             UUID callId, UUID parentCallId,
                                              long thisInstanceId, byte[] argsCbor) {
         return BinaryUtil.concat(
-                logEntrySimple(sessionId, signature, threadName, timestamp, callerLine, requestId),
+                logEntrySimple(sessionId, signature, threadName, timestamp, callerLine, requestId,
+                        callId, parentCallId),
                 thisInstanceRef(thisInstanceId),
                 arguments(argsCbor));
     }
@@ -38,33 +44,35 @@ public final class RecordWriter {
     // --- Composite: full method exit (end + return) ---
 
     public static byte[] logExit(String sessionId, String threadName, long timestamp,
-                                 long requestId, byte[] returnCbor, boolean isVoid) {
+                                 long requestId, UUID callId,
+                                 byte[] returnCbor, boolean isVoid) {
         return BinaryUtil.concat(
-                methodEnd(sessionId, threadName, timestamp, requestId),
+                methodEnd(sessionId, threadName, timestamp, requestId, callId),
                 isVoid ? returnVoid() : returnValue(returnCbor));
     }
 
     public static byte[] logExitException(String sessionId, String threadName,
-                                          long timestamp, long requestId,
+                                          long timestamp, long requestId, UUID callId,
                                           byte[] exceptionCbor) {
         return BinaryUtil.concat(
-                methodEnd(sessionId, threadName, timestamp, requestId),
+                methodEnd(sessionId, threadName, timestamp, requestId, callId),
                 exception(exceptionCbor));
     }
 
     public static byte[] logExitWithArgs(String sessionId, String threadName, long timestamp,
-                                         long requestId, byte[] returnCbor, boolean isVoid,
+                                         long requestId, UUID callId,
+                                         byte[] returnCbor, boolean isVoid,
                                          byte[] argsCbor) {
         return BinaryUtil.concat(
-                logExit(sessionId, threadName, timestamp, requestId, returnCbor, isVoid),
+                logExit(sessionId, threadName, timestamp, requestId, callId, returnCbor, isVoid),
                 argumentsExit(argsCbor));
     }
 
     public static byte[] logExitExceptionWithArgs(String sessionId, String threadName,
-                                                   long timestamp, long requestId,
+                                                   long timestamp, long requestId, UUID callId,
                                                    byte[] exceptionCbor, byte[] argsCbor) {
         return BinaryUtil.concat(
-                logExitException(sessionId, threadName, timestamp, requestId, exceptionCbor),
+                logExitException(sessionId, threadName, timestamp, requestId, callId, exceptionCbor),
                 argumentsExit(argsCbor));
     }
 
@@ -72,18 +80,20 @@ public final class RecordWriter {
 
     public static byte[] logEntrySimple(String sessionId, String signature, String threadName,
                                         long timestamp, int callerLine,
-                                        long requestId) {
-        return new MethodStartRecord(sessionId, signature, threadName, timestamp, callerLine, requestId).toFrame();
+                                        long requestId,
+                                        UUID callId, UUID parentCallId) {
+        return new MethodStartRecord(sessionId, signature, threadName, timestamp, callerLine, requestId,
+                callId, parentCallId).toFrame();
     }
 
     public static byte[] logExitSimple(String sessionId, String threadName, long timestamp,
-                                       long requestId) {
-        return new MethodEndRecord(sessionId, threadName, timestamp, requestId).toFrame();
+                                       long requestId, UUID callId) {
+        return new MethodEndRecord(sessionId, threadName, timestamp, requestId, callId).toFrame();
     }
 
     public static byte[] methodEnd(String sessionId, String threadName, long timestamp,
-                                   long requestId) {
-        return new MethodEndRecord(sessionId, threadName, timestamp, requestId).toFrame();
+                                   long requestId, UUID callId) {
+        return new MethodEndRecord(sessionId, threadName, timestamp, requestId, callId).toFrame();
     }
 
     public static byte[] thisInstance(byte[] thisCbor) {

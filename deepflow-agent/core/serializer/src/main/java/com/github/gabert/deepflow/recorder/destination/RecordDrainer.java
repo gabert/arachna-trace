@@ -1,13 +1,16 @@
 package com.github.gabert.deepflow.recorder.destination;
 
 import com.github.gabert.deepflow.recorder.buffer.RecordBuffer;
-import com.github.gabert.deepflow.recorder.record.RecordWriter;
 
 import java.io.IOException;
 
 /**
  * Drains records from a {@link RecordBuffer} and delivers them to a {@link Destination}.
  * Runs in a background thread.
+ *
+ * <p>Startup-only records (wire-format version, run-header) are emitted by
+ * {@code RecorderManager} directly to the destination before {@link #start()},
+ * so this class is solely responsible for the streaming drain loop.</p>
  */
 public final class RecordDrainer {
     private final RecordBuffer buffer;
@@ -26,11 +29,6 @@ public final class RecordDrainer {
 
     public void start() {
         running = true;
-        try {
-            destination.accept(RecordWriter.version());
-        } catch (Throwable t) {
-            System.err.println("Error emitting version record: " + t.getMessage());
-        }
         thread.start();
     }
 

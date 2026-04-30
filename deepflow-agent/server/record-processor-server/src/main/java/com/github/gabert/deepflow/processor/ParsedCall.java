@@ -1,5 +1,7 @@
 package com.github.gabert.deepflow.processor;
 
+import java.util.UUID;
+
 /**
  * One method invocation flattened from the line stream produced by
  * {@link com.github.gabert.deepflow.recorder.destination.RecordRenderer}.
@@ -9,8 +11,16 @@ package com.github.gabert.deepflow.processor;
  * {@code thisIdRef} (when {@code expand_this=false}) or {@code thisJson}
  * (when {@code expand_this=true}). Likewise {@code argsExitJson} and
  * {@code returnJson} are null when the corresponding records are absent.</p>
+ *
+ * <p>{@code callId} identifies the call uniquely within a JVM run;
+ * {@code parentCallId} is the call that contains this one (lexically for
+ * sync calls, by submitter for async-propagated calls), and is null at the
+ * root of a request. Agent-run identity is carried at the transport layer
+ * — see {@link AgentRunMetadata}.</p>
  */
 public record ParsedCall(
+        UUID callId,
+        UUID parentCallId,
         String sessionId,
         long requestId,
         String threadName,

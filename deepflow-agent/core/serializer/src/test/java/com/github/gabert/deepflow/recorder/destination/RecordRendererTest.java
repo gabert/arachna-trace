@@ -22,7 +22,7 @@ class RecordRendererTest {
         byte[] args = Codec.encode(new Object[]{"hello", 42});
         long ts = 1000L;
 
-        byte[] data = RecordWriter.logEntry(SESSION, SIGNATURE, THREAD, ts, 99, 5L, null, args);
+        byte[] data = RecordWriter.logEntry(SESSION, SIGNATURE, THREAD, ts, 99, 5L, null, null, null, args);
         RecordRenderer.Result result = RecordRenderer.render(data);
 
         assertEquals(THREAD, result.threadName());
@@ -41,7 +41,7 @@ class RecordRendererTest {
     void renderMethodEntryWithoutSessionId() throws Exception {
         byte[] args = Codec.encode(new Object[]{"hello"});
 
-        byte[] data = RecordWriter.logEntry(null, SIGNATURE, THREAD, 1000L, 10, 0L, null, args);
+        byte[] data = RecordWriter.logEntry(null, SIGNATURE, THREAD, 1000L, 10, 0L, null, null, null, args);
         RecordRenderer.Result result = RecordRenderer.render(data);
 
         List<String> lines = result.lines();
@@ -56,7 +56,7 @@ class RecordRendererTest {
     void renderVoidReturn() {
         long ts = 2000L;
 
-        byte[] data = RecordWriter.logExit(null, THREAD, ts, 0L, null, true);
+        byte[] data = RecordWriter.logExit(null, THREAD, ts, 0L, null, null, true);
         RecordRenderer.Result result = RecordRenderer.render(data);
 
         List<String> lines = result.lines();
@@ -74,7 +74,7 @@ class RecordRendererTest {
         byte[] retCbor = Codec.encode("returned");
         long ts = 3000L;
 
-        byte[] data = RecordWriter.logExit(null, THREAD, ts, 0L, retCbor, false);
+        byte[] data = RecordWriter.logExit(null, THREAD, ts, 0L, null, retCbor, false);
         RecordRenderer.Result result = RecordRenderer.render(data);
 
         List<String> lines = result.lines();
@@ -92,7 +92,7 @@ class RecordRendererTest {
         byte[] excCbor = Codec.encode(Map.of("message", "NPE"));
         long ts = 4000L;
 
-        byte[] data = RecordWriter.logExitException(null, THREAD, ts, 0L, excCbor);
+        byte[] data = RecordWriter.logExitException(null, THREAD, ts, 0L, null, excCbor);
         RecordRenderer.Result result = RecordRenderer.render(data);
 
         List<String> lines = result.lines();
@@ -110,8 +110,8 @@ class RecordRendererTest {
         byte[] args = Codec.encode(new Object[]{"x"});
         byte[] ret = Codec.encode(42);
 
-        byte[] entry = RecordWriter.logEntry(SESSION, SIGNATURE, THREAD, 1000L, 10, 0L, null, args);
-        byte[] exit = RecordWriter.logExit(SESSION, THREAD, 2000L, 0L, ret, false);
+        byte[] entry = RecordWriter.logEntry(SESSION, SIGNATURE, THREAD, 1000L, 10, 0L, null, null, null, args);
+        byte[] exit = RecordWriter.logExit(SESSION, THREAD, 2000L, 0L, null, ret, false);
         byte[] data = concat(entry, exit);
 
         RecordRenderer.Result result = RecordRenderer.render(data);
@@ -145,7 +145,7 @@ class RecordRendererTest {
         byte[] thisCbor = Codec.encode(Map.of("field", "value"));
         byte[] args = Codec.encode(new Object[]{});
 
-        byte[] data = RecordWriter.logEntry(null, SIGNATURE, THREAD, 1000L, 5, 0L, thisCbor, args);
+        byte[] data = RecordWriter.logEntry(null, SIGNATURE, THREAD, 1000L, 5, 0L, null, null, thisCbor, args);
         RecordRenderer.Result result = RecordRenderer.render(data);
 
         List<String> lines = result.lines();
@@ -160,7 +160,7 @@ class RecordRendererTest {
     void renderWithThisInstanceRef() throws Exception {
         byte[] args = Codec.encode(new Object[]{});
 
-        byte[] data = RecordWriter.logEntryWithThisRef(null, SIGNATURE, THREAD, 1000L, 5, 0L, 12345L, args);
+        byte[] data = RecordWriter.logEntryWithThisRef(null, SIGNATURE, THREAD, 1000L, 5, 0L, null, null, 12345L, args);
         RecordRenderer.Result result = RecordRenderer.render(data);
 
         List<String> lines = result.lines();
@@ -172,7 +172,7 @@ class RecordRendererTest {
     @Test
     void threadNameFromEntryRecord() throws Exception {
         byte[] args = Codec.encode(new Object[]{});
-        byte[] data = RecordWriter.logEntry(null, SIGNATURE, "worker-1", 1000L, 1, 0L, null, args);
+        byte[] data = RecordWriter.logEntry(null, SIGNATURE, "worker-1", 1000L, 1, 0L, null, null, null, args);
 
         RecordRenderer.Result result = RecordRenderer.render(data);
         assertEquals("worker-1", result.threadName());
@@ -180,7 +180,7 @@ class RecordRendererTest {
 
     @Test
     void threadNameFromExitRecord() {
-        byte[] data = RecordWriter.logExit(null, "http-handler-3", 5000L, 0L, null, true);
+        byte[] data = RecordWriter.logExit(null, "http-handler-3", 5000L, 0L, null, null, true);
 
         RecordRenderer.Result result = RecordRenderer.render(data);
         assertEquals("http-handler-3", result.threadName());

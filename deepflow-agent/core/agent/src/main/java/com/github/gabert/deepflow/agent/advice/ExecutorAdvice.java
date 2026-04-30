@@ -4,6 +4,8 @@ import com.github.gabert.deepflow.agent.bootstrap.PropagatingRunnable;
 import com.github.gabert.deepflow.agent.bootstrap.RequestContext;
 import net.bytebuddy.asm.Advice;
 
+import java.util.UUID;
+
 public class ExecutorAdvice {
 
     @Advice.OnMethodEnter
@@ -12,7 +14,8 @@ public class ExecutorAdvice {
 
         long requestId = RequestContext.CURRENT_REQUEST_ID.get()[0];
         if (requestId != 0L) {
-            runnable = new PropagatingRunnable(runnable, requestId);
+            UUID parentCallId = RequestContext.peekParentCallId();
+            runnable = new PropagatingRunnable(runnable, requestId, parentCallId);
         }
     }
 }

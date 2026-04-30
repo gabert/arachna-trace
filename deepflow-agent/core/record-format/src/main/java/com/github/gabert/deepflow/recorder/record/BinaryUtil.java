@@ -1,5 +1,7 @@
 package com.github.gabert.deepflow.recorder.record;
 
+import java.util.UUID;
+
 /**
  * Big-endian read/write helpers for the wire format.
  *
@@ -63,6 +65,36 @@ public final class BinaryUtil {
              | ((long)(buf[pos + 5] & 0xFF) << 16)
              | ((long)(buf[pos + 6] & 0xFF) << 8)
              | ((long)(buf[pos + 7] & 0xFF));
+    }
+
+    // --- UUID (16 bytes, big-endian: 8-byte MSB then 8-byte LSB) ---
+
+    /**
+     * Writes a UUID as two big-endian longs (MSB then LSB). A {@code null}
+     * uuid is encoded as all-zero bytes — the sentinel reserved for "no UUID
+     * present." Pair with {@link #getNullableUuid(byte[], int)} to decode the
+     * sentinel back to {@code null}.
+     */
+    public static int putUuid(byte[] buf, int pos, UUID uuid) {
+        long msb = uuid != null ? uuid.getMostSignificantBits() : 0L;
+        long lsb = uuid != null ? uuid.getLeastSignificantBits() : 0L;
+        pos = putLong(buf, pos, msb);
+        return putLong(buf, pos, lsb);
+    }
+
+    /** Reads a UUID. Returns the all-zero UUID literally if that is what is on the wire. */
+    public static UUID getUuid(byte[] buf, int pos) {
+        long msb = getLong(buf, pos);
+        long lsb = getLong(buf, pos + 8);
+        return new UUID(msb, lsb);
+    }
+
+    /** Reads a UUID. Returns {@code null} when the encoded bytes are the all-zero sentinel. */
+    public static UUID getNullableUuid(byte[] buf, int pos) {
+        long msb = getLong(buf, pos);
+        long lsb = getLong(buf, pos + 8);
+        if (msb == 0L && lsb == 0L) return null;
+        return new UUID(msb, lsb);
     }
 
     // --- Byte-array concat ---

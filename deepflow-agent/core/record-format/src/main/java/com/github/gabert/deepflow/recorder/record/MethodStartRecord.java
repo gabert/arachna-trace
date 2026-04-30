@@ -1,15 +1,23 @@
 package com.github.gabert.deepflow.recorder.record;
 
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 /**
- * Method-entry record carrying the call's structural metadata.
+ * Method-entry record carrying the call's structural metadata and identity.
  *
  * <p>Payload layout (UTF-8 strings prefixed by short lengths):
  * {@code [sidLen:short][sid][sigLen:short][sig][tnLen:short][tn]
- *        [timestamp:long][callerLine:int][requestId:long]}.</p>
+ *        [timestamp:long][callerLine:int][requestId:long]
+ *        [callId:16][parentCallId:16]}.</p>
  *
- * <p>{@code sessionId} may be null; encoded as zero-length on the wire.</p>
+ * <p>{@code sessionId} may be null; encoded as zero-length on the wire.
+ * {@code parentCallId} may be null (top of a request); encoded as the
+ * all-zero UUID sentinel. {@code callId} is required.</p>
+ *
+ * <p>Agent-run identity is carried at the transport layer (HTTP / Kafka
+ * headers, file sidecar) — see {@link com.github.gabert.deepflow.recorder.AgentRun}.
+ * It is no longer in the record payload.</p>
  */
 public record MethodStartRecord(
         String sessionId,
@@ -17,7 +25,9 @@ public record MethodStartRecord(
         String threadName,
         long timestamp,
         int callerLine,
-        long requestId
+        long requestId,
+        UUID callId,
+        UUID parentCallId
 ) implements TraceRecord {
 
     public static final byte TYPE = RecordType.METHOD_START;
@@ -38,7 +48,8 @@ public record MethodStartRecord(
                         + RecordType.SIGNATURE_LENGTH_SIZE + sigBytes.length
                         + RecordType.THREAD_NAME_LENGTH_SIZE + tnBytes.length
                         + RecordType.TIMESTAMP_SIZE + RecordType.CALLER_LINE_SIZE
-                        + RecordType.REQUEST_ID_SIZE];
+                        + RecordType.REQUEST_ID_SIZE
+                        + RecordType.UUID_SIZE * 2];
         int pos = 0;
         pos = BinaryUtil.putShort(payload, pos, (short) sidBytes.length);
         System.arraycopy(sidBytes, 0, payload, pos, sidBytes.length);
@@ -51,7 +62,9 @@ public record MethodStartRecord(
         pos += tnBytes.length;
         pos = BinaryUtil.putLong(payload, pos, timestamp);
         pos = BinaryUtil.putInt(payload, pos, callerLine);
-        BinaryUtil.putLong(payload, pos, requestId);
+        pos = BinaryUtil.putLong(payload, pos, requestId);
+        pos = BinaryUtil.putUuid(payload, pos, callId);
+        BinaryUtil.putUuid(payload, pos, parentCallId);
         return payload;
     }
 
@@ -74,6 +87,11 @@ public record MethodStartRecord(
         int callerLine = BinaryUtil.getInt(payload, pos);
         pos += RecordType.CALLER_LINE_SIZE;
         long requestId = BinaryUtil.getLong(payload, pos);
-        return new MethodStartRecord(sessionId, signature, threadName, timestamp, callerLine, requestId);
+        pos += RecordType.REQUEST_ID_SIZE;
+        UUID callId = BinaryUtil.getNullableUuid(payload, pos);
+        pos += RecordType.UUID_SIZE;
+        UUID parentCallId = BinaryUtil.getNullableUuid(payload, pos);
+        return new MethodStartRecord(sessionId, signature, threadName, timestamp, callerLine, requestId,
+                callId, parentCallId);
     }
 }

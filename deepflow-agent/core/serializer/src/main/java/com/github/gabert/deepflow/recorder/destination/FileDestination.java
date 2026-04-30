@@ -1,6 +1,8 @@
 package com.github.gabert.deepflow.recorder.destination;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.gabert.deepflow.config.ConfigLoader;
+import com.github.gabert.deepflow.recorder.AgentRun;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -19,6 +21,8 @@ import java.util.Set;
 
 public class FileDestination implements Destination {
     private static final String DEFAULT_EMIT_TAGS = "SI,TN,RI,TS,CL,TI,AR,RT,RE,TE";
+    private static final String RUN_SIDECAR_FILENAME = "run.json";
+    private static final ObjectMapper SIDECAR_MAPPER = new ObjectMapper();
 
     private final Path sessionDir;
     private final String runTimestamp;
@@ -34,6 +38,17 @@ public class FileDestination implements Destination {
         this.runTimestamp = generateRunTimestamp();
         this.sessionDir = Paths.get(dumpLocation).resolve("SESSION-" + runTimestamp);
         this.emitTags = ConfigLoader.parseEmitTags(config.get("emit_tags"), DEFAULT_EMIT_TAGS);
+    }
+
+    @Override
+    public void setAgentRun(AgentRun agentRun) {
+        try {
+            Files.createDirectories(sessionDir);
+            Path sidecar = sessionDir.resolve(RUN_SIDECAR_FILENAME);
+            SIDECAR_MAPPER.writerWithDefaultPrettyPrinter().writeValue(sidecar.toFile(), agentRun);
+        } catch (IOException e) {
+            System.err.println("[DeepFlow] Failed to write " + RUN_SIDECAR_FILENAME + ": " + e.getMessage());
+        }
     }
 
     @Override

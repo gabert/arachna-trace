@@ -35,7 +35,8 @@ import java.util.Set;
 public final class RecordRenderer {
     private static final String DELIMITER = ";";
     private static final Set<String> ALL_TAGS = Set.of(
-            "VR", "MS", "SI", "TN", "RI", "TS", "CL", "TI", "AR", "AX", "RT", "RE", "TE");
+            "VR", "MS", "SI", "TN", "RI", "TS", "CL", "TI", "AR", "AX", "RT", "RE", "TE",
+            "CI", "PI");
 
     private RecordRenderer() {}
 
@@ -55,7 +56,8 @@ public final class RecordRenderer {
                 if (entry.threadName() != null) {
                     threadName = entry.threadName();
                 }
-                if ("MS".equals(entry.tag()) || "VR".equals(entry.tag()) || emitTags.contains(entry.tag())) {
+                if ("MS".equals(entry.tag()) || "VR".equals(entry.tag())
+                        || emitTags.contains(entry.tag())) {
                     lines.add(entry.tag() + DELIMITER + entry.value());
                 }
             }
@@ -108,16 +110,20 @@ public final class RecordRenderer {
         entries.add(tag("TN", m.threadName()));
         entries.add(tag("RI", String.valueOf(m.requestId())));
         entries.add(tag("CL", String.valueOf(m.callerLine())));
+        if (m.callId()      != null) entries.add(tag("CI", m.callId().toString()));
+        if (m.parentCallId() != null) entries.add(tag("PI", m.parentCallId().toString()));
         entries.add(threadName(m.threadName()));
         return entries;
     }
 
     private static List<TagEntry> tagsForMethodEnd(MethodEndRecord m) {
-        return List.of(
-                tag("TE", String.valueOf(m.timestamp())),
-                tag("TN", m.threadName()),
-                tag("RI", String.valueOf(m.requestId())),
-                threadName(m.threadName()));
+        List<TagEntry> entries = new ArrayList<>();
+        entries.add(tag("TE", String.valueOf(m.timestamp())));
+        entries.add(tag("TN", m.threadName()));
+        entries.add(tag("RI", String.valueOf(m.requestId())));
+        if (m.callId() != null) entries.add(tag("CI", m.callId().toString()));
+        entries.add(threadName(m.threadName()));
+        return entries;
     }
 
     // --- TagEntry ---

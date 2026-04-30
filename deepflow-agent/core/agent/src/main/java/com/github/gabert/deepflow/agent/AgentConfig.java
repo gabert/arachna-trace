@@ -25,6 +25,8 @@ public class AgentConfig {
     private final int maxValueSize;
     private final String destination;
     private final Set<String> emitTags;
+    private final String codeVersion;
+    private final String env;
     private final Map<String, String> configMap;
 
     private AgentConfig(Map<String, String> configMap) {
@@ -40,6 +42,8 @@ public class AgentConfig {
         this.maxValueSize = Integer.parseInt(configMap.getOrDefault("max_value_size", "0"));
         this.destination = configMap.getOrDefault("destination", "file");
         this.emitTags = ConfigLoader.parseEmitTags(configMap.get("emit_tags"), DEFAULT_EMIT_TAGS);
+        this.codeVersion = configMap.get("code_version");
+        this.env = configMap.get("env");
     }
 
     public List<String> getMatchersInclude() {
@@ -88,6 +92,14 @@ public class AgentConfig {
 
     public boolean shouldEmit(String tag) {
         return emitTags.contains(tag);
+    }
+
+    public String getCodeVersion() {
+        return codeVersion;
+    }
+
+    public String getEnv() {
+        return env;
     }
 
     public Map<String, String> getConfigMap() {

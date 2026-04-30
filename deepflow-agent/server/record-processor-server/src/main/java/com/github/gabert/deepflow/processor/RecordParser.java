@@ -2,34 +2,73 @@ package com.github.gabert.deepflow.processor;
 
 import com.github.gabert.deepflow.recorder.destination.RecordRenderer.Result;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * Walks a rendered (and hash-enriched) {@link Result} line stream and pairs
- * up {@code TS}/{@code TE} markers via a stack to emit one {@link ParsedCall}
- * per method invocation.
+ * up {@code TS}/{@code TE} markers via the wire-carried {@code call_id} UUID
+ * (tag {@code CI}) to emit one {@link ParsedCall} per method invocation.
  *
- * <p>The agent emits the exit records in the order
- * {@code METHOD_END, RETURN, ARGUMENTS_EXIT}, so the wire stream presents
- * {@code TE} <em>before</em> the call's own {@code RT}, {@code RE}, and
- * {@code AX} lines. To handle this we use a "pending" slot: on {@code TE} we
- * pop the top builder into {@code pending} and continue applying
- * {@code RT}/{@code RE}/{@code AX} to it. {@code pending} is finalized and
- * emitted when the next {@code TS} or {@code TE} arrives, or at end of
- * stream. The trailing {@code TN}/{@code RI} that the {@code METHOD_END}
- * record also emits are duplicates and are skipped.</p>
+ * <h2>Why stateful and UUID-keyed (vs the old per-batch stack)</h2>
+ *
+ * <p>The previous implementation used a method-local stack to pair {@code TS}
+ * with {@code TE} by ordering. That had a latent bug: a request whose root
+ * {@code TS} arrived in poll N and root {@code TE} in poll N+1 was silently
+ * dropped (the in-flight builder sat in the local stack and was discarded
+ * when {@code parse()} returned). Multi-thread interleaving in one batch
+ * also pretended to share one stack, mispairing across threads.</p>
+ *
+ * <p>This implementation instead keys open calls by their UUID
+ * ({@link UUID}, on the wire as {@code CI}). State persists across
+ * {@code parse()} calls in {@link #openCalls}, so a {@code TE} can
+ * find its matching {@code TS} no matter which batch each lived in.
+ * Multi-thread interleaving in one batch is also correct because every
+ * call is uniquely addressable by id.</p>
+ *
+ * <h2>Wire ordering this code handles</h2>
+ *
+ * <p>For one method invocation, the renderer emits tags in this rough order:
+ * <pre>
+ *   MS record -> TS, [SI], MS, TN, RI, CL, [CI], [PI]
+ *   TI/AR     -> TI, AR
+ *   ME record -> TE, TN, RI, [CI]
+ *   RT/RE     -> RT, [RE]
+ *   AX (opt)  -> AX
+ * </pre>
+ * The agent emits the exit records in the order METHOD_END, RETURN,
+ * ARGUMENTS_EXIT, so on the wire {@code TE} comes <em>before</em> the call's
+ * own {@code RT}/{@code RE}/{@code AX}. After {@code TE}, the parser stays in
+ * "exit context" until the next {@code TS} or {@code TE}.</p>
+ *
+ * <h2>Lifecycle</h2>
+ *
+ * <p>One instance per {@code ClickHouseSink} (or any owner). State accumulates
+ * across {@code parse()} calls — open calls live in {@link #openCalls} until
+ * their matching {@code TE}. An open call that never closes (agent crashed
+ * mid-call) leaks until eviction, which is currently not implemented; in
+ * production we will want a TTL eviction (e.g. drop entries older than N
+ * minutes) once we have observability on how often this happens.</p>
  */
 public final class RecordParser {
 
-    private RecordParser() {}
+    private final Map<UUID, Builder> openCalls = new HashMap<>();
 
-    public static List<ParsedCall> parse(Result result) {
-        Deque<Builder> stack = new ArrayDeque<>();
+    /** Builder currently accumulating tags from an MS record (entry context). */
+    private Builder currentEntry;
+
+    /** Set after {@code TE} until {@code CI} resolves which call exited. */
+    private boolean awaitingExitCallId;
+    private long pendingTsOut;
+
+    /** Builder accumulating tags from an ME record (exit context, post-CI). */
+    private Builder currentExit;
+
+    public List<ParsedCall> parse(Result result) {
         List<ParsedCall> completed = new ArrayList<>();
-        Builder pending = null;
 
         for (String line : result.lines()) {
             int sep = line.indexOf(';');
@@ -38,45 +77,86 @@ public final class RecordParser {
             String value = line.substring(sep + 1);
 
             switch (tag) {
-                case "VR" -> { /* version banner — ignore */ }
+                case "VR" -> { /* wire-format version banner — not modeled */ }
+
                 case "TS" -> {
-                    if (pending != null) {
-                        completed.add(pending.build());
-                        pending = null;
-                    }
-                    Builder b = new Builder();
-                    b.tsIn = parseLongOrZero(value);
-                    stack.push(b);
+                    flushExitIfAny(completed);
+                    currentEntry = new Builder();
+                    currentEntry.tsIn = parseLongOrZero(value);
                 }
+
                 case "TE" -> {
-                    if (pending != null) {
-                        completed.add(pending.build());
-                        pending = null;
-                    }
-                    if (stack.isEmpty()) break;
-                    pending = stack.pop();
-                    pending.tsOut = parseLongOrZero(value);
+                    flushExitIfAny(completed);
+                    // We don't yet know which call this TE belongs to —
+                    // its CI tag will follow in the same ME record.
+                    awaitingExitCallId = true;
+                    pendingTsOut = parseLongOrZero(value);
+                    currentEntry = null;
                 }
+
+                case "CI" -> {
+                    UUID callId = parseUuidOrNull(value);
+                    if (callId == null) break;
+                    if (currentEntry != null) {
+                        // Entry's call_id — index the builder so we can find it on TE.
+                        // Defensive: if a malformed MS block ever emits two CIs, ignore
+                        // the second so we don't leak the first builder under a stale key.
+                        if (currentEntry.callId != null) break;
+                        currentEntry.callId = callId;
+                        openCalls.put(callId, currentEntry);
+                        // currentEntry stays so subsequent TI/AR still apply.
+                    } else if (awaitingExitCallId) {
+                        Builder b = openCalls.remove(callId);
+                        awaitingExitCallId = false;
+                        if (b != null) {
+                            b.tsOut = pendingTsOut;
+                            currentExit = b;
+                        }
+                        // Else orphan ME — entry never recorded (failed-entry contract
+                        // in RequestRecorder). No matching MS exists, so nothing to pair.
+                    }
+                    // else: stray CI with no context — ignore.
+                }
+
+                case "PI" -> {
+                    if (currentEntry != null) currentEntry.parentCallId = parseUuidOrNull(value);
+                }
+
                 case "TN", "RI" -> {
-                    // After a TE, METHOD_END emits duplicate TN/RI; drop them.
-                    if (pending != null) break;
-                    if (!stack.isEmpty()) apply(stack.peek(), tag, value);
-                }
-                case "RT", "RE", "AX" -> {
-                    // Belong to the call that just hit TE (if any).
-                    if (pending != null) {
-                        apply(pending, tag, value);
-                    } else if (!stack.isEmpty()) {
-                        apply(stack.peek(), tag, value);
+                    // Both MS and ME records emit these; route by current context.
+                    if (currentEntry != null) {
+                        apply(currentEntry, tag, value);
+                    } else if (currentExit != null) {
+                        apply(currentExit, tag, value);
                     }
+                    // After TE before CI: would be a duplicate from ME — drop.
                 }
+
+                case "RT", "RE", "AX" -> {
+                    // Belong to the call that just hit TE.
+                    if (currentExit != null) apply(currentExit, tag, value);
+                }
+
                 default -> {
-                    if (!stack.isEmpty()) apply(stack.peek(), tag, value);
+                    // SI, MS, CL, TI, AR — apply to entry context.
+                    if (currentEntry != null) apply(currentEntry, tag, value);
                 }
             }
         }
-        if (pending != null) completed.add(pending.build());
+
+        // End of batch: flush any in-progress exit. A currentEntry that hasn't
+        // seen CI yet stays in this.currentEntry for the next batch — its
+        // remaining tags may arrive later.
+        flushExitIfAny(completed);
+
         return completed;
+    }
+
+    private void flushExitIfAny(List<ParsedCall> completed) {
+        if (currentExit != null) {
+            completed.add(currentExit.build());
+            currentExit = null;
+        }
     }
 
     private static void apply(Builder b, String tag, String value) {
@@ -121,7 +201,13 @@ public final class RecordParser {
         try { return Integer.parseInt(s); } catch (NumberFormatException e) { return 0; }
     }
 
+    private static UUID parseUuidOrNull(String s) {
+        try { return UUID.fromString(s); } catch (IllegalArgumentException e) { return null; }
+    }
+
     private static final class Builder {
+        UUID callId;
+        UUID parentCallId;
         String sessionId;
         long requestId;
         String threadName;
@@ -138,6 +224,7 @@ public final class RecordParser {
 
         ParsedCall build() {
             return new ParsedCall(
+                    callId, parentCallId,
                     sessionId, requestId, threadName,
                     tsIn, tsOut, signature, callerLine,
                     returnType, thisIdRef, thisJson,

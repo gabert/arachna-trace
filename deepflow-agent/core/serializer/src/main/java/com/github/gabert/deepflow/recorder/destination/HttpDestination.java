@@ -1,5 +1,7 @@
 package com.github.gabert.deepflow.recorder.destination;
 
+import com.github.gabert.deepflow.recorder.AgentRun;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
@@ -17,6 +19,7 @@ public class HttpDestination implements Destination {
     private final URI serverUri;
     private final int flushThreshold;
     private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+    private volatile AgentRun agentRun;
 
     public HttpDestination(Map<String, String> config) {
         String url = config.getOrDefault("http_server_url", DEFAULT_SERVER_URL);
@@ -26,6 +29,11 @@ public class HttpDestination implements Destination {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
+    }
+
+    @Override
+    public void setAgentRun(AgentRun agentRun) {
+        this.agentRun = agentRun;
     }
 
     @Override
@@ -52,15 +60,16 @@ public class HttpDestination implements Destination {
         byte[] payload = buffer.toByteArray();
         buffer.reset();
 
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(serverUri)
                 .header("Content-Type", "application/octet-stream")
                 .POST(HttpRequest.BodyPublishers.ofByteArray(payload))
-                .timeout(Duration.ofSeconds(10))
-                .build();
+                .timeout(Duration.ofSeconds(10));
+
+        applyAgentRunHeaders(builder);
 
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200) {
                 System.err.println("[DeepFlow] HTTP destination error: " + response.statusCode()
                         + " — " + response.body());
@@ -68,5 +77,18 @@ public class HttpDestination implements Destination {
         } catch (IOException | InterruptedException e) {
             System.err.println("[DeepFlow] HTTP destination send failed: " + e.getMessage());
         }
+    }
+
+    private void applyAgentRunHeaders(HttpRequest.Builder builder) {
+        AgentRun run = this.agentRun;
+        if (run == null) return;
+
+        builder.header(AgentRun.Headers.AGENT_RUN_ID,  run.agentRunId().toString());
+        builder.header(AgentRun.Headers.HOSTNAME,      run.hostname());
+        builder.header(AgentRun.Headers.AGENT_VERSION, run.agentVersion());
+        if (run.codeVersion() != null) builder.header(AgentRun.Headers.CODE_VERSION, run.codeVersion());
+        if (run.env() != null)         builder.header(AgentRun.Headers.ENV,          run.env());
+        builder.header(AgentRun.Headers.JVM_PID,       Long.toString(run.jvmPid()));
+        builder.header(AgentRun.Headers.STARTED_AT_MS, Long.toString(run.startedAtMillis()));
     }
 }

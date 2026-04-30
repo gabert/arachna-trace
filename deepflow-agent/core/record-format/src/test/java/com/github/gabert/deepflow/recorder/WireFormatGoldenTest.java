@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.HexFormat;
 import java.util.List;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -25,10 +26,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  * the same way would still pass them. These tests instead hardcode the
  * expected byte sequence so any change to the wire format must update this
  * file deliberately.</p>
- *
- * <p>The wire format is a contract with the Python formatter and any historical
- * {@code .dft} files on disk. Do not change a hex string here without
- * updating the formatter (and accepting that older traces become unreadable).</p>
  *
  * <p>Frame layout: {@code [type:1][payloadLen:4][payload:N]} (5-byte header).
  * All multi-byte integers are big-endian. Strings are UTF-8 with a {@code short}
@@ -73,93 +70,107 @@ class WireFormatGoldenTest {
     //  METHOD_START (0x01)
     //   payload = [sidLen:short][sid][sigLen:short][sig]
     //             [tnLen:short][tn][ts:long][callerLine:int][requestId:long]
+    //             [callId:16][parentCallId:16]
     // ============================================================
 
     @Test
     void methodStart_layoutWithKnownFields() {
+        UUID callId = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        UUID parentCallId = UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
         byte[] bytes = RecordWriter.logEntrySimple(
                 "S",                            // sessionId
                 "M",                            // signature
                 "T",                            // threadName
                 0x0102030405060708L,            // timestamp
                 0x0A0B0C0D,                     // callerLine
-                0x1112131415161718L);           // requestId
+                0x1112131415161718L,            // requestId
+                callId,                         // callId
+                parentCallId);                  // parentCallId
 
         // 01                        type = METHOD_START
-        // 00 00 00 1D               payload length = 29
+        // 00 00 00 3D               payload length = 61 (29 + 2*16)
         // 00 01 53                  sessionId "S"
         // 00 01 4D                  signature "M"
         // 00 01 54                  threadName "T"
         // 01 02 03 04 05 06 07 08   timestamp
         // 0A 0B 0C 0D               callerLine
         // 11 12 13 14 15 16 17 18   requestId
-        String expected = "01" + "0000001D"
+        // AA..AA                    callId
+        // BB..BB                    parentCallId
+        String expected = "01" + "0000003D"
                 + "0001" + "53"
                 + "0001" + "4D"
                 + "0001" + "54"
                 + "0102030405060708"
                 + "0A0B0C0D"
-                + "1112131415161718";
+                + "1112131415161718"
+                + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                + "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
         assertArrayEquals(HEX.parseHex(expected), bytes);
     }
 
     @Test
     void methodStart_nullSessionIdEncodesAsZeroLength() {
         byte[] bytes = RecordWriter.logEntrySimple(
-                null, "M", "T", 0L, 0, 0L);
+                null, "M", "T", 0L, 0, 0L, null, null);
 
         // 01                        type = METHOD_START
-        // 00 00 00 1C               payload length = 28
-        // 00 00                     sessionIdLen = 0  (no sessionId bytes)
+        // 00 00 00 3C               payload length = 60 (28 + 2*16)
+        // 00 00                     sessionIdLen = 0
         // 00 01 4D                  signature "M"
         // 00 01 54                  threadName "T"
-        // 00 00 00 00 00 00 00 00   timestamp = 0
-        // 00 00 00 00               callerLine = 0
-        // 00 00 00 00 00 00 00 00   requestId = 0
-        String expected = "01" + "0000001C"
+        // 00..00                    timestamp + callerLine + requestId all zero
+        // 00..00 (x2)               callId, parentCallId all-zero sentinels
+        String expected = "01" + "0000003C"
                 + "0000"
                 + "0001" + "4D"
                 + "0001" + "54"
                 + "0000000000000000"
                 + "00000000"
-                + "0000000000000000";
+                + "0000000000000000"
+                + "00000000000000000000000000000000"
+                + "00000000000000000000000000000000";
         assertArrayEquals(HEX.parseHex(expected), bytes);
     }
 
     // ============================================================
     //  METHOD_END (0x05)
     //   payload = [sidLen:short][sid][tnLen:short][tn]
-    //             [ts:long][requestId:long]
+    //             [ts:long][requestId:long][callId:16]
     // ============================================================
 
     @Test
     void methodEnd_layoutWithKnownFields() {
+        UUID callId = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
         byte[] bytes = RecordWriter.methodEnd(
-                "S", "T", 0x0102030405060708L, 0x1112131415161718L);
+                "S", "T", 0x0102030405060708L, 0x1112131415161718L, callId);
 
         // 05                        type = METHOD_END
-        // 00 00 00 16               payload length = 22
+        // 00 00 00 26               payload length = 38 (22 + 16)
         // 00 01 53                  sessionId "S"
         // 00 01 54                  threadName "T"
         // 01 02 03 04 05 06 07 08   timestamp
         // 11 12 13 14 15 16 17 18   requestId
-        String expected = "05" + "00000016"
+        // AA..AA                    callId
+        String expected = "05" + "00000026"
                 + "0001" + "53"
                 + "0001" + "54"
                 + "0102030405060708"
-                + "1112131415161718";
+                + "1112131415161718"
+                + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
         assertArrayEquals(HEX.parseHex(expected), bytes);
     }
 
     @Test
     void methodEnd_nullSessionIdEncodesAsZeroLength() {
-        byte[] bytes = RecordWriter.methodEnd(null, "T", 0L, 0L);
+        byte[] bytes = RecordWriter.methodEnd(null, "T", 0L, 0L, null);
 
-        String expected = "05" + "00000015"
+        String expected = "05" + "00000025"
                 + "0000"
                 + "0001" + "54"
                 + "0000000000000000"
-                + "0000000000000000";
+                + "0000000000000000"
+                + "00000000000000000000000000000000";
         assertArrayEquals(HEX.parseHex(expected), bytes);
     }
 
@@ -259,9 +270,12 @@ class WireFormatGoldenTest {
 
     @Test
     void methodStart_parsesBackToSameFields() {
+        UUID callId = UUID.randomUUID();
+        UUID parentId = UUID.randomUUID();
         byte[] bytes = RecordWriter.logEntrySimple(
                 "session", "sig", "thread",
-                0x1122334455667788L, 42, 0x99AABBCCDDEEFF00L);
+                0x1122334455667788L, 42, 0x99AABBCCDDEEFF00L,
+                callId, parentId);
 
         List<TraceRecord> records = RecordReader.readAll(bytes);
         assertEquals(1, records.size());
@@ -273,12 +287,15 @@ class WireFormatGoldenTest {
         assertEquals(0x1122334455667788L, parsed.timestamp());
         assertEquals(42, parsed.callerLine());
         assertEquals(0x99AABBCCDDEEFF00L, parsed.requestId());
+        assertEquals(callId, parsed.callId());
+        assertEquals(parentId, parsed.parentCallId());
     }
 
     @Test
     void methodEnd_parsesBackToSameFields() {
+        UUID callId = UUID.randomUUID();
         byte[] bytes = RecordWriter.methodEnd(
-                "session", "thread", 0x1122334455667788L, 0x99AABBCCDDEEFF00L);
+                "session", "thread", 0x1122334455667788L, 0x99AABBCCDDEEFF00L, callId);
 
         List<TraceRecord> records = RecordReader.readAll(bytes);
         assertEquals(1, records.size());
@@ -288,16 +305,19 @@ class WireFormatGoldenTest {
         assertEquals("thread", parsed.threadName());
         assertEquals(0x1122334455667788L, parsed.timestamp());
         assertEquals(0x99AABBCCDDEEFF00L, parsed.requestId());
+        assertEquals(callId, parsed.callId());
     }
 
     @Test
     void methodStart_nullSessionIdParsesBackAsNull() {
         byte[] bytes = RecordWriter.logEntrySimple(
-                null, "sig", "thread", 0L, 0, 0L);
+                null, "sig", "thread", 0L, 0, 0L, null, null);
 
         MethodStartRecord parsed = assertInstanceOf(MethodStartRecord.class,
                 RecordReader.readAll(bytes).get(0));
         assertNull(parsed.sessionId());
+        assertNull(parsed.callId());
+        assertNull(parsed.parentCallId());
     }
 
     @Test

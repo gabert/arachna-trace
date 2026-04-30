@@ -18,10 +18,12 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -31,6 +33,14 @@ import java.util.concurrent.TimeUnit;
  * via the HTTP {@code JSONEachRow} insert format. Two tables ({@code calls},
  * {@code payloads}) are populated in lockstep — see
  * {@code clickhouse-init/01-schema.sql} for the DDL.
+ *
+ * <p>The {@code requests} rollup table is <em>not</em> written by this sink.
+ * It is maintained server-side by {@code requests_mv}, a materialized view
+ * that reads every insert into {@code calls} and folds it into the rollup
+ * via {@code SimpleAggregateFunction} columns. This eliminates the in-memory
+ * per-request aggregator that the sink used to hold (which couldn't handle
+ * fire-and-forget async work whose late calls arrived after the
+ * synchronous root closed — bug B-03).</p>
  *
  * <p>Inserts are best-effort: a failure logs and discards the batch rather
  * than blocking the Kafka consumer or stalling Kafka backlog. Per the
@@ -49,6 +59,8 @@ public class ClickHouseSink implements RecordSink {
 
     private final URI insertCallsUri;
     private final URI insertPayloadsUri;
+    private final URI insertAgentRunsUri;
+    private final URI insertSessionsUri;
     private final HttpClient http;
     private final String basicAuth;
     private final ScheduledExecutorService flusher;
@@ -56,10 +68,29 @@ public class ClickHouseSink implements RecordSink {
     private final Object lock = new Object();
     private final List<Map<String, Object>> callBuffer = new ArrayList<>();
     private final List<Map<String, Object>> payloadBuffer = new ArrayList<>();
+    private final List<Map<String, Object>> agentRunBuffer = new ArrayList<>();
+    private final List<Map<String, Object>> sessionBuffer = new ArrayList<>();
+
+    /**
+     * Stateful parser — holds the open-calls map across batches so a request
+     * whose MS and ME land in different Kafka polls still pairs correctly.
+     * All access is via {@link #accept} which is serialized by {@link #lock}.
+     */
+    private final RecordParser parser = new RecordParser();
+
+    /**
+     * Sessions already announced as a row to ClickHouse. Bound to the
+     * processor's lifetime — on restart, sessions are re-emitted; the
+     * {@code sessions} table's {@link "ReplacingMergeTree"} engine
+     * de-duplicates them on the server.
+     */
+    private final Set<SessionKey> seenSessions = new HashSet<>();
 
     public ClickHouseSink(ProcessorConfig config) {
         this.insertCallsUri = buildInsertUri(config, "calls");
         this.insertPayloadsUri = buildInsertUri(config, "payloads");
+        this.insertAgentRunsUri = buildInsertUri(config, "agent_runs");
+        this.insertSessionsUri = buildInsertUri(config, "sessions");
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -77,17 +108,46 @@ public class ClickHouseSink implements RecordSink {
     }
 
     @Override
-    public void accept(Result result) {
-        List<ParsedCall> calls = RecordParser.parse(result);
+    public void accept(Result result, AgentRunMetadata headerMetadata) {
+        if (headerMetadata == null) {
+            // Agent-run identity travels at the transport layer (Kafka headers).
+            // A batch without it is malformed — almost certainly a misconfigured
+            // producer. We cannot attribute the calls, so drop the batch and
+            // surface the error operationally.
+            System.err.println("[DeepFlow] Dropping batch: missing agent-run headers ("
+                    + AGENT_RUN_HEADER_HINT + ")");
+            return;
+        }
+
         synchronized (lock) {
+            // The parser is stateful; serialize parsing and row-buffering under
+            // the same lock so its open-calls map mutations are well-ordered
+            // with respect to the flusher thread (which only reads the buffers).
+            List<ParsedCall> calls = parser.parse(result);
+
+            // Authoritative source: transport-layer metadata. ReplacingMergeTree
+            // collapses repeated upserts of the same agent_run_id, so adding
+            // one row per batch is cheap and survives processor restarts.
+            agentRunBuffer.add(agentRunRow(headerMetadata));
+
+            UUID runId = headerMetadata.agentRunId();
             for (ParsedCall call : calls) {
-                addRows(call);
+                addRows(call, runId);
+                noteSessionIfNew(call, runId);
+                // No per-request aggregation here — the requests_mv on the
+                // CH side reads every insert into `calls` and maintains the
+                // requests rollup automatically.
             }
+
             if (callBuffer.size() >= FLUSH_THRESHOLD || payloadBuffer.size() >= FLUSH_THRESHOLD) {
                 flushLocked();
             }
         }
     }
+
+    private static final String AGENT_RUN_HEADER_HINT =
+            "expected " + com.github.gabert.deepflow.recorder.AgentRun.Headers.AGENT_RUN_ID
+            + " on Kafka record headers";
 
     @Override
     public void close() {
@@ -104,29 +164,37 @@ public class ClickHouseSink implements RecordSink {
 
     private void periodicFlush() {
         synchronized (lock) {
-            if (!callBuffer.isEmpty() || !payloadBuffer.isEmpty()) {
+            if (anyBufferNonEmpty()) {
                 flushLocked();
             }
         }
     }
 
-    private void addRows(ParsedCall c) {
+    private boolean anyBufferNonEmpty() {
+        return !callBuffer.isEmpty() || !payloadBuffer.isEmpty()
+                || !agentRunBuffer.isEmpty() || !sessionBuffer.isEmpty();
+    }
+
+    private void addRows(ParsedCall c, UUID effectiveRunId) {
         Long thisId = c.thisIdRef();
         if (thisId == null && c.thisJson() != null) {
             thisId = extractRootId(c.thisJson());
-            payloadBuffer.add(payloadRow(c, "TI", c.thisJson()));
+            payloadBuffer.add(payloadRow(c, effectiveRunId, "TI", c.thisJson()));
         }
         if (c.argsJson() != null) {
-            payloadBuffer.add(payloadRow(c, "AR", c.argsJson()));
+            payloadBuffer.add(payloadRow(c, effectiveRunId, "AR", c.argsJson()));
         }
         if (c.argsExitJson() != null) {
-            payloadBuffer.add(payloadRow(c, "AX", c.argsExitJson()));
+            payloadBuffer.add(payloadRow(c, effectiveRunId, "AX", c.argsExitJson()));
         }
         if (c.returnJson() != null) {
-            payloadBuffer.add(payloadRow(c, "RE", c.returnJson()));
+            payloadBuffer.add(payloadRow(c, effectiveRunId, "RE", c.returnJson()));
         }
 
         Map<String, Object> row = new LinkedHashMap<>();
+        row.put("agent_run_id", uuidToString(effectiveRunId));
+        row.put("call_id", uuidToString(c.callId()));
+        row.put("parent_call_id", c.parentCallId() != null ? c.parentCallId().toString() : null);
         row.put("session_id", nullToEmpty(c.sessionId()));
         row.put("request_id", c.requestId());
         row.put("thread_name", nullToEmpty(c.threadName()));
@@ -139,18 +207,59 @@ public class ClickHouseSink implements RecordSink {
         callBuffer.add(row);
     }
 
-    private static Map<String, Object> payloadRow(ParsedCall c, String kind, String json) {
+    private static Map<String, Object> payloadRow(ParsedCall c, UUID effectiveRunId, String kind, String json) {
         Map<String, Object> row = new LinkedHashMap<>();
+        row.put("agent_run_id", uuidToString(effectiveRunId));
+        row.put("call_id", uuidToString(c.callId()));
         row.put("session_id", nullToEmpty(c.sessionId()));
         row.put("request_id", c.requestId());
         row.put("ts_in", formatTime(c.tsInMillis()));
         row.put("signature", nullToEmpty(c.signature()));
         row.put("kind", kind);
         row.put("payload_json", json);
+        row.put("payload_size", json != null ? json.getBytes(StandardCharsets.UTF_8).length : 0);
         row.put("root_hash", extractRootHash(json));
         row.put("object_ids", collectIds(json));
         return row;
     }
+
+    /** ClickHouse UUID columns are non-nullable; the all-zero UUID is the agreed sentinel for null. */
+    private static String uuidToString(UUID id) {
+        return id != null ? id.toString() : "00000000-0000-0000-0000-000000000000";
+    }
+
+    // --- agent_runs / sessions row builders ---
+
+    private static Map<String, Object> agentRunRow(AgentRunMetadata m) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("agent_run_id", uuidToString(m.agentRunId()));
+        row.put("hostname",       nullToEmpty(m.hostname()));
+        row.put("jvm_pid",        m.jvmPid());
+        row.put("agent_version",  nullToEmpty(m.agentVersion()));
+        row.put("code_version",   nullToEmpty(m.codeVersion()));
+        row.put("env",            nullToEmpty(m.env()));
+        row.put("started_at",     formatTime(m.startedAtMillis()));
+        row.put("ended_at",       null);
+        row.put("completed_clean", false);
+        return row;
+    }
+
+    private void noteSessionIfNew(ParsedCall c, UUID effectiveRunId) {
+        SessionKey key = new SessionKey(effectiveRunId, c.sessionId() != null ? c.sessionId() : "");
+        if (seenSessions.add(key)) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("session_id",   key.sessionId());
+            row.put("agent_run_id", uuidToString(key.agentRunId()));
+            row.put("first_seen",   formatTime(c.tsInMillis()));
+            row.put("last_seen",    formatTime(c.tsOutMillis()));
+            sessionBuffer.add(row);
+        }
+        // Updating last_seen on each call would generate one row per call —
+        // ReplacingMergeTree-friendly but wasteful. Defer until we have a
+        // concrete query that needs accurate last_seen on the live row.
+    }
+
+    private record SessionKey(UUID agentRunId, String sessionId) {}
 
     private static String extractRootHash(String hashedJson) {
         try {
@@ -198,6 +307,14 @@ public class ClickHouseSink implements RecordSink {
     }
 
     private void flushLocked() {
+        if (!agentRunBuffer.isEmpty()) {
+            postJsonEachRow(insertAgentRunsUri, agentRunBuffer);
+            agentRunBuffer.clear();
+        }
+        if (!sessionBuffer.isEmpty()) {
+            postJsonEachRow(insertSessionsUri, sessionBuffer);
+            sessionBuffer.clear();
+        }
         if (!callBuffer.isEmpty()) {
             postJsonEachRow(insertCallsUri, callBuffer);
             callBuffer.clear();

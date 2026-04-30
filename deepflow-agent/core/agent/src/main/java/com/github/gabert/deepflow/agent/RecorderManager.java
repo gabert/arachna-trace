@@ -1,17 +1,35 @@
 package com.github.gabert.deepflow.agent;
 
+import com.github.gabert.deepflow.recorder.AgentRun;
 import com.github.gabert.deepflow.recorder.buffer.RecordBuffer;
 import com.github.gabert.deepflow.recorder.buffer.UnboundedRecordBuffer;
 import com.github.gabert.deepflow.recorder.destination.Destination;
 import com.github.gabert.deepflow.recorder.destination.DestinationRegistry;
 import com.github.gabert.deepflow.recorder.destination.RecordDrainer;
+import com.github.gabert.deepflow.recorder.record.RecordWriter;
 
 import java.io.IOException;
+import java.net.InetAddress;
+import java.util.UUID;
 
 /**
  * Owns the recorder lifecycle: buffer, drainer, destination, and shutdown hook.
+ *
+ * <p>At startup, generates a per-JVM {@link AgentRun} (UUID + environment),
+ * hands it to the destination via {@link Destination#setAgentRun}, and emits
+ * the {@code VR} (wire-format version) record. The agent-run identity travels
+ * as transport metadata (HTTP / Kafka headers, file sidecar) — there is no
+ * per-record stamping and no {@code RH} wire record.</p>
  */
 public final class RecorderManager {
+    /**
+     * Agent build version stamped onto every {@link AgentRun}. Kept in sync
+     * with the project's POM version manually for now; once the agent JAR
+     * carries a populated {@code Implementation-Version} manifest entry we
+     * should switch to reading it from {@code Package.getImplementationVersion()}.
+     */
+    static final String AGENT_VERSION = "0.0.1-SNAPSHOT";
+
     private final RecordBuffer buffer;
     private final RecordDrainer drainer;
     private final Destination destination;
@@ -26,6 +44,20 @@ public final class RecorderManager {
         try {
             Destination destination = DestinationRegistry.create(
                     config.getDestination(), config.getConfigMap());
+
+            AgentRun agentRun = buildAgentRun(config);
+            destination.setAgentRun(agentRun);
+
+            // Emit the version banner on the calling thread, before the
+            // drainer thread starts — destination implementations
+            // (e.g. FileDestination) are not synchronized; the drainer
+            // will become the sole writer once started.
+            try {
+                destination.accept(RecordWriter.version());
+            } catch (Throwable t) {
+                System.err.println("[DeepFlow] Error emitting startup records: " + t.getMessage());
+                t.printStackTrace();
+            }
 
             RecordBuffer buffer = new UnboundedRecordBuffer();
             RecordDrainer drainer = new RecordDrainer(buffer, destination);
@@ -43,6 +75,27 @@ public final class RecorderManager {
 
     public RecordBuffer getBuffer() {
         return buffer;
+    }
+
+    // --- Startup record assembly ---
+
+    private static AgentRun buildAgentRun(AgentConfig config) {
+        return new AgentRun(
+                UUID.randomUUID(),
+                resolveHostname(),
+                AGENT_VERSION,
+                config.getCodeVersion(),
+                config.getEnv(),
+                ProcessHandle.current().pid(),
+                System.currentTimeMillis());
+    }
+
+    private static String resolveHostname() {
+        try {
+            return InetAddress.getLocalHost().getHostName();
+        } catch (Throwable t) {
+            return "unknown";
+        }
     }
 
     // --- Lifecycle ---

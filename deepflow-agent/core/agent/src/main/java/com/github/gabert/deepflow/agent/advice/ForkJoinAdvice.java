@@ -5,6 +5,8 @@ import com.github.gabert.deepflow.agent.bootstrap.PropagatingRunnable;
 import com.github.gabert.deepflow.agent.bootstrap.RequestContext;
 import net.bytebuddy.asm.Advice;
 
+import java.util.UUID;
+
 public class ForkJoinAdvice {
 
     public static class ExecuteRunnable {
@@ -14,7 +16,8 @@ public class ForkJoinAdvice {
 
             long requestId = RequestContext.CURRENT_REQUEST_ID.get()[0];
             if (requestId != 0L) {
-                runnable = new PropagatingRunnable(runnable, requestId);
+                UUID parentCallId = RequestContext.peekParentCallId();
+                runnable = new PropagatingRunnable(runnable, requestId, parentCallId);
             }
         }
     }
@@ -26,7 +29,8 @@ public class ForkJoinAdvice {
 
             long requestId = RequestContext.CURRENT_REQUEST_ID.get()[0];
             if (requestId != 0L) {
-                callable = new PropagatingCallable<>(callable, requestId);
+                UUID parentCallId = RequestContext.peekParentCallId();
+                callable = new PropagatingCallable<>(callable, requestId, parentCallId);
             }
         }
     }

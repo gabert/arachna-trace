@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Stream;
 
 /**
@@ -58,9 +59,26 @@ public class RequestRecorder {
 
     // --- Record entry ---
 
-    public void recordEntry(Method method, Object self, Object[] allArguments) {
-        if (recordBuffer == null) return;
+    /**
+     * Records a method entry. Returns {@code true} iff the entry was fully
+     * committed (the call's UUID has been pushed onto {@link RequestContext#CALL_STACK}
+     * <em>and</em> the {@code MS} record has been queued). Callers (the
+     * ByteBuddy advice in {@code DeepFlowAdvice}) MUST call
+     * {@link #recordExit} <em>only</em> when this method returns {@code true}.
+     *
+     * <p>This contract makes the agent bulletproof against partial-record
+     * cascades: a failure during entry leaves the stack and depth in the
+     * exact pre-entry state, and the matching exit is suppressed — so no
+     * subsequent call ever pairs against a wrong UUID. Worst case is a
+     * dropped (silently ignored) call; never a wrong one.</p>
+     */
+    public boolean recordEntry(Method method, Object self, Object[] allArguments) {
+        if (recordBuffer == null) return false;
         spi.initJpaProxyResolverOnce();
+
+        UUID callId;
+        byte[] record;
+        boolean depthIncremented = false;
         try {
             String signature = MethodSignatureFormatter.format(method);
             String threadName = Thread.currentThread().getName();
@@ -77,23 +95,40 @@ public class RequestRecorder {
             String sessionId = spi.getSessionIdResolver().resolve();
 
             long requestId = RequestContext.beginRequest();
+            depthIncremented = true;
 
-            byte[] record;
+            UUID parentCallId = RequestContext.peekParentCallId();
+            callId = UUID.randomUUID();
+
             if (serializeValues) {
                 Object selfForCapture = emitTi ? self : null;
                 Object[] argsForCapture = emitAr ? allArguments : null;
                 record = buildSerializedEntry(sessionId, signature, threadName, timestamp, callerLine,
-                        requestId, selfForCapture, argsForCapture);
+                        requestId, callId, parentCallId, selfForCapture, argsForCapture);
             } else {
                 record = RecordWriter.logEntrySimple(sessionId, signature, threadName, timestamp, callerLine,
-                        requestId);
+                        requestId, callId, parentCallId);
             }
-
-            recordBuffer.offer(record);
         } catch (Throwable t) {
+            // Roll back depth so the next root entry on this thread still
+            // generates a fresh request id at depth==0. CALL_STACK is
+            // untouched (push has not happened yet), so nothing to roll back
+            // there.
+            if (depthIncremented) {
+                RequestContext.endRequest();
+            }
             System.err.println("Error recording entry.");
             t.printStackTrace();
+            return false;
         }
+
+        // From here on, both operations are infallible — Deque.push() and
+        // RecordBuffer.offer() do not throw. So once we get past the try
+        // block above, the contract (push-and-emit happen together) is
+        // guaranteed.
+        RequestContext.pushCallId(callId);
+        recordBuffer.offer(record);
+        return true;
     }
 
     // --- Record exit ---
@@ -101,6 +136,13 @@ public class RequestRecorder {
     public void recordExit(Method method, Object returned, Throwable throwable,
                            Object[] allArguments) {
         if (recordBuffer == null) return;
+        // Pop FIRST and bail if empty: the bulletproof contract guarantees
+        // recordExit is only called after a successful recordEntry pushed,
+        // but a contract violation (e.g. advice misfire) would otherwise
+        // emit a wrong-id ME and double-decrement depth. Abort before any
+        // state mutation so we degrade silently rather than corrupting.
+        UUID callId = RequestContext.popCallId();
+        if (callId == null) return;
         long requestId = RequestContext.endRequest();
         try {
             String threadName = Thread.currentThread().getName();
@@ -124,14 +166,14 @@ public class RequestRecorder {
                             : RecordWriter.returnValue(valueEncoder.encode(returned));
                 }
 
-                byte[] endRecord = RecordWriter.methodEnd(sessionId, threadName, timestamp, requestId);
+                byte[] endRecord = RecordWriter.methodEnd(sessionId, threadName, timestamp, requestId, callId);
                 byte[] exitArgsRecord = exitArgsCbor != null
                         ? RecordWriter.argumentsExit(exitArgsCbor)
                         : new byte[0];
 
                 record = BinaryUtil.concat(endRecord, returnRecord, exitArgsRecord);
             } else {
-                record = RecordWriter.logExitSimple(sessionId, threadName, timestamp, requestId);
+                record = RecordWriter.logExitSimple(sessionId, threadName, timestamp, requestId, callId);
             }
             recordBuffer.offer(record);
         } catch (Throwable t) {
@@ -145,9 +187,10 @@ public class RequestRecorder {
     private byte[] buildSerializedEntry(String sessionId, String signature, String threadName,
                                          long timestamp, int callerLine,
                                          long requestId,
+                                         UUID callId, UUID parentCallId,
                                          Object self, Object[] allArguments) throws IOException {
         byte[] startRecord = RecordWriter.logEntrySimple(sessionId, signature, threadName, timestamp, callerLine,
-                requestId);
+                requestId, callId, parentCallId);
 
         byte[] thisRecord = null;
         if (self != null) {

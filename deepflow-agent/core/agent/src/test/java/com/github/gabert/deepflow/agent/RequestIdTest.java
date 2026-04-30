@@ -5,10 +5,12 @@ import com.github.gabert.deepflow.agent.bootstrap.RequestContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -18,6 +20,7 @@ class RequestIdTest {
     void resetThreadLocals() {
         RequestContext.CURRENT_REQUEST_ID.get()[0] = 0L;
         RequestContext.DEPTH.get()[0] = 0;
+        RequestContext.CALL_STACK.get().clear();
     }
 
     // --- Layer 1: depth-based request ID ---
@@ -114,7 +117,7 @@ class RequestIdTest {
         Runnable task = new PropagatingRunnable(() -> {
             capturedId.set(RequestContext.CURRENT_REQUEST_ID.get()[0]);
             latch.countDown();
-        }, parentId);
+        }, parentId, null);
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         executor.execute(task);
@@ -140,7 +143,7 @@ class RequestIdTest {
 
         Runnable task = new PropagatingRunnable(() -> {
             // Inside the task, state is set
-        }, parentId);
+        }, parentId, null);
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         // Run the propagating task, then check state is restored
@@ -177,7 +180,7 @@ class RequestIdTest {
 
         Runnable task = new PropagatingRunnable(() -> {
             throw new RuntimeException("boom");
-        }, parentId);
+        }, parentId, null);
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         executor.execute(() -> {
@@ -194,6 +197,92 @@ class RequestIdTest {
         assertEquals(0, depthAfter.get());
 
         simulateExit(depth);
+    }
+
+    // --- Layer 3: PropagatingRunnable carries parent call_id ---
+
+    @Test
+    void propagatingRunnableSeedsCallStackWithParent() throws Exception {
+        UUID parentCallId = UUID.randomUUID();
+        AtomicReference<UUID> capturedParent = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+
+        Runnable task = new PropagatingRunnable(() -> {
+            // First "traced method" on the worker thread peeks for its parent
+            capturedParent.set(RequestContext.peekParentCallId());
+            latch.countDown();
+        }, 42L, parentCallId);
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        executor.execute(task);
+        latch.await();
+        executor.shutdown();
+
+        assertEquals(parentCallId, capturedParent.get());
+    }
+
+    @Test
+    void propagatingRunnableRestoresCallStackOnExit() throws Exception {
+        // Pre-populate the submitting thread's stack with a UUID to verify
+        // that the worker thread's swap doesn't bleed back here.
+        UUID outerCall = UUID.randomUUID();
+        RequestContext.pushCallId(outerCall);
+
+        UUID seededParent = UUID.randomUUID();
+        CountDownLatch latch = new CountDownLatch(1);
+
+        // Simulate a worker thread that runs a propagated task, then checks
+        // that its own thread-local stack is fully restored afterwards.
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        AtomicReference<Boolean> stackEmptyAfter = new AtomicReference<>();
+        executor.execute(() -> {
+            // The worker thread starts with an empty CALL_STACK.
+            assertTrue(RequestContext.CALL_STACK.get().isEmpty());
+
+            Runnable task = new PropagatingRunnable(() -> {
+                // Inside the task: stack is seeded with parent
+                assertEquals(seededParent, RequestContext.peekParentCallId());
+                // Push another call to simulate a real traced method
+                RequestContext.pushCallId(UUID.randomUUID());
+            }, 42L, seededParent);
+
+            task.run();
+
+            // After the task: worker's stack must be back to empty
+            stackEmptyAfter.set(RequestContext.CALL_STACK.get().isEmpty());
+            latch.countDown();
+        });
+        latch.await();
+        executor.shutdown();
+
+        assertTrue(stackEmptyAfter.get(),
+                "Worker's CALL_STACK must be restored to its prior state after runScoped");
+
+        // Submitter's stack still has its outer call — async swap must not have touched it
+        assertEquals(outerCall, RequestContext.peekParentCallId());
+        RequestContext.popCallId();
+    }
+
+    @Test
+    void propagatingRunnableWithNullParentLeavesStackEmpty() throws Exception {
+        AtomicReference<UUID> capturedParent = new AtomicReference<>();
+        AtomicLong stackSizeOnEntry = new AtomicLong(-1);
+        CountDownLatch latch = new CountDownLatch(1);
+
+        Runnable task = new PropagatingRunnable(() -> {
+            stackSizeOnEntry.set(RequestContext.CALL_STACK.get().size());
+            capturedParent.set(RequestContext.peekParentCallId());
+            latch.countDown();
+        }, 42L, null);
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        executor.execute(task);
+        latch.await();
+        executor.shutdown();
+
+        assertEquals(0L, stackSizeOnEntry.get(),
+                "null parentCallId means the stack starts empty on the worker");
+        assertNull(capturedParent.get());
     }
 
     // --- Helpers mimicking DeepFlowAdvice.recordEntry/recordExit logic ---

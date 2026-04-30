@@ -1,21 +1,29 @@
 package com.github.gabert.deepflow.recorder.record;
 
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 /**
- * Method-exit record. Pairs with the preceding {@link MethodStartRecord} via
- * {@code requestId}.
+ * Method-exit record. Pairs with the preceding {@link MethodStartRecord}
+ * via {@code callId}.
  *
  * <p>Payload layout:
- * {@code [sidLen:short][sid][tnLen:short][tn][timestamp:long][requestId:long]}.</p>
+ * {@code [sidLen:short][sid][tnLen:short][tn][timestamp:long][requestId:long]
+ *        [callId:16]}.</p>
  *
- * <p>{@code sessionId} may be null; encoded as zero-length on the wire.</p>
+ * <p>{@code sessionId} may be null; encoded as zero-length on the wire.
+ * {@code callId} is required.</p>
+ *
+ * <p>Agent-run identity is carried at the transport layer (HTTP / Kafka
+ * headers, file sidecar) — see {@link com.github.gabert.deepflow.recorder.AgentRun}.
+ * It is no longer in the record payload.</p>
  */
 public record MethodEndRecord(
         String sessionId,
         String threadName,
         long timestamp,
-        long requestId
+        long requestId,
+        UUID callId
 ) implements TraceRecord {
 
     public static final byte TYPE = RecordType.METHOD_END;
@@ -34,7 +42,8 @@ public record MethodEndRecord(
                 RecordType.SESSION_ID_LENGTH_SIZE + sidBytes.length
                         + RecordType.THREAD_NAME_LENGTH_SIZE + tnBytes.length
                         + RecordType.TIMESTAMP_SIZE
-                        + RecordType.REQUEST_ID_SIZE];
+                        + RecordType.REQUEST_ID_SIZE
+                        + RecordType.UUID_SIZE];
         int pos = 0;
         pos = BinaryUtil.putShort(payload, pos, (short) sidBytes.length);
         System.arraycopy(sidBytes, 0, payload, pos, sidBytes.length);
@@ -43,7 +52,8 @@ public record MethodEndRecord(
         System.arraycopy(tnBytes, 0, payload, pos, tnBytes.length);
         pos += tnBytes.length;
         pos = BinaryUtil.putLong(payload, pos, timestamp);
-        BinaryUtil.putLong(payload, pos, requestId);
+        pos = BinaryUtil.putLong(payload, pos, requestId);
+        BinaryUtil.putUuid(payload, pos, callId);
         return payload;
     }
 
@@ -60,6 +70,8 @@ public record MethodEndRecord(
         long timestamp = BinaryUtil.getLong(payload, pos);
         pos += RecordType.TIMESTAMP_SIZE;
         long requestId = BinaryUtil.getLong(payload, pos);
-        return new MethodEndRecord(sessionId, threadName, timestamp, requestId);
+        pos += RecordType.REQUEST_ID_SIZE;
+        UUID callId = BinaryUtil.getNullableUuid(payload, pos);
+        return new MethodEndRecord(sessionId, threadName, timestamp, requestId, callId);
     }
 }

@@ -67,6 +67,7 @@ class DeepFlowAdviceRecordingTest {
         DeepFlowAdvice.RECORDER = null;
         RequestContext.CURRENT_REQUEST_ID.get()[0] = 0L;
         RequestContext.DEPTH.get()[0] = 0;
+        RequestContext.CALL_STACK.get().clear();
     }
 
     // ==================== BASIC RECORDING ====================
@@ -267,7 +268,7 @@ class DeepFlowAdviceRecordingTest {
             recorder.recordEntry(intMethod, new ArrayList<>(), new Object[]{});
             recorder.recordExit(intMethod, 0, null, new Object[]{});
             latch.countDown();
-        }, parentRequestId);
+        }, parentRequestId, RequestContext.peekParentCallId());
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         executor.execute(task);
@@ -301,7 +302,7 @@ class DeepFlowAdviceRecordingTest {
             recorder.recordExit(objectMethod, null, null, new Object[]{"k"});
             recorder.recordExit(intMethod, 0, null, new Object[]{});
             latch.countDown();
-        }, parentRequestId);
+        }, parentRequestId, RequestContext.peekParentCallId());
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         executor.execute(task);
@@ -496,6 +497,94 @@ class DeepFlowAdviceRecordingTest {
         List<String> exit = renderNext();
         assertFalse(findTag(exit, "RE").contains("__truncated"),
                 "No truncation when max_value_size=0");
+    }
+
+    // ==================== BULLETPROOF ENTRY/EXIT CONTRACT ====================
+
+    @Test
+    void recordExitWithoutMatchingEntryIsSilentlyIgnored() {
+        // Defensive against contract violation (B-01 in KNOWN_BUGS.md):
+        // if recordExit somehow runs without a matching recordEntry having
+        // pushed a UUID onto CALL_STACK, it must abort before mutating any
+        // state — not emit a wrong-id ME, not decrement depth.
+        int priorDepth = RequestContext.DEPTH.get()[0];
+        int priorStackSize = RequestContext.CALL_STACK.get().size();
+
+        recorder.recordExit(voidMethod, null, null, new Object[]{});
+
+        assertEquals(priorDepth, RequestContext.DEPTH.get()[0],
+                "DEPTH must be unchanged when recordExit runs without a matching entry");
+        assertEquals(priorStackSize, RequestContext.CALL_STACK.get().size(),
+                "CALL_STACK must be unchanged");
+        assertNull(buffer.poll(),
+                "no record may be enqueued when there's no matching entry");
+    }
+
+    @Test
+    void failedEntryReturnsFalseAndLeavesStateUntouched() throws Exception {
+        // Inject a session resolver that throws so recordEntry's try-block fails.
+        SessionIdResolver throwingResolver = new SessionIdResolver() {
+            @Override public String name() { return "throwing"; }
+            @Override public String resolve() { throw new RuntimeException("simulated SPI failure"); }
+        };
+        setSpiField("sessionIdResolver", throwingResolver);
+
+        int priorDepth = RequestContext.DEPTH.get()[0];
+        int priorStackSize = RequestContext.CALL_STACK.get().size();
+
+        boolean recorded = recorder.recordEntry(voidMethod, new ArrayList<>(), new Object[]{});
+
+        assertFalse(recorded,
+                "recordEntry must return false when its try-block throws");
+        assertEquals(priorDepth, RequestContext.DEPTH.get()[0],
+                "DEPTH must be unchanged when entry fails (no rollback debt)");
+        assertEquals(priorStackSize, RequestContext.CALL_STACK.get().size(),
+                "CALL_STACK must be unchanged when entry fails (push never happened)");
+        assertNull(buffer.poll(),
+                "no record may be enqueued when entry fails");
+    }
+
+    @Test
+    void failedEntryDoesNotPoisonSubsequentCalls() throws Exception {
+        // After a failed entry, the next entry on the same thread must be
+        // recorded normally with parentCallId == null (no leftover from
+        // the failed attempt) and stack must drain to empty after exit.
+        SessionIdResolver throwingResolver = new SessionIdResolver() {
+            @Override public String name() { return "throwing"; }
+            @Override public String resolve() { throw new RuntimeException("boom"); }
+        };
+        setSpiField("sessionIdResolver", throwingResolver);
+
+        boolean failed = recorder.recordEntry(voidMethod, new ArrayList<>(), new Object[]{});
+        assertFalse(failed);
+        assertNull(buffer.poll(), "failed entry left a phantom record in the buffer");
+
+        // Restore a working resolver and run a normal call.
+        setSpiField("sessionIdResolver", NOOP_RESOLVER);
+
+        boolean ok = recorder.recordEntry(voidMethod, new ArrayList<>(), new Object[]{});
+        assertTrue(ok, "subsequent entry must succeed despite the prior failure");
+        recorder.recordExit(voidMethod, null, null, new Object[]{});
+
+        // Exactly one MS+ME pair should be in the buffer — no orphan from the failed entry.
+        List<String> entry = renderNext();
+        assertTrue(hasTag(entry, "MS"));
+        // parent must be absent (top-level call, no leftover UUID from the failed push)
+        assertFalse(hasTag(entry, "PI"),
+                "first entry after failure must have no parent — failed entry must not have pushed");
+
+        List<String> exit = renderNext();
+        assertTrue(hasTag(exit, "TE"));
+
+        // The MS callId must equal the ME callId — pairing intact
+        assertEquals(findTag(entry, "CI"), findTag(exit, "CI"),
+                "MS and ME must pair via callId");
+
+        assertBufferEmpty();
+        assertEquals(0, RequestContext.DEPTH.get()[0],
+                "depth must drain to zero after the successful pair");
+        assertTrue(RequestContext.CALL_STACK.get().isEmpty(),
+                "stack must drain to empty after the successful pair");
     }
 
     // ==================== HELPERS ====================

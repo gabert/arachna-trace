@@ -3,9 +3,12 @@ package com.github.gabert.deepflow.server;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.Properties;
 
 public class KafkaRecordForwarder {
@@ -25,8 +28,18 @@ public class KafkaRecordForwarder {
         this.producer = new KafkaProducer<>(props);
     }
 
-    public void send(byte[] rawRecords) {
+    /**
+     * Forward one HTTP-batch payload to Kafka. {@code agentHeaders} carries the
+     * agent-run identity ({@link com.github.gabert.deepflow.recorder.AgentRun.Headers})
+     * lifted from the HTTP request, copied verbatim onto the Kafka record so the
+     * processor can attribute the body without parsing it.
+     */
+    public void send(byte[] rawRecords, Map<String, String> agentHeaders) {
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(topic, rawRecords);
+        Headers headers = record.headers();
+        for (Map.Entry<String, String> e : agentHeaders.entrySet()) {
+            headers.add(e.getKey(), e.getValue().getBytes(StandardCharsets.UTF_8));
+        }
         producer.send(record, (metadata, exception) -> {
             if (exception != null) {
                 System.err.println("[DeepFlow] Kafka send failed: " + exception.getMessage());
