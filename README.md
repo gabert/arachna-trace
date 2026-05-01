@@ -188,16 +188,29 @@ A trace fragment looks like this:
 VR;1.3
 TS;1730412345678
 SI;alice-session-01
-MS;com.example::BookService.findByAuthor(long) -> java.util::List [public]
+MS;com.example::Pricing.applyDiscount(int, int) -> int [public static]
 TN;http-nio-8080-exec-3
 RI;5
 CL;42
-TI;17
-AR;[3]
-TE;1730412345712
+AR;[100, 10]
+TE;1730412345680
 RT;VALUE
-RE;[{"object_id":101,"class":"java.util.ArrayList","value":[...]}]
+RE;1000
 ```
+
+How to read it. The first line is the wire-format version. Then comes
+the entry block: at timestamp `TS` (epoch ms), inside session
+`alice-session-01`, on thread `http-nio-8080-exec-3` as part of
+request `RI=5`, the method `Pricing.applyDiscount` was called from
+caller line 42 with arguments `[100, 10]` — price 100, discount
+percent 10. The exit block records that the call returned 2 ms later
+with the value `1000`.
+
+The bug is visible directly. A 10% discount on a price of 100 should
+return 90, not 1000 — `applyDiscount` is multiplying where it should
+be subtracting. Finding this without the trace would typically mean
+adding a print statement to that method and running the scenario
+again.
 
 For Spring Boot, attach via the Maven plugin:
 
