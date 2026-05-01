@@ -121,14 +121,15 @@ max_value_size=0
 
 ### emit_tags
 
-Controls which trace record tags are emitted. Comma-separated list. `MS`
-(method signature), `TS` (entry timestamp), and `TE` (exit timestamp) are
-always emitted regardless of this setting.
+Controls which trace record tags are emitted. Comma-separated list.
+`MS` (method signature) is always emitted regardless of this setting --
+every call must be identifiable by signature. Every other tag, including
+`TS` and `TE`, is filtered exactly as listed.
 
 When a tag is disabled, the agent skips both serialization and output -- no
 runtime cost for disabled tags.
 
-Available tags: `SI`, `TN`, `RI`, `TS`, `CL`, `TI`, `AR`, `RT`, `RE`, `TE`, `AX`.
+Available tags: `SI`, `TN`, `RI`, `TS`, `CL`, `CI`, `PI`, `TI`, `AR`, `RT`, `RE`, `TE`, `AX`.
 
 See [Trace Format](spec/TAGS.md) for tag descriptions.
 
@@ -136,8 +137,8 @@ See [Trace Format](spec/TAGS.md) for tag descriptions.
 # Default (no AX)
 emit_tags=SI,TN,RI,TS,CL,TI,AR,RT,RE,TE
 
-# With mutation detection
-emit_tags=SI,TN,RI,TS,CL,TI,AR,RT,RE,TE,AX
+# With mutation detection and call-id pairing
+emit_tags=SI,TN,RI,TS,CL,CI,PI,TI,AR,RT,RE,TE,AX
 
 # Minimal structural trace
 emit_tags=TN,RI,TS,CL,TE
@@ -176,8 +177,9 @@ session_resolver=config
 
 ### session_id
 
-Custom session ID used by the `config` resolver. Published as system property
-`deepflow.session_id` at startup.
+Static session ID used by the `config` resolver. The resolver reads this
+value from the agent config map at startup (via its `init(Map)` SPI hook)
+and returns it from every `resolve()` call.
 
 ```properties
 session_id=my-debug-run-01

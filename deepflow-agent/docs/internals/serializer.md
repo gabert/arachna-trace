@@ -61,7 +61,7 @@ output directory `SESSION-<timestamp>/` under `session_dump_location`. Each
 thread gets its own file: `<timestamp>-<threadname>.dft`.
 
 The first record written to each file is a `VERSION` record (rendered as
-`VR;1.1`).
+`VR;1.3`).
 
 Files are flushed after each record -- traces are readable while the
 application is still running.
@@ -82,7 +82,9 @@ CBOR payloads are decoded via `Codec.decode()` + `Codec.toReadableJson()`.
 
 1. Create a class implementing `Destination` in the `destination` package.
 2. Constructor accepts `Map<String, String>` config.
-3. Register in `RecorderManager.createDestination()` in the agent module.
+3. Add a single entry to the `DestinationRegistry.FACTORIES` map (in the
+   serializer module) mapping the new `destination=` config name to a
+   constructor reference.
 
 The destination receives raw `byte[]` records -- forward as-is for binary
 transport, or decode via `RecordReader` / `RecordRenderer` for text.

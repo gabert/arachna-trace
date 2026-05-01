@@ -98,7 +98,9 @@ Key source locations:
 - `RequestContext.CURRENT_REQUEST_ID` -- per-thread current request ID
 - `RequestContext.DEPTH` -- per-thread call depth
 - `RequestContext.REQUEST_COUNTER` -- global atomic counter
-- `RecordWriter.methodStart()` / `methodEnd()` -- requestId in binary payload
+- `RecordWriter.logEntrySimple()` (or its `buildSerializedEntry`
+  caller) and `RecordWriter.methodEnd()` -- requestId encoded into the
+  METHOD_START / METHOD_END binary payloads
 - `RecordRenderer` -- renders RI tag from both METHOD_START and METHOD_END
 
 For details on how cross-thread propagation works at the JVM level

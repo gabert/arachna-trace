@@ -48,7 +48,9 @@ thread?"
 
 ## How branching works internally
 
-The branching happens in `DeepFlowAdvice.recordEntry` / `recordExit`:
+The branching happens in `RequestRecorder.recordEntry` / `recordExit`
+(the per-call recording owner; `DeepFlowAdvice` is just the static
+facade that delegates to it):
 
 - `serialize_values=true` calls `buildSerializedEntry()` which invokes
   `RecordWriter.logEntrySimple()` + `RecordWriter.thisInstance()` /

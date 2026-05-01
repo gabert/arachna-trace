@@ -16,15 +16,18 @@ diverges depending on `destination=file` (local) or `destination=http`
 -javaagent flag
   -> DeepFlowAgent.premain()           Load config, set up ByteBuddy
     -> AgentConfig                     Parse deepagent.cfg + CLI args
-    -> DeepFlowAdvice (ByteBuddy)      Installed on matched classes/methods
-      -> onEnter()                     Capture method args + object IDs
-      -> onExit()                      Capture return value, exceptions
-        -> Codec.encode()              Serialize to CBOR with identity envelopes
-          -> RecordWriter              Produce binary record frames
-            -> RecordBuffer            Enqueue for async draining
-              -> RecordDrainer         Poll buffer, deliver to destination
-                -> FileDestination     Write per-thread .dft files (local mode)
-                -> HttpDestination     POST batched binary frames to collector
+    -> DeepFlowAdvice (ByteBuddy)      Thin static facade installed on matched
+                                       classes/methods; reads RECORDER and
+                                       delegates to the live RequestRecorder
+      -> RequestRecorder.recordEntry/recordExit()
+                                       Per-call recording owner
+        -> ValueEncoder.encode()       Wraps Codec.encode() with truncation cap
+          -> Codec.encode()            Serialize to CBOR with identity envelopes
+        -> RecordWriter                Produce binary record frames
+          -> RecordBuffer              Enqueue for async draining
+            -> RecordDrainer           Poll buffer, deliver to destination
+              -> FileDestination       Write per-thread .dft files (local mode)
+              -> HttpDestination       POST batched binary frames to collector
                                        (centralised mode -- see below)
 ```
 
@@ -124,9 +127,14 @@ full explanation.
 ### Agent's own packages excluded from instrumentation
 
 The agent must never instrument its own classes. `DeepFlowAgent` adds
-`com.github.gabert.deepflow` to the exclusion list to prevent infinite
-recursion (instrumented method -> recordEntry -> Codec.encode ->
-instrumented again -> ...).
+four prefixes to the exclusion list to prevent infinite recursion
+(instrumented method -> recordEntry -> Codec.encode -> instrumented
+again -> ...):
+
+- `com.github.gabert.deepflow.agent`
+- `com.github.gabert.deepflow.recorder`
+- `com.github.gabert.deepflow.codec`
+- `com.github.gabert.deepflow.shaded`
 
 ### Dependency shading
 

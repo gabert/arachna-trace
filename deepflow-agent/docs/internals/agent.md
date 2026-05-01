@@ -1,8 +1,8 @@
 # Agent Module
 
 The agent module is the entry point of DeepFlow. It is a Java agent that
-attaches to a target application via `-javaagent` and instruments selected
-classes at load time using ByteBuddy.
+attaches to a target application via `-javaagent` and instruments
+selected classes at load time using ByteBuddy.
 
 The agent produces binary records (see [WIRE-FORMAT.md](../spec/WIRE-FORMAT.md))
 and offers them to an in-memory buffer. A background drainer thread delivers
@@ -16,116 +16,169 @@ JVM loads -javaagent
     1. AgentConfig.getInstance(agentArgs)        Parse config file + CLI args
     2. IF propagate_request_id:
          injectBootstrapClasses()                Inject RequestContext + wrappers
-         redefineModule(java.base)               Grant module access
-    3. DeepFlowAdvice.setup(config)              Initialize advice statics
-       -> RecorderManager.create(config)         Create buffer, destination, drainer
-          -> Register JVM shutdown hook           Ensures drain + close on exit
-    4. Build ByteBuddy type matchers              From matchers_include / matchers_exclude
-    5. Install advice on instrumentation          Intercepts matched methods at class load
-    6. IF propagate_request_id:
+                                                 into the bootstrap classloader
+         redefineModule(java.base)               Grant java.base reads access
+                                                 to the unnamed module
+    3. RecorderManager.create(config)            Build destination, emit VR record,
+                                                 start drainer, register shutdown hook
+    4. DeepFlowAdvice.setup(new RequestRecorder( Wire the recorder into the
+                manager.getBuffer(), config))    inlined-advice's static slot
+    5. Build ByteBuddy type matchers              From matchers_include / matchers_exclude
+    6. Install advice on instrumentation          Intercepts matched methods at class load
+    7. IF propagate_request_id:
          installExecutorInstrumentation()        Retransform ThreadPoolExecutor, ForkJoinPool
 
-  On first instrumented method entry (deferred from startup):
-    7. Load SessionIdResolver via SPI             Lazy, uses context classloader
-    8. Load JpaProxyResolver via SPI              Lazy, registers with Codec
+  Lazy, on first instrumented method entry:
+    8. SpiBootstrap.getSessionIdResolver()       Load + init() the SessionIdResolver
+    9. SpiBootstrap.initJpaProxyResolverOnce()   Load JpaProxyResolver, register with Codec
 ```
 
-Step 2 must happen before step 3. See
+Step 2 must happen before step 4. See
 [Executor Instrumentation](executor-instrumentation.md) for why.
 
-## DeepFlowAdvice static fields
+## DeepFlowAdvice — the inlined-advice slot
 
-The advice class uses static fields because ByteBuddy advice methods must be
-static. Fields are initialized in `setup()` and read on every method
-entry/exit:
+`DeepFlowAdvice` is a thin facade. It carries one writable static field
+— `public static volatile RequestRecorder RECORDER` — and the two
+ByteBuddy advice methods (`onEnter`, `onExit`) that read it. The
+actual recording work lives on `RequestRecorder`, not `DeepFlowAdvice`.
+
+Why split: ByteBuddy advice methods MUST be static, but real recording
+state (config flags, buffer reference, SPI, value encoder) is naturally
+per-instance. The advice reads `RECORDER` and delegates the call to
+the live `RequestRecorder` instance — keeping the inlined bytecode
+small and the configuration owned by a single object.
+
+`onEnter` returns a boolean. ByteBuddy threads it to `onExit` as
+`@Advice.Enter`, so a failed entry suppresses its matching exit and
+the call's UUID never gets pushed onto the stack — preventing
+mismatch cascades.
+
+## RequestRecorder — the recording owner
+
+`RequestRecorder` (in `agent/recording/`) holds the per-call state and
+the flag fields, snapshotted from the config at construction so the hot
+path does not pay a `HashMap` lookup per call:
+
+| Field | Purpose |
+|---|---|
+| `recordBuffer` | The concurrent queue records are offered to |
+| `valueEncoder` | CBOR encoder with truncation cap (`max_value_size`) |
+| `spi` | Lazy `SpiBootstrap` for SessionIdResolver + JpaProxyResolver |
+| `expandThis` | Full `this` vs ref-only |
+| `serializeValues` | Full vs structural-only mode |
+| `emitTi`, `emitAr`, `emitReturnRecord`, `emitAx` | Per-tag serialization gates |
+
+Request-ID and call-stack state lives separately in `RequestContext`
+(in `agent/bootstrap/`, injected into the bootstrap classloader so
+JDK-class advice can see it):
 
 | Field | Type | Purpose |
-|-------|------|---------|
-| `CONFIG` | `AgentConfig` | Full configuration |
-| `RECORD_BUFFER` | `RecordBuffer` | Concurrent queue for binary records |
-| `SERIALIZE_VALUES` | `boolean` | Full serialization vs structural-only |
-| `EXPAND_THIS` | `boolean` | Full `this` vs ref ID only |
-| `EMIT_TI/AR/RT/AX` | `boolean` | Per-tag serialization gates |
-| `MAX_VALUE_SIZE` | `int` | Truncation cap (0 = unlimited) |
-| `SESSION_ID_RESOLVER` | `SessionIdResolver` | Lazily loaded, volatile |
-
-Request ID state lives in `RequestContext` (a separate class injected into
-the bootstrap classloader):
-
-| Field | Type | Purpose |
-|-------|------|---------|
-| `RequestContext.CURRENT_REQUEST_ID` | `ThreadLocal<long[]>` | Per-thread request ID |
+|---|---|---|
+| `RequestContext.REQUEST_COUNTER` | `AtomicLong` | Monotonic request-id source |
+| `RequestContext.CURRENT_REQUEST_ID` | `ThreadLocal<long[]>` | Active request id on this thread |
 | `RequestContext.DEPTH` | `ThreadLocal<int[]>` | Per-thread call depth |
-| `RequestContext.REQUEST_COUNTER` | `AtomicLong` | Global request ID generator |
+| `RequestContext.CALL_STACK` | `ThreadLocal<Deque<UUID>>` | Open-call UUID stack for parent-id resolution |
 
-See [Executor Instrumentation](executor-instrumentation.md) for why these
-fields are in a separate class and how they are injected into bootstrap.
+See [Executor Instrumentation](executor-instrumentation.md) for why
+these fields must live on a separately-injected bootstrap class.
 
 ## Recording flow
 
-### recordEntry(method, self, allArguments)
+### `recordEntry(method, self, allArguments) -> boolean`
 
-1. Format method signature from `java.lang.reflect.Method`
-2. Get thread name, nanosecond timestamp, caller line number (via StackWalker)
-3. Resolve session ID via SPI
-4. If depth == 0: assign new request ID from global counter
-5. Increment depth
-6. If `serialize_values=true`: build METHOD_START + optional THIS_INSTANCE +
-   ARGUMENTS records. Values encoded via `encodeWithLimit()` (truncation-aware).
-7. If `serialize_values=false`: build METHOD_START only
-8. Offer byte[] to buffer
+1. Trigger lazy `JpaProxyResolver` initialization
+   (`SpiBootstrap.initJpaProxyResolverOnce()`).
+2. Format method signature; read thread name; read **epoch-millisecond**
+   timestamp (`System.currentTimeMillis()`); walk caller-frame line
+   number via `StackWalker`.
+3. Resolve session ID via the active `SessionIdResolver`.
+4. `RequestContext.beginRequest()` — increments depth and assigns a
+   new request id when depth was 0.
+5. Read `parentCallId` (top of `CALL_STACK`) and freshly generate this
+   call's UUID.
+6. If `serializeValues=true`: build METHOD_START + optional
+   THIS_INSTANCE / THIS_INSTANCE_REF + ARGUMENTS records, encoding
+   each value via `ValueEncoder.encode()` (which applies the
+   truncation cap).
+7. If `serialize_values=false`: build METHOD_START only.
+8. **Push the new call's UUID onto `CALL_STACK`, then offer the byte[]
+   to the buffer.** Returns true.
 
-### recordExit(method, returned, throwable, allArguments)
+If anything throws before step 8, depth is rolled back, the byte[] is
+not offered, and `false` is returned so `DeepFlowAdvice.onExit` skips
+the matching exit.
 
-1. Read current request ID (before decrementing depth)
-2. Decrement depth
-3. Get thread name, nanosecond timestamp, session ID
-4. If `serialize_values=true`: build METHOD_END + RETURN/EXCEPTION +
-   optional ARGUMENTS_EXIT. Values encoded via `encodeWithLimit()`.
-5. If `serialize_values=false`: build METHOD_END only
-6. Offer byte[] to buffer
+### `recordExit(method, returned, throwable, allArguments)`
 
-### encodeWithLimit(obj)
+1. Pop the call's UUID off `CALL_STACK`. If empty (contract violation),
+   bail without writing — degrade silently rather than corrupt the
+   stream.
+2. `RequestContext.endRequest()` — decrement depth, return the active
+   request id.
+3. Read thread name, epoch-millisecond timestamp, session ID.
+4. If `serializeValues=true`: build METHOD_END + RETURN/EXCEPTION +
+   optional ARGUMENTS_EXIT, encoding values via `ValueEncoder.encode()`.
+5. If `serialize_values=false`: build METHOD_END only.
+6. Offer byte[] to buffer.
 
-Encodes the value via `Codec.encode()`, then checks byte array length against
-`MAX_VALUE_SIZE`. If exceeded, replaces with truncation marker. See
+## ValueEncoder
+
+`ValueEncoder.encode(Object value)` wraps `Codec.encode()` with a
+single behaviour: if `max_value_size > 0` and the encoded payload
+exceeds it, replace the payload with a fixed-shape truncation marker
+via a second `Codec.encode()` call. The agent always pays the cost of
+the original encoding — truncation saves I/O and storage, not CPU. See
 [Truncation](../features/truncation.md).
 
-## SPI loading
+## SpiBootstrap
 
-Both SPI resolvers use double-checked locking and are loaded lazily on first
-use:
+Both SPI resolvers are loaded lazily on first instrumented method
+entry, not at agent startup. `premain` runs before application
+classloaders are fully initialized; in particular, Spring Boot's
+context classloader is not ready until the application starts, so a
+`ServiceLoader` call during `premain` would fail to find resolver
+implementations.
 
-- `getResolver()` -- loads `SessionIdResolver` matching
-  `config.getSessionResolver()` name
-- `initJpaProxyResolver()` -- loads `JpaProxyResolver` matching
-  `config.getJpaProxyResolver()` name, registers with `Codec`
+- `SpiBootstrap.getSessionIdResolver()` — double-checked locking; on
+  first call, picks the resolver matching `config.getSessionResolver()`,
+  invokes `resolver.init(config.getConfigMap())`, caches it. Always
+  returns non-null (falls back to noop).
+- `SpiBootstrap.initJpaProxyResolverOnce()` — double-checked locking;
+  on first call, loads the named `JpaProxyResolver` (if any) and
+  registers it with `Codec.setJpaProxyResolver()`. Idempotent.
 
-Loading uses the thread's context classloader (falling back to system
-classloader). This ensures framework classes are available for SPI
-implementations in container environments like Spring Boot.
+Loading uses the thread's context classloader, falling back to the
+system classloader.
 
 ## Method signature formatting
 
-`formatMethodSignature(Method)` produces:
+`MethodSignatureFormatter.format(Method)` produces:
 
 ```
 package::ClassName.methodName(param::Types) -> return::Type [modifiers]
 ```
 
-The `::` separator between last package segment and class name is applied
-by `formatClassName(Class)`. Array types get `[]` suffix. Primitives have
-no package prefix.
+The `::` separator between the last package segment and the class name
+is applied by `formatClassName(Class)`. Array types get `[]` suffix.
+Primitives have no package prefix.
 
 ## Error isolation
 
-Both `recordEntry` and `recordExit` wrap all work in `try/catch(Throwable)`.
-Failures print to `stderr` but never propagate to the target application.
+Both `recordEntry` and `recordExit` wrap their work in
+`try/catch(Throwable)`. Failures print to `stderr` and do not
+propagate into the target application. Additionally, `recordEntry`
+returns `false` on failure so its matching exit is suppressed — a
+partial-record cascade can never corrupt downstream pairing.
 
 ## Key source files
 
-- `DeepFlowAgent.java` -- `premain`, ByteBuddy setup, exclusion list
-- `DeepFlowAdvice.java` -- `@Advice` interceptor, SPI loading, recording logic
-- `AgentConfig.java` -- config parsing
-- `RecorderManager.java` -- recorder lifecycle (buffer, drainer, destination,
-  shutdown hook)
+- `core/agent/.../agent/DeepFlowAgent.java` — `premain`, ByteBuddy setup, exclusion list
+- `core/agent/.../agent/AgentConfig.java` — config parsing
+- `core/agent/.../agent/RecorderManager.java` — recorder lifecycle (buffer, drainer, destination, shutdown hook)
+- `core/agent/.../agent/advice/DeepFlowAdvice.java` — `@Advice` interceptor (thin facade over RequestRecorder)
+- `core/agent/.../agent/recording/RequestRecorder.java` — per-call recording logic
+- `core/agent/.../agent/recording/ValueEncoder.java` — CBOR encode + truncation
+- `core/agent/.../agent/recording/MethodSignatureFormatter.java` — signature rendering
+- `core/agent/.../agent/spi/SpiBootstrap.java` — lazy SPI loading
+- `core/agent/.../agent/bootstrap/RequestContext.java` — bootstrap-injected ThreadLocal state

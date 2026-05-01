@@ -78,19 +78,21 @@ or to attempt full serialization.
 
 ## Readable JSON conversion
 
-`Codec.toReadableJson(byte[])` decodes CBOR back to JSON for human
-output (the rendered text view). It:
+The codec exposes the decode and the render as two separate calls:
 
-- Replaces integer field IDs with the names from
-  [HASHING.md §3](../spec/HASHING.md): `1 -> object_id`,
-  `2 -> class`, `3 -> value`, `4 -> ref_id`, `5 -> cycle_ref`.
-- Flattens `VALUE` per the same rule -- a CBOR map becomes sibling
-  keys; a CBOR array becomes a `"value"` array sibling; a scalar
-  becomes a `"value"` sibling.
+- `Codec.decode(byte[] cbor) -> Object` — turns the wire bytes back
+  into a tree of maps, lists, and scalars. Envelope maps still carry
+  the integer field IDs.
+- `Codec.toReadableJson(Object decoded) -> String` — humanizes that
+  decoded tree to JSON text. Integer field IDs are renamed per
+  [HASHING.md §3](../spec/HASHING.md): `1 -> object_id`, `2 -> class`,
+  `3 -> value`, `4 -> ref_id`, `5 -> cycle_ref`. The `VALUE` field is
+  flattened — a CBOR map becomes sibling keys; **a CBOR array becomes
+  a sibling key `"items"`**; a scalar becomes a sibling key `"value"`.
 
-The output of this step is what the file destination writes into
-`.dft` files (after the optional `RecordHashEnricher` pass that adds
-`__meta__` blocks).
+The file destination's pipeline is:
+`bytes -> Codec.decode -> humanize -> [optional RecordHashEnricher
+inject __meta__] -> JSON line in .dft`.
 
 ## Worked example
 
@@ -123,12 +125,14 @@ arrays carry identity per the ARGUMENTS shape in
 
 ## Key source files
 
-- `core/codec/src/main/java/.../codec/Codec.java` -- public facade
-- `core/codec/src/main/java/.../codec/envelope/EnvelopeSerializer.java`
-  -- the Jackson hook
-- `core/codec/src/main/java/.../codec/envelope/EnvelopeModifier.java`
-  -- per-type wrap decision
-- `core/codec/src/main/java/.../codec/identity/ObjectIdRegistry.java`
-  -- weak-ref-backed identity map
-- `core/codec/src/main/java/.../codec/identity/IdentityWeakRef.java`
-  -- identity-equality wrapper
+All under `core/codec/src/main/java/com/github/gabert/deepflow/codec/`:
+
+- `Codec.java` — public facade (`encode`, `decode`, `toReadableJson`,
+  JPA proxy hook getter/setter)
+- `envelope/EnvelopeSerializer.java` — the Jackson custom serializer
+  (object id assignment, cycle detection, JPA proxy unwrap, runtime
+  type re-resolution)
+- `envelope/EnvelopeModifier.java` — per-type wrap-or-bare decision
+- `envelope/ObjectIdRegistry.java` — weak-ref-backed identity map.
+  `IdentityWeakRef` is a public nested class inside it, not a
+  separate file.

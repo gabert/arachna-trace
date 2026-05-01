@@ -33,7 +33,7 @@ the application. For every instrumented method it captures:
 - Method signature, arguments, return value (or exception)
 - Object identity -- the same `Order` instance gets the same ID everywhere
 - Arguments at exit (optional) -- did the method mutate its inputs?
-- Nanosecond timestamps, request ID, session ID, caller line number
+- Millisecond timestamps, request ID, session ID, caller line number
 
 No code changes. No annotations. No SDK. Just attach and run.
 
@@ -42,7 +42,7 @@ every method call with its actual data, ordered in time. Think of it as
 a debugging session that you can move forward and backward through without
 restarting the application or reproducing the scenario. The data is
 already there: every argument, every return value, every mutation,
-timestamped to the nanosecond. You navigate the recording, not the live
+timestamped to the millisecond. You navigate the recording, not the live
 process.
 
 Because traces are deterministic records, a verified trace can serve as
@@ -90,11 +90,12 @@ developer reading a structured trace costs nothing beyond their time and
 is often faster for focused debugging.
 
 **AI-assisted mode.** The same trace data can be fed to an LLM for
-automated analysis. The Python formatter (`deepflow-formater`) can output
-traces in a compact semicolon-delimited format designed for token-efficient
-LLM consumption. This is useful for verifying AI-generated code (run the
-feature, feed the trace to a reviewer) or for large traces where manual
-reading is impractical.
+automated analysis. In HTTP mode, traces land in ClickHouse — an LLM
+agent armed with SQL can query specific calls, find mutations, follow
+an `object_id` across a request, and surface unexpected control flow.
+This is useful for verifying AI-generated code (run the feature, ask
+the agent to confirm the data flowed correctly) or for large traces
+where manual reading is impractical.
 
 Both modes can work with either destination. File mode keeps everything
 local. HTTP mode centralizes traces but access is still controlled --
@@ -174,11 +175,11 @@ compliance or security reviewers as evidence.
 
 ## Components
 
-- **deepflow-agent/** -- Java Maven project. The agent, codec, binary
-  format, serializer, SPI interfaces, and demos.
-- **deepflow-formater/** -- Python post-processor. Parses `.dft` files,
-  computes content hashes for mutation detection, outputs human-readable
-  or ML-ready formats.
+- **deepflow-agent/** -- Java Maven project. Contains the bytecode
+  agent itself plus the rest of the producer-side pipeline: the Netty
+  collector that ingests POSTs from agents, the Kafka-fed processor
+  that renders, hashes and inserts into ClickHouse, the ClickHouse
+  schema, and a Spring Boot demo. The wire-format spec also lives here.
 
 ## Further reading
 

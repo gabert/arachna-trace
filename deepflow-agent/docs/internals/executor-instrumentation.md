@@ -99,7 +99,8 @@ triggering class loading:
 
 ```java
 ClassLoader cl = DeepFlowAgent.class.getClassLoader();
-InputStream is = cl.getResourceAsStream("com/github/.../RequestContext.class");
+InputStream is = cl.getResourceAsStream(
+    "com/github/gabert/deepflow/agent/bootstrap/RequestContext.class");
 ```
 
 This ensures that when `RequestContext` is referenced for the first time by
@@ -144,7 +145,7 @@ the unnamed module. The inlined code fails at runtime:
 
 ```
 IllegalAccessError: module java.base cannot access class
-    com.github.gabert.deepflow.agent.PropagatingRunnable
+    com.github.gabert.deepflow.agent.bootstrap.PropagatingRunnable
     (in unnamed module @0x...)
 ```
 
@@ -152,7 +153,7 @@ IllegalAccessError: module java.base cannot access class
 
 ```java
 Class<?> injected = Class.forName(
-    "com.github.gabert.deepflow.agent.RequestContext", true, null);
+    "com.github.gabert.deepflow.agent.bootstrap.RequestContext", true, null);
 Module javaBase      = Object.class.getModule();
 Module unnamedModule = injected.getModule();
 
@@ -180,16 +181,18 @@ premain(agentArgs, instrumentation)
        b. Append temp JAR to bootstrap CL
        c. Force-load RequestContext from bootstrap (via Class.forName with null CL)
        d. Add module reads edge                (solve JPMS access)
-  3. DeepFlowAdvice.setup(config)              (safe: RequestContext is on bootstrap)
-  4. Install main application advice
-  5. IF propagate_request_id:
+  3. RecorderManager.create(config)            (build buffer, destination, drainer)
+  4. DeepFlowAdvice.setup(new RequestRecorder( safe: RequestContext is on bootstrap;
+                buffer, config))               recorder reads RequestContext fields
+  5. Install main application advice
+  6. IF propagate_request_id:
        e. Install ThreadPoolExecutor advice    (with ignore override)
        f. Install ForkJoinPool advice          (with ignore override)
 ```
 
-Step 2 must come before step 3. `DeepFlowAdvice.setup()` may reference
-`RequestContext`, and if the system classloader loads it first, the bootstrap
-copy becomes a separate instance (see obstacle 1 above).
+Step 2 must come before step 4. `RequestRecorder` references
+`RequestContext`, and if the system classloader loads it first, the
+bootstrap copy becomes a separate instance (see obstacle 1 above).
 
 Steps e/f use `AgentBuilder.RedefinitionStrategy.RETRANSFORMATION` because
 `ThreadPoolExecutor` and `ForkJoinPool` are already loaded by the time
@@ -197,33 +200,41 @@ Steps e/f use `AgentBuilder.RedefinitionStrategy.RETRANSFORMATION` because
 
 ## RequestContext
 
-`RequestContext` is a minimal, dependency-free class that holds the three
-pieces of ThreadLocal state needed for request ID tracking:
+`RequestContext` is a minimal, dependency-free class that holds the
+ThreadLocal state needed for request ID and call-stack tracking:
 
 ```java
 public class RequestContext {
     public static final AtomicLong REQUEST_COUNTER = ...;
     public static final ThreadLocal<long[]> CURRENT_REQUEST_ID = ...;
     public static final ThreadLocal<int[]> DEPTH = ...;
+    public static final ThreadLocal<Deque<UUID>> CALL_STACK = ...;
 }
 ```
 
-This state was extracted from `DeepFlowAdvice` into its own class
-specifically to minimize what must be injected into the bootstrap
-classloader. `DeepFlowAdvice` has many dependencies (codec, record-format,
-config); injecting it into bootstrap would require injecting the entire agent.
+This state lives in its own class — separate from `RequestRecorder`
+(the agent's main recording owner) — specifically to minimise what
+must be injected into the bootstrap classloader. `RequestRecorder`
+has many dependencies (codec, record-format, config); injecting it
+into bootstrap would require injecting the entire agent.
 
-Both `DeepFlowAdvice` (loaded by system CL) and `PropagatingRunnable`
-(loaded by bootstrap CL) reference `RequestContext`. Because `RequestContext`
-is loaded from bootstrap, both see the same class instance and share the same
-ThreadLocals.
+Both `RequestRecorder` (loaded by system CL, called via
+`DeepFlowAdvice.RECORDER`) and `PropagatingRunnable` (loaded by
+bootstrap CL) reference `RequestContext`. Because `RequestContext` is
+loaded from bootstrap, both see the same class instance and share the
+same ThreadLocals.
 
 ## Key source files
 
-- `DeepFlowAgent.java` -- `premain()`, `injectBootstrapClasses()`,
-  `installExecutorInstrumentation()`
-- `RequestContext.java` -- ThreadLocal state (bootstrap-injected)
-- `ExecutorAdvice.java` -- advice for `ThreadPoolExecutor.execute()`
-- `ForkJoinAdvice.java` -- advice for `ForkJoinPool.execute()/submit()`
-- `PropagatingRunnable.java` -- Runnable wrapper (bootstrap-injected)
-- `PropagatingCallable.java` -- Callable wrapper (bootstrap-injected)
+- `core/agent/.../agent/DeepFlowAgent.java` — `premain()`,
+  `injectBootstrapClasses()`, `installExecutorInstrumentation()`
+- `core/agent/.../agent/bootstrap/RequestContext.java` — ThreadLocal
+  state (bootstrap-injected)
+- `core/agent/.../agent/bootstrap/PropagatingRunnable.java` — Runnable
+  wrapper (bootstrap-injected)
+- `core/agent/.../agent/bootstrap/PropagatingCallable.java` — Callable
+  wrapper (bootstrap-injected)
+- `core/agent/.../agent/advice/ExecutorAdvice.java` — advice for
+  `ThreadPoolExecutor.execute()`
+- `core/agent/.../agent/advice/ForkJoinAdvice.java` — advice for
+  `ForkJoinPool.execute()/submit()`

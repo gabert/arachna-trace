@@ -48,16 +48,17 @@ AR;{"__truncated":true,"original_size":12345}
 
 ## How it works
 
-The agent encodes the value normally via `Codec.encode()`, then checks the
-byte array length. If it exceeds the limit, the encoded bytes are discarded
-and replaced with the truncation marker (also CBOR-encoded via
-`Codec.encode()`).
+The cap is implemented by `ValueEncoder.encode(Object)` (in
+`core/agent/.../agent/recording/ValueEncoder.java`). It encodes the
+value normally via `Codec.encode()`, checks the byte array length,
+and -- if it exceeds the limit -- discards the bytes and substitutes
+the truncation marker (also via `Codec.encode()`):
 
 ```java
-private static byte[] encodeWithLimit(Object obj) throws IOException {
-    byte[] encoded = Codec.encode(obj);
-    if (MAX_VALUE_SIZE > 0 && encoded.length > MAX_VALUE_SIZE) {
-        return Codec.encode(Map.of("__truncated", true, "original_size", encoded.length));
+public byte[] encode(Object value) throws IOException {
+    byte[] encoded = Codec.encode(value);
+    if (maxValueSize > 0 && encoded.length > maxValueSize) {
+        return Codec.encode(truncationMarker(encoded.length));
     }
     return encoded;
 }

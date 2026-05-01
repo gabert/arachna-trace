@@ -9,18 +9,23 @@ ID, debug run, or any other correlation key.
 ```java
 package com.github.gabert.deepflow.agent.session;
 
+import java.util.Map;
+
 public interface SessionIdResolver {
-    String name();      // unique name for selection via config
-    String resolve();   // return session ID for current thread, or null
+    String name();
+    default void init(Map<String, String> config) {}
+    String resolve();
 }
 ```
 
 | Method | Contract |
 |--------|----------|
 | `name()` | Short unique identifier (e.g. `"config"`, `"spring-session"`). Matched against `session_resolver` config. |
+| `init(config)` | Called once after the resolver is selected, before any `resolve()` call. Implementations that need configuration (e.g. a static session ID from the agent config) read it from this map. Default no-op for resolvers that don't need it. |
 | `resolve()` | Return current session ID for the calling thread, or `null`. Called on every method entry and exit -- must be fast (typically `ThreadLocal.get()`). |
 
-Implementations must be stateless and thread-safe.
+`resolve()` must be thread-safe. `init` runs once on a single thread
+before any `resolve` call, so it does not need to be.
 
 ## Configuration
 
@@ -63,8 +68,9 @@ in the binary payload.
 | Name | `config` |
 | Module | `session-resolver-config` |
 
-Reads `System.getProperty("deepflow.session_id")`. The agent publishes
-the `session_id` config value as this system property at startup.
+In `init(config)`, reads the `session_id` key out of the agent's
+config map and caches it. Every `resolve()` call returns that cached
+value. No system property is involved.
 
 ```properties
 session_resolver=config
@@ -101,6 +107,7 @@ session_resolver=spring-session
 ```java
 public class MdcSessionIdResolver implements SessionIdResolver {
     @Override public String name() { return "mdc"; }
+    // No init() needed: nothing to read from the config map.
     @Override public String resolve() {
         return org.slf4j.MDC.get("correlationId");
     }
