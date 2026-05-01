@@ -9,90 +9,87 @@ and read the trace.
 
 ## What we built this for
 
-Five problems, one primitive: a complete, deterministic recording of
-what data actually flowed through what code. Each use case consumes
-that primitive differently.
+Five use cases drove the design. They all rely on the same kind of
+data — a recording of every captured method's inputs, outputs, and
+mutations — but they read it for different reasons.
 
 ### Observability for AI-generated code
 
-**The problem.** AI agents — Claude, Cursor, Copilot, autonomous
-coding pipelines — are now writing code at orders of magnitude higher
-volume than humans ever did. Tests pass, CI is green, reviewers sign
-off. But none of those prove the *data actually flowed correctly*
-through the generated code. And no human can deeply review every PR
-when 30 of them land per hour.
+**Problem.** AI coding tools (Claude, Cursor, Copilot, agent-style
+pipelines) are now in heavy day-to-day use, and the volume of code
+they produce can easily outpace what reviewers can deeply read.
+CI passing and a reviewer's approval show that the structure
+compiles and the unit tests cover the inputs someone anticipated.
+Neither shows that the data actually flowed correctly through the
+new code under realistic conditions.
 
-**How DeepFlow handles it.** Run the feature with the agent attached
-and capture what actually happened. Hand the trace to a reviewer for
-spot-checks, or to an LLM with SQL over the trace store for
-systematic audits ("find every call where `Order.total` was set to a
-value that doesn't equal the sum of its line items"). Code review
-and AI code generation no longer need to scale together —
-observability gives review leverage. As AI writes more code, the
-need for runtime *evidence* of correctness grows in lockstep; this
-is what DeepFlow exists to provide.
+**Approach.** Run the feature with the agent attached and capture
+what happened end to end. A reviewer can read the trace for the
+changed paths, or an LLM can query the trace store with SQL — for
+example, "find every call where `Order.total` was set to a value
+that doesn't equal the sum of its line items". The result is
+runtime evidence of correctness, alongside the unit tests' evidence
+of expected behaviour.
 
 ### Debugging silent data errors
 
-**The problem.** Crashes are loud — stack trace, fix, done. Data
-errors are silent. The app returns HTTP 200, commits to the DB, and
-the value is wrong. A price is off by two cents. A permission check
-passes when it shouldn't. By the time someone notices, nobody knows
-what the data looked like when it flowed through the system. Print-
-statement debugging means redeploy, reproduce, repeat.
+**Problem.** Crashes give you a stack trace; data errors don't. The
+application returns HTTP 200, commits to the database, and the
+result is wrong — a price miscalculated, a permission check passing
+on the wrong path. By the time someone notices, the runtime state
+that produced the bug is gone, and reproducing it usually means
+another redeploy-and-print-statement cycle.
 
-**How DeepFlow handles it.** Reproduce once with the agent attached.
-Read the trace forward and backward — every argument, every return
-value, every mutation, timestamped to the millisecond. Read it
-yourself, or feed it to an LLM with SQL access to ClickHouse. The
-bug is wherever the right value goes in and the wrong one comes out;
-the trace makes that location visible without breakpoints, log
-additions, or another reproduction cycle.
+**Approach.** Reproduce once with the agent attached and read the
+resulting trace. Every argument, return value, and mutation is
+there, in the order it happened. You can read it yourself or query
+it via ClickHouse.
 
-### Audit evidence for regulated industries
+### Forensics and audit support for regulated systems
 
-**The problem.** "Tests passed" isn't enough in financial services,
-healthcare, or other compliance-heavy domains. Auditors need to
-verify that data was actually handled correctly — prices computed
-from the right inputs, sensitive fields touched only by authorised
-code paths, transactions reconciled the right way. Sampling-based
-tracing is not the right artefact; what's needed is a complete,
-replayable record.
+**Problem.** When an application's behaviour needs to be
+reconstructed after the fact — an incident review, a regulatory
+inquiry, a customer complaint about a wrong calculation, an
+internal compliance check — standard application logs are usually
+too narrow. Logs capture what the developer chose to log, not the
+full data flow that produced the result. In financial services,
+healthcare, and other regulated domains, this gap tends to show up
+at the worst possible moments.
 
-**How DeepFlow handles it.** A trace is exactly that: every
-instrumented method's inputs, outputs, and mutations, with content
-hashes attached to every captured value, attributed to a specific
-JVM run, host, build version, and environment. A flagged trace can
-be marked retain-forever in ClickHouse and survive the default
-30-day TTL. Evidence auditors can query, not just spot-check.
+**Approach.** A DeepFlow trace records how data moved through the
+instrumented code during a session, attributed to a specific JVM
+run, host, build version, and environment. Traces of interest can
+be flagged retain-forever in the trace store to survive the
+default 30-day TTL. This is not a replacement for normal audit
+tooling (access logs, change-management records, controlled
+tests) — it's the kind of forensic evidence those tools cannot
+produce on their own.
 
-### Understanding unfamiliar code
+### Understanding code you didn't write
 
-**The problem.** Inheriting a complex codebase with thin docs, or
-onboarding onto a system someone else built. Static analysis tells
-you what's *possible* through the code; what you want to know is
-what *actually happens* during a real user flow.
+**Problem.** Inheriting a complex codebase with thin docs, or
+onboarding onto a service someone else built. Static analysis can
+show what the code *can* do; what you usually want is a quick map
+of what it *actually* does on a representative request.
 
-**How DeepFlow handles it.** Instrument the relevant packages,
-trigger one user flow, read the trace. Real execution with real
-data — the actual call tree, the actual values that flowed, the
-actual exceptions caught, in the order they happened. Five minutes
-of trace beats five hours of code-reading.
+**Approach.** Instrument the relevant packages, trigger one user
+flow, read the trace. The result is the actual call tree, the
+actual values that flowed, and the actual exceptions caught —
+useful for orientation before changing anything.
 
 ### Regression detection across releases
 
-**The problem.** Unit tests check that expected behaviour is
-preserved across changes. They don't check that *actual data flow*
-is preserved — a refactor can pass every test while silently
-changing which method receives which intermediate value or what
-gets mutated when.
+**Problem.** Unit tests check that expected behaviour is preserved
+across changes. They don't catch regressions in the actual data
+flow: a refactor can pass every test while silently changing which
+method receives which intermediate value, or what gets mutated
+along the way.
 
-**How DeepFlow handles it.** Capture a verified trace as a baseline.
-After the change, run the same scenario and diff. The content-hash
-on every captured value lets you point at exactly which method
+**Approach.** Capture a verified trace as a baseline, run the same
+scenario after the change, and compare. Each captured value
+carries a content hash, so the diff points at exactly which method
 received different arguments, returned a different result, or
-mutated something it didn't before. Regression as a diff over
-actual runtime data, not just over test fixtures.
+mutated something it didn't before.
 
 ## Capabilities
 
@@ -113,8 +110,8 @@ actual runtime data, not just over test fixtures.
   `ThreadPoolExecutor` / `ForkJoinPool` submissions so async work joins the
   originating request.
 
-- **Session correlation.** Pluggable session ID resolution via SPI tags every
-  trace record with an HTTP session, request ID, or custom key.
+- **Session correlation.** A pluggable SPI tags every trace record with a
+  session ID — an HTTP session, a request ID, or any custom correlation key.
 
 - **JPA proxy unwrapping.** Hibernate proxies and collection wrappers are
   resolved to real objects before serialization.
