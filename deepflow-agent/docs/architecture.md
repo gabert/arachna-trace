@@ -3,8 +3,11 @@
 This document describes the architecture of the producer-side pipeline
 rooted at `deepflow-agent/`: the Java agent that captures runtime data,
 the in-process recording pipeline, and how output reaches a server-side
-sink. For solution-level positioning (what DeepFlow is and what problem
-it solves), see [../../doc/](../../doc/).
+sink. For the system-wide picture (agent → collector → Kafka →
+processor → ClickHouse) without Java specifics, see
+[../../doc/architecture.md](../../doc/architecture.md). For solution-
+level positioning (what DeepFlow is and what problem it solves), see
+[../../doc/](../../doc/).
 
 ## Data flow
 

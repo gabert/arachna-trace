@@ -113,7 +113,8 @@ walkthrough, all configuration options), see the
 Documentation is split between solution-level and component-level:
 
 - **[doc/](doc/)** -- the solution: what DeepFlow is, problem framing,
-  use cases, comparison with APM and profilers.
+  use cases, comparison with APM and profilers, plus the
+  [system-wide architecture](doc/architecture.md).
 - **[deepflow-agent/docs/](deepflow-agent/docs/)** -- the Java agent and
   pipeline: [getting started](deepflow-agent/docs/getting-started.md),
   [configuration](deepflow-agent/docs/configuration.md),

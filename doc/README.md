@@ -183,10 +183,13 @@ compliance or security reviewers as evidence.
 
 ## Further reading
 
+- [System Architecture](architecture.md) -- the full pipeline at a
+  glance: components, contracts, design choices, what DeepFlow is NOT
+
 The agent's own documentation lives next to its source. See
 [deepflow-agent/docs/](../deepflow-agent/docs/) for:
 
 - [Getting Started](../deepflow-agent/docs/getting-started.md) -- build, attach, configure, read output
 - [Configuration Reference](../deepflow-agent/docs/configuration.md) -- all config options
-- [Architecture](../deepflow-agent/docs/architecture.md) -- agent data flow, modules, design decisions
+- [Agent Architecture](../deepflow-agent/docs/architecture.md) -- agent-internal data flow, modules, design decisions
 - [Wire-format spec](../deepflow-agent/docs/spec/SPEC.md) -- the language-neutral protocol contract
