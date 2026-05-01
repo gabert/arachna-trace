@@ -212,6 +212,78 @@ be subtracting. Finding this without the trace would typically mean
 adding a print statement to that method and running the scenario
 again.
 
+A second example shows mutation detection — useful when something
+else is modifying shared state during the call. With `AX` (arguments
+at exit) enabled in `emit_tags`, DeepFlow captures arguments both at
+method entry (`AR`) and at method exit (`AX`); if an object's
+content changed during the call, the two differ.
+
+Suppose `Math.multiplyByTwo(Counter)` is expected to return
+`2 × counter.value`. A test passes in a counter holding 42 and
+expects 84. It gets 108 instead.
+
+```
+TS;1730412345700
+SI;alice-session-01
+MS;com.example::Math.multiplyByTwo(Counter) -> int [public static]
+TN;http-nio-8080-exec-3
+RI;5
+CL;42
+AR;[{"object_id":17,"class":"com.example.Counter","value":42}]
+TE;1730412345710
+RT;VALUE
+RE;108
+AX;[{"object_id":17,"class":"com.example.Counter","value":54}]
+```
+
+At entry, the `Counter` argument (`object_id=17`) holds 42. At exit
+the same Counter (still `object_id=17`) holds 54, and the method
+returned 108 — i.e. `2 × 54`. The Counter was mutated during the
+call. Querying the trace store for `object_id:17` across threads
+finds the culprit:
+
+```
+TS;1730412345703
+SI;alice-session-01
+MS;com.example::Inventory.recount(Counter) -> void [public static]
+TN;background-worker-1
+RI;7
+CL;120
+AR;[{"object_id":17,"class":"com.example.Counter","value":42}]
+TS;1730412345705
+SI;alice-session-01
+MS;com.example::Counter.setValue(int) -> void [public]
+TN;background-worker-1
+RI;7
+CL;88
+TI;17
+AR;[54]
+TE;1730412345706
+RT;VOID
+TE;1730412345708
+RT;VOID
+AX;[{"object_id":17,"class":"com.example.Counter","value":54}]
+```
+
+Within a single thread's trace, nested calls appear as inner
+`TS`/`TE` blocks falling inside an outer `TS`/`TE` window. Here,
+`Counter.setValue(54)` is nested inside `Inventory.recount(Counter)`
+(both on `background-worker-1`, request `RI=7`). Recount received
+the same Counter instance (`object_id=17`) holding 42 at entry,
+called `setValue(54)` internally, and its `AX` confirms the Counter
+held 54 at exit. The setValue call's `[705, 706]` window falls
+inside `multiplyByTwo`'s `[700, 710]` window on the other thread —
+that's the cross-thread overlap that produced the wrong result. The
+bug is missing synchronisation, not arithmetic, and the trace
+points at both the specific caller (`Inventory.recount`) and the
+responsible thread without rerunning anything.
+
+This is why DeepFlow wraps captured objects in identity envelopes
+(`{"object_id": …, "class": …, "value": …}`) rather than emitting
+raw primitives. A bare `42` and a bare `54` are just two different
+integers; an envelope with the same `object_id` carrying different
+values is unambiguous evidence that the same instance changed.
+
 For Spring Boot, attach via the Maven plugin:
 
 ```bash
