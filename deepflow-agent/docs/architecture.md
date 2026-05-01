@@ -1,6 +1,16 @@
-# Architecture
+# Agent Architecture
+
+This document describes the architecture of the producer-side pipeline
+rooted at `deepflow-agent/`: the Java agent that captures runtime data,
+the in-process recording pipeline, and how output reaches a server-side
+sink. For solution-level positioning (what DeepFlow is and what problem
+it solves), see [../../doc/](../../doc/).
 
 ## Data flow
+
+The agent itself ends at the `Destination` boundary. From there the path
+diverges depending on `destination=file` (local) or `destination=http`
+(centralised pipeline).
 
 ```
 -javaagent flag
@@ -13,8 +23,35 @@
           -> RecordWriter              Produce binary record frames
             -> RecordBuffer            Enqueue for async draining
               -> RecordDrainer         Poll buffer, deliver to destination
-                -> FileDestination     Write per-thread .dft files
+                -> FileDestination     Write per-thread .dft files (local mode)
+                -> HttpDestination     POST batched binary frames to collector
+                                       (centralised mode -- see below)
 ```
+
+In `destination=http`, the agent's responsibility ends at the POST. The
+rest is the server-side pipeline:
+
+```
+HttpDestination
+  -> POST /records                     record-collector-server (Netty)
+       forwards POST body unchanged to Kafka, agent-run identity copied
+       to record headers
+  -> Kafka topic 'deepflow-records'
+       short-retention burst buffer
+  -> record-processor-server
+       KafkaRecordConsumer poll loop
+         -> RecordRenderer             CBOR -> JSON per TI/AR/AX/RE value
+         -> RecordHashEnricher         inject __meta__ Merkle hashes
+         -> RecordParser               pair MS/TE by callId -> ParsedCalls
+  -> ClickHouseSink
+       buffered HTTP INSERT JSONEachRow
+  -> ClickHouse tables 'deepflow.calls' + 'deepflow.payloads'
+```
+
+For the wire-format contract that ties producer and processor together,
+see [docs/spec/SPEC.md](spec/SPEC.md). For agent-run identity carriage
+across the HTTP / Kafka / file boundaries, see
+[docs/spec/TRANSPORT.md](spec/TRANSPORT.md).
 
 ## Module structure
 
@@ -34,8 +71,13 @@ deepflow-agent/
     jpa-proxy-resolver-api/              JpaProxyResolver interface
     jpa-proxy-resolver-hibernate/        Hibernate proxy/collection unwrapping
 
-  server/                                Server-side components
-    record-collector-server/             Netty HTTP server (receives binary records)
+  server/                                Server-side pipeline
+    record-collector-server/             Netty HTTP server: receives POSTs,
+                                         forwards unchanged bytes to Kafka
+    record-processor-server/             Kafka consumer: render, hash, parse,
+                                         insert into ClickHouse
+    clickhouse-init/                     DDL mounted into the ClickHouse
+                                         container on first start
 
   demos/
     demo-spring-boot/                    Spring Boot library app with agent + SPIs
@@ -120,8 +162,10 @@ bursts and is reclaimed by GC once the drainer catches up.
 ### Destination receives raw bytes
 
 The `Destination` interface operates on raw `byte[]` records, not decoded
-text. `FileDestination` decodes to text via `RecordRenderer`. A future
-`HttpDestination` forwards raw bytes without decoding overhead.
+text. `FileDestination` decodes to text via `RecordRenderer` so `.dft`
+files are human-readable. `HttpDestination` forwards the raw bytes
+unchanged — no decoding on the agent's hot path; rendering and hashing
+happen on the server side (`record-processor-server`).
 
 ### Config resolution order
 

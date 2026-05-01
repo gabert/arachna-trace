@@ -102,19 +102,18 @@ walkthrough, all configuration options), see the
 
 ## Components
 
-- **[deepflow-agent/](deepflow-agent/)** -- Java agent for bytecode
-  instrumentation, plus the Netty collector and the Kafka → ClickHouse
-  processor. The producing side of the pipeline.
-- **[deepflow-formater/](deepflow-formater/)** -- Python post-processor for
-  trace output (mutation detection, formatting for LLM consumption).
+- **[deepflow-agent/](deepflow-agent/)** -- Java multi-module project
+  containing everything: the bytecode-instrumentation agent itself, the
+  Netty collector that ingests POSTs, the Kafka-fed processor that
+  renders, hashes, and inserts into ClickHouse, the ClickHouse schema,
+  the wire-format spec, and a Spring Boot demo.
 
 ## Documentation
 
 Documentation is split between solution-level and component-level:
 
 - **[doc/](doc/)** -- the solution: what DeepFlow is, problem framing,
-  use cases, comparison with APM and profilers. Start with
-  [Overview](doc/overview.md).
+  use cases, comparison with APM and profilers.
 - **[deepflow-agent/docs/](deepflow-agent/docs/)** -- the Java agent and
   pipeline: [getting started](deepflow-agent/docs/getting-started.md),
   [configuration](deepflow-agent/docs/configuration.md),

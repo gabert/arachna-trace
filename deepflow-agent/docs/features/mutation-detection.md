@@ -57,12 +57,22 @@ them to find the culprit.
 
 ## What gets compared
 
-The Python formatter (`deepflow-formater`) automates the comparison:
+In the HTTP pipeline, the server-side `RecordHashEnricher` walks every
+captured envelope and injects a `__meta__` block carrying a Merkle
+content hash (see [HASHING.md](../spec/HASHING.md) for the construction).
+Each `payloads` row in ClickHouse therefore carries a `root_hash`
+column.
 
-1. `hasher.py` computes MD5 content hashes of serialized objects.
-2. `metadata_strip.py` separates data from `object_id` / `class` fields.
-3. For each method call, the formatter compares the content hash of each
-   argument at entry vs exit. If the hash differs, the argument was mutated.
+For mutation detection, compare the `root_hash` of the `AR` (arguments
+at entry) row to the `root_hash` of the matching `AX` (arguments at
+exit) row of the same call. Equal hashes → the call did not mutate the
+inputs. Different hashes → mutation; drill into the underlying JSON to
+find which field changed.
+
+In file mode, the same enricher runs in `FileDestination` before the
+`.dft` lines are written to disk, so the JSON values for `TI`/`AR`/
+`AX`/`RE` already carry their `__meta__.hash` values. Compare them
+directly.
 
 ## Envelope structure
 

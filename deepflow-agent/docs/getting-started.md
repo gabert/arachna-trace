@@ -4,7 +4,6 @@
 
 - JDK 17 (Java 11 may work but is not tested)
 - Maven 3.x
-- Python 3.6+ (for the formatter, optional)
 
 ## Build
 
@@ -88,21 +87,29 @@ head -30 D:/temp/SESSION-20260323-101215/20260323-101215-main.dft
 A typical trace looks like this:
 
 ```
-VR;1.1
-TS;82741936205100
+VR;1.3
+TS;1730412345678
 SI;alice-session-01
 MS;com.example::BookService.findByAuthor(long) -> java.util::List [public]
 TN;http-nio-8080-exec-3
 RI;5
 CL;42
+CI;1a2b3c4d-1111-2222-3333-aaaaaaaaaaaa
+PI;0fedcba9-9999-8888-7777-bbbbbbbbbbbb
 TI;17
 AR;[3]
-TE;82741936270000
+TE;1730412345712
 TN;http-nio-8080-exec-3
 RI;5
+CI;1a2b3c4d-1111-2222-3333-aaaaaaaaaaaa
 RT;VALUE
 RE;[{"object_id":101,"class":"java.util.ArrayList","value":[...]}]
 ```
+
+Timestamps are milliseconds since Unix epoch. `CI` and `PI` are the
+call's UUID and its enclosing call's UUID — calls are paired by `CI`,
+not by stack ordering, so a stream that interleaves threads still parses
+correctly.
 
 See [Trace Format](spec/TAGS.md) for the complete format specification.
 
@@ -132,16 +139,7 @@ mvn spring-boot:run \
 
 ## Run the tests
 
-**Java tests:**
-
 ```bash
 cd deepflow-agent
 mvn clean install    # runs all module tests
-```
-
-**Python formatter tests:**
-
-```bash
-cd deepflow-formater
-python -m pytest tests/preprocessor_test.py
 ```
