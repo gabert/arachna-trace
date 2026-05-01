@@ -272,6 +272,7 @@ TN;background-worker-1
 RI;7
 CL;120
 AR;[{"object_id":17,"class":"com.example.Counter","value":42}]
+--- nested call ---
 TS;1730412345705
 SI;alice-session-01
 MS;com.example::Counter.setValue(int) -> void [public]
@@ -282,6 +283,7 @@ TI;17
 AR;[54]
 TE;1730412345706
 RT;VOID
+--- back to Inventory.recount ---
 TE;1730412345708
 RT;VOID
 AX;[{"object_id":17,"class":"com.example.Counter","value":54}]
