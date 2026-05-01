@@ -66,16 +66,62 @@ land and who reads them.
 
 ---
 
+## The language boundary lives at the agent's output
+
+DeepFlow has exactly one language-specific component: **the agent**.
+Everything below the binary-record boundary — the collector, Kafka,
+the processor, ClickHouse — operates on wire bytes alone. A Python
+agent, a Go agent, a Rust agent, a .NET agent producing the same
+bytes is a first-class citizen of the same pipeline.
+
+```
+┌────────────────────────────────────┐
+│   LANGUAGE-SPECIFIC                │  ◄── only this side knows
+│                                    │      what language the
+│   DeepFlow agent                   │      application is in.
+│   (Java is the reference;          │      Bytecode instrumentation,
+│    any host language possible)     │      object-graph traversal,
+│                                    │      identity tracking — all
+└────────────────┬───────────────────┘      language-bound.
+                 │
+                 │   wire format = binary frames + CBOR envelopes
+                 │                 + content hashes + transport headers
+                 ▼
+┌────────────────────────────────────┐
+│   LANGUAGE-AGNOSTIC                │  ◄── none of this knows
+│                                    │      or cares what produced
+│   Collector → Kafka                │      the bytes. Same code
+│   → Processor → ClickHouse         │      ingests Java traces,
+│                                    │      Python traces, Go
+└────────────────────────────────────┘      traces — interchangeably.
+```
+
+This boundary is positioned **as early as possible by design**. If
+it were any later — say at the Kafka topic or at the processor —
+those layers would be Java-specific too, and adopting DeepFlow would
+mean adopting the JVM end-to-end. By making the wire format itself
+the boundary, every infrastructure-heavy piece (queue, processor
+logic, storage schema, query, UI) is built once and reused across
+every source language.
+
+The contract that makes this work is the wire-format spec at
+[deepflow-agent/docs/spec/SPEC.md](../deepflow-agent/docs/spec/SPEC.md).
+[PORTING-GUIDE.md](../deepflow-agent/docs/spec/PORTING-GUIDE.md) is
+the practical walkthrough for writing an agent in another language.
+
+---
+
 ## The components
 
 ### The agent
 
-The producer. A Java agent (right now — see *the wire-format spec*
-below for the language-neutral side of this) that attaches at JVM
-startup via `-javaagent`, instruments classes you select with a regex,
-and captures method entry/exit at runtime: arguments, return values,
-exceptions, object identity, and (optionally) arguments-at-exit for
-mutation detection. No source changes, no annotations, no SDK.
+The producer — the language-specific side of the system (see the
+section above). The reference implementation is a Java agent that
+attaches at JVM startup via `-javaagent`, instruments classes you
+select with a regex, and captures method entry/exit at runtime:
+arguments, return values, exceptions, object identity, and
+(optionally) arguments-at-exit for mutation detection. No source
+changes, no annotations, no SDK.
 
 The agent emits binary records into a configurable destination. There
 are two: **file** (per-thread `.dft` files in a session directory) and
@@ -185,9 +231,10 @@ to honour.
 
 ### Swappable
 
-- **The agent** — anything emitting conformant wire bytes is a valid
-  producer. The Java agent is the reference; a Go or Python or .NET
-  agent is a finite engineering exercise on top of the spec.
+- **The agent (the only language-specific seam).** Anything emitting
+  conformant wire bytes is a valid producer. The Java agent is the
+  reference; a Go, Python, .NET, or Rust agent is a finite
+  engineering exercise on top of the spec, not a redesign.
 - **The collector** — a thin relay; replaceable with anything that
   forwards bytes plus headers to Kafka.
 - **The processor sink** — the reference inserts into ClickHouse, but
@@ -197,13 +244,40 @@ to honour.
 - **The destination on the agent** — `file` and `http` ship today; a
   third (gRPC, NATS, an in-VPC sink) is straightforward to add.
 
-### Configuration / SPI surfaces
+### Configuration
 
 The agent is reconfigurable per run via `deepagent.cfg`: which
 classes to instrument, which tags to emit, whether to capture
 arguments at all, how large a single value can grow before
-truncation. Custom session-ID resolution and JPA-proxy unwrapping
-plug in via `ServiceLoader` SPIs. None of this leaves the agent JVM.
+truncation. None of this leaves the agent JVM.
+
+### Extension points (SPIs)
+
+The agent is built around two `ServiceLoader` SPIs that plug
+framework-specific behaviour in at runtime:
+
+- **`SessionIdResolver`** — given the current thread, return the
+  logical session/request ID. The built-in `config` resolver reads
+  a static ID from the agent config; the demo's `spring-session`
+  resolver reads a Servlet session ID off a thread-local; a custom
+  one might pull MDC, OpenTelemetry trace IDs, gRPC metadata, etc.
+- **`JpaProxyResolver`** — given a captured value, decide if it's a
+  proxy you recognise and unwrap it to its real object. The built-in
+  `hibernate` resolver handles Hibernate lazy proxies and collection
+  wrappers; a custom one could handle EclipseLink, OpenJPA, or any
+  proxy framework.
+
+Implementations live as separate JARs on the application's
+classpath alongside the framework they wrap — never bundled into
+the agent. Adding a new resolver is implement-the-interface, ship-a-
+JAR, set-the-name-in-config; no agent rebuild. Adding a *new* SPI
+interface (a redaction hook, a per-tenant routing hook, …) is a new
+api module plus a load point in the agent's `SpiBootstrap`.
+
+The result is that the agent core stays universal — it has no
+compile-time dependency on Hibernate, Spring, Servlet containers, or
+any specific framework — while still doing the right thing inside
+those frameworks at runtime.
 
 ---
 
