@@ -182,6 +182,26 @@ ls D:/temp/SESSION-*/
 head -30 D:/temp/SESSION-*/main.dft
 ```
 
+For Spring Boot, attach via the Maven plugin:
+
+```bash
+mvn spring-boot:run \
+    -Dspring-boot.run.jvmArguments="-javaagent:path/to/deepflow-agent.jar=config=./deepagent.cfg"
+```
+
+For deeper integration (SPI resolvers on the application classpath, demo
+walkthrough, all configuration options), see the
+[agent's getting-started guide](deepflow-agent/docs/getting-started.md).
+
+## Reading a trace
+
+Two worked examples. The first is a simple data-flow bug visible by
+inspecting one method's arguments and return value. The second uses
+mutation detection (`AX` enabled) to catch a cross-thread interference
+that no log-and-redeploy cycle would have made obvious.
+
+### A calculation bug
+
 A trace fragment looks like this:
 
 ```
@@ -212,11 +232,13 @@ be subtracting. Finding this without the trace would typically mean
 adding a print statement to that method and running the scenario
 again.
 
-A second example shows mutation detection — useful when something
-else is modifying shared state during the call. With `AX` (arguments
-at exit) enabled in `emit_tags`, DeepFlow captures arguments both at
-method entry (`AR`) and at method exit (`AX`); if an object's
-content changed during the call, the two differ.
+### Mutation across threads
+
+Mutation detection is useful when something else is modifying shared
+state during a call. With `AX` (arguments at exit) enabled in
+`emit_tags`, DeepFlow captures arguments both at method entry (`AR`)
+and at method exit (`AX`); if an object's content changed during the
+call, the two differ.
 
 Suppose `Math.multiplyByTwo(Counter)` is expected to return
 `2 × counter.value`. A test passes in a counter holding 42 and
@@ -274,8 +296,8 @@ called `setValue(54)` internally, and its `AX` confirms the Counter
 held 54 at exit. The setValue call's `[705, 706]` window falls
 inside `multiplyByTwo`'s `[700, 710]` window on the other thread —
 that's the cross-thread overlap that produced the wrong result. The
-bug is missing synchronisation, not arithmetic, and the trace
-points at both the specific caller (`Inventory.recount`) and the
+bug is missing synchronisation, not arithmetic, and the trace points
+at both the specific caller (`Inventory.recount`) and the
 responsible thread without rerunning anything.
 
 This is why DeepFlow wraps captured objects in identity envelopes
@@ -283,17 +305,6 @@ This is why DeepFlow wraps captured objects in identity envelopes
 raw primitives. A bare `42` and a bare `54` are just two different
 integers; an envelope with the same `object_id` carrying different
 values is unambiguous evidence that the same instance changed.
-
-For Spring Boot, attach via the Maven plugin:
-
-```bash
-mvn spring-boot:run \
-    -Dspring-boot.run.jvmArguments="-javaagent:path/to/deepflow-agent.jar=config=./deepagent.cfg"
-```
-
-For deeper integration (SPI resolvers on the application classpath, demo
-walkthrough, all configuration options), see the
-[agent's getting-started guide](deepflow-agent/docs/getting-started.md).
 
 ## Components
 
