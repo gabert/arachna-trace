@@ -242,30 +242,41 @@ call, the two differ.
 
 Suppose `Math.multiplyByTwo(Counter)` is expected to return
 `2 × counter.value`. A test passes in a counter holding 42 and
-expects 84. It gets 108 instead.
+expects 84. It gets 108 instead. Querying the trace store for
+`object_id:17` lines the two threads up side by side. The left
+column — `multiplyByTwo`'s trace — is deliberately split into its
+entry block (top) and exit block (bottom), with the other thread's
+trace sitting between them, so the time relationship between the
+two threads is visible at a glance: every event in the right column
+happens between the left column's entry and exit.
+
+<table>
+<tr>
+<th><code>http-nio-8080-exec-3</code> (RI=5)</th>
+<th><code>background-worker-1</code> (RI=7)</th>
+</tr>
+<tr>
+<td>
 
 ```
-TS;1730412345700
+TS;70
 SI;alice-session-01
 MS;com.example::Math.multiplyByTwo(Counter) -> int [public static]
 TN;http-nio-8080-exec-3
 RI;5
 CL;42
 AR;[{"object_id":17,"class":"com.example.Counter","value":42}]
-TE;1730412345710
-RT;VALUE
-RE;108
-AX;[{"object_id":17,"class":"com.example.Counter","value":54}]
 ```
 
-At entry, the `Counter` argument (`object_id=17`) holds 42. At exit
-the same Counter (still `object_id=17`) holds 54, and the method
-returned 108 — i.e. `2 × 54`. The Counter was mutated during the
-call. Querying the trace store for `object_id:17` across threads
-finds the culprit:
+</td>
+<td></td>
+</tr>
+<tr>
+<td></td>
+<td>
 
 ```
-TS;1730412345703
+TS;73
 SI;alice-session-01
 MS;com.example::Inventory.recount(Counter) -> void [public static]
 TN;background-worker-1
@@ -273,7 +284,7 @@ RI;7
 CL;120
 AR;[{"object_id":17,"class":"com.example.Counter","value":42}]
 --- nested call ---
-TS;1730412345705
+TS;75
 SI;alice-session-01
 MS;com.example::Counter.setValue(int) -> void [public]
 TN;background-worker-1
@@ -281,26 +292,43 @@ RI;7
 CL;88
 TI;17
 AR;[54]
-TE;1730412345706
+TE;76
 RT;VOID
 --- back to Inventory.recount ---
-TE;1730412345708
+TE;78
 RT;VOID
 AX;[{"object_id":17,"class":"com.example.Counter","value":54}]
 ```
 
-Within a single thread's trace, nested calls appear as inner
-`TS`/`TE` blocks falling inside an outer `TS`/`TE` window. Here,
-`Counter.setValue(54)` is nested inside `Inventory.recount(Counter)`
-(both on `background-worker-1`, request `RI=7`). Recount received
-the same Counter instance (`object_id=17`) holding 42 at entry,
-called `setValue(54)` internally, and its `AX` confirms the Counter
-held 54 at exit. The setValue call's `[705, 706]` window falls
-inside `multiplyByTwo`'s `[700, 710]` window on the other thread —
-that's the cross-thread overlap that produced the wrong result. The
-bug is missing synchronisation, not arithmetic, and the trace points
-at both the specific caller (`Inventory.recount`) and the
-responsible thread without rerunning anything.
+</td>
+</tr>
+<tr>
+<td>
+
+```
+TE;80
+RT;VALUE
+RE;108
+AX;[{"object_id":17,"class":"com.example.Counter","value":54}]
+```
+
+</td>
+<td></td>
+</tr>
+</table>
+
+On the left, `Math.multiplyByTwo` enters at `TS=70` with the
+`Counter` argument (`object_id=17`) holding 42, and exits at
+`TE=80` with the same Counter holding 54 — the AR/AX divergence
+proves the Counter was mutated mid-call. On the right,
+`Inventory.recount` on `background-worker-1` did the mutating: it
+called `Counter.setValue(54)` internally, and its whole `[73–78]`
+window falls inside `multiplyByTwo`'s `[70–80]` window on the
+other thread. That's the cross-thread overlap that produced the
+wrong result. The bug is missing synchronisation, not arithmetic,
+and the trace points at both the specific caller
+(`Inventory.recount`) and the responsible thread without rerunning
+anything.
 
 This is why DeepFlow wraps captured objects in identity envelopes
 (`{"object_id": …, "class": …, "value": …}`) rather than emitting
