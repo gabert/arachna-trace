@@ -257,7 +257,7 @@ happens between the left column's entry and exit.
 </tr>
 <tr>
 <td>
-<sub><pre>
+<small><pre>
 TS;70
 SI;alice-session-01
 MS;com.example::Math.multiplyByTwo(Counter) -> int [public static]
@@ -265,14 +265,14 @@ TN;http-nio-8080-exec-3
 RI;5
 CL;42
 AR;[{"object_id":17,"class":"com.example.Counter","value":42}]
-</pre></sub>
+</pre></small>
 </td>
 <td></td>
 </tr>
 <tr>
 <td></td>
 <td>
-<sub><pre>
+<small><pre>
 TS;73
 SI;alice-session-01
 MS;com.example::Inventory.recount(Counter) -> void [public static]
@@ -295,17 +295,17 @@ RT;VOID
 TE;78
 RT;VOID
 AX;[{"object_id":17,"class":"com.example.Counter","value":54}]
-</pre></sub>
+</pre></small>
 </td>
 </tr>
 <tr>
 <td>
-<sub><pre>
+<small><pre>
 TE;80
 RT;VALUE
 RE;108
 AX;[{"object_id":17,"class":"com.example.Counter","value":54}]
-</pre></sub>
+</pre></small>
 </td>
 <td></td>
 </tr>
