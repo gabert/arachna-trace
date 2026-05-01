@@ -306,6 +306,92 @@ raw primitives. A bare `42` and a bare `54` are just two different
 integers; an envelope with the same `object_id` carrying different
 values is unambiguous evidence that the same instance changed.
 
+### Pinpointing the change in a deep object
+
+Both the file destination and the processor run the same enrichment
+step before traces are persisted: every captured object envelope
+gets a `__meta__` block carrying a Merkle content hash. A parent's
+hash is computed over its data with each child object replaced by
+the child's own hash, so any mutation anywhere in a subtree
+propagates up to the root.
+
+For the simple `Counter` example above, this only adds noise. For a
+nested object — say an Order with a Customer and a list of Items —
+it lets you locate exactly which subtree changed without a deep
+equality walk.
+
+Suppose one item's price changes from 10 to 15 during a method
+call. The enriched JSON values for that method's `AR` (entry) and
+`AX` (exit) look like this:
+
+**At entry (`AR`):**
+
+```json
+{
+  "__meta__": { "id": 1, "class": "Order", "hash": "f4a2c91e..." },
+  "id": 100,
+  "customer": {
+    "__meta__": { "id": 2, "class": "Customer", "hash": "9b3e1d77..." },
+    "id": 5,
+    "name": "Alice"
+  },
+  "items": [
+    {
+      "__meta__": { "id": 3, "class": "Item", "hash": "2e8a4f5b..." },
+      "sku": "A",
+      "price": 10
+    },
+    {
+      "__meta__": { "id": 4, "class": "Item", "hash": "c1d6b923..." },
+      "sku": "B",
+      "price": 20
+    }
+  ]
+}
+```
+
+**At exit (`AX`):**
+
+```json
+{
+  "__meta__": { "id": 1, "class": "Order", "hash": "07b9e3a4..." },
+  "id": 100,
+  "customer": {
+    "__meta__": { "id": 2, "class": "Customer", "hash": "9b3e1d77..." },
+    "id": 5,
+    "name": "Alice"
+  },
+  "items": [
+    {
+      "__meta__": { "id": 3, "class": "Item", "hash": "8d10c92f..." },
+      "sku": "A",
+      "price": 15
+    },
+    {
+      "__meta__": { "id": 4, "class": "Item", "hash": "c1d6b923..." },
+      "sku": "B",
+      "price": 20
+    }
+  ]
+}
+```
+
+Walking the tree by hash diff:
+
+- **Order**: hash changed (`f4a2c91e... → 07b9e3a4...`) — recurse.
+- **Customer**: hash unchanged (`9b3e1d77...`) — skip; nothing in
+  this subtree mutated.
+- **Items[0]**: hash changed (`2e8a4f5b... → 8d10c92f...`) —
+  recurse. Comparing the two leaves shows `price` went from 10 to
+  15.
+- **Items[1]**: hash unchanged (`c1d6b923...`) — skip.
+
+Three hash comparisons localised the change to one field of one
+item, regardless of how deep the rest of the tree is. The same
+construction is what backs ClickHouse predicates like
+`WHERE root_hash = '...'` — "find every call whose payload had this
+exact content" — for cross-call queries against the trace store.
+
 ## Components
 
 - **[deepflow-agent/](deepflow-agent/)** -- Java multi-module project
