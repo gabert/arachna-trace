@@ -30,10 +30,10 @@ together. For *what DeepFlow is and why* you'd reach for it, start at
                                   ▼                                          ▼
                        SESSION-<ts>/                                ┌──────────────────┐
                          run.json                                   │   collector      │
-                         <thread>.dft                                │  (Netty HTTP)    │
-                       (one process,                                 └──────┬───────────┘
-                        local files)                                        │
-                                                                            ▼
+                         <thread>.dft                               │  (Netty HTTP)    │
+                       (one process,                                └──────┬───────────┘
+                        local files)                                       │
+                                                                           ▼
                                                               ┌──────────────────────────┐
                                                               │   Kafka                  │
                                                               │   topic: deepflow-       │
