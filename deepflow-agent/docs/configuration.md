@@ -130,7 +130,7 @@ runtime cost for disabled tags.
 
 Available tags: `SI`, `TN`, `RI`, `TS`, `CL`, `TI`, `AR`, `RT`, `RE`, `TE`, `AX`.
 
-See [Trace Format](trace-format.md) for tag descriptions.
+See [Trace Format](spec/TAGS.md) for tag descriptions.
 
 ```properties
 # Default (no AX)

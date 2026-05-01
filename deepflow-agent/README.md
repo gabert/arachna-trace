@@ -1,95 +1,67 @@
 # DeepFlow Agent
 
-A Java bytecode instrumentation agent that captures the complete runtime
-data flow of your application -- method arguments, return values, exceptions,
-object identity, and object mutations -- without any code changes.
+The Java bytecode-instrumentation agent — the producer side of DeepFlow.
+Captures method arguments, return values, exceptions, object identity, and
+object mutations from a target JVM without any code changes.
 
-## Capabilities
+For solution-level context (what DeepFlow is and why), see
+[../README.md](../README.md). For the language-neutral wire-format contract
+that any DeepFlow agent must implement, see [docs/spec/SPEC.md](docs/spec/SPEC.md).
 
-- **Full data capture.** Not just "method X was called" -- you see what it
-  was called with, what it returned, and what blew up. Arguments, return
-  values, and exceptions are serialized as JSON with type information.
-
-- **Object identity tracking.** Every object instance receives a stable unique
-  ID. When the same `Order` passes through `validate`, `calculateTax`, and
-  `save`, all three share the same `object_id`. If the contents changed, you
-  see which method mutated it.
-
-- **Mutation detection.** Enable AX (arguments at exit) to capture arguments
-  both at entry and exit. Compare them to find which methods modify their
-  inputs.
-
-- **Request correlation.** Every method call carries a request ID (RI) that
-  groups all calls in a single request, including nested calls. Both entry
-  and exit records carry the same RI for direct correlation.
-
-- **Value truncation.** Cap serialized payloads via `max_value_size` to
-  prevent oversized objects from dominating traces.
-
-- **Per-thread trace files.** Each thread writes to its own `.dft` file
-  within a timestamped session directory.
-
-- **Session correlation.** Pluggable session ID resolution via SPI tags
-  every trace record with an HTTP session, request ID, or custom key.
-
-- **JPA proxy unwrapping.** Hibernate proxies and collection wrappers are
-  resolved to real objects before serialization.
-
-- **Structural-only mode.** `serialize_values=false` records only the call
-  graph -- minimal overhead for dead code detection.
-
-- **Cross-thread propagation.** Request IDs propagate across
-  `ThreadPoolExecutor` and `ForkJoinPool` submissions so async work shares
-  the originating request ID.
-
-- **Zero application dependencies.** Self-contained fat JAR.
-
-## Quick start
-
-### 1. Build
+## Build
 
 ```bash
 cd deepflow-agent
 mvn clean install
 ```
 
-Produces `core/agent/target/deepflow-agent.jar`.
+Produces the shaded fat JAR at `core/agent/target/deepflow-agent.jar`. The
+JAR is self-contained (ByteBuddy, Jackson, codec, serializer are all shaded
+in). SPI resolver JARs are **not** bundled — they live on the application
+classpath so they can access framework classes (Hibernate, Spring session).
 
-### 2. Configure
+## Configure and attach
 
-Create `deepagent.cfg`:
+Minimal `deepagent.cfg`:
 
 ```properties
 session_dump_location=D:\temp
 matchers_include=com\.example\.myapp\..*
 ```
 
-### 3. Attach and run
+Attach via `-javaagent`:
 
 ```bash
 java -javaagent:path/to/deepflow-agent.jar="config=path/to/deepagent.cfg" \
      -jar your-app.jar
 ```
 
-Spring Boot with Maven:
+Spring Boot via the Maven plugin:
 
 ```bash
 mvn spring-boot:run \
     -Dspring-boot.run.jvmArguments="-javaagent:path/to/deepflow-agent.jar=config=./deepagent.cfg"
 ```
 
-### 4. Read the traces
+Inline config overrides file values:
 
 ```bash
-ls D:/temp/SESSION-*/
-head -30 D:/temp/SESSION-*/main.dft
+java -javaagent:agent.jar="config=deepagent.cfg&serialize_values=false" -jar app.jar
 ```
+
+For all configuration options, see
+[docs/configuration.md](docs/configuration.md). For SPI resolver setup, the
+Spring Boot demo, and reading traces, see
+[docs/getting-started.md](docs/getting-started.md).
 
 ## Trace format
 
+Output goes to `<session_dump_location>/SESSION-<yyyyMMdd-HHmmss>/` with one
+`.dft` file per thread. A fragment looks like this:
+
 ```
-VR;1.1
-TS;82741936205100
+VR;1.3
+TS;1730412345678
 SI;alice-session-01
 MS;com.example::BookService.findByAuthor(long) -> java.util::List [public]
 TN;http-nio-8080-exec-3
@@ -97,43 +69,44 @@ RI;5
 CL;42
 TI;17
 AR;[3]
-TE;82741936270000
-TN;http-nio-8080-exec-3
-RI;5
+TE;1730412345712
 RT;VALUE
 RE;[{"object_id":101,"class":"java.util.ArrayList","value":[...]}]
 ```
 
 | Tag | Meaning |
 |-----|---------|
-| `VR` | Format version |
-| `TS` | Timestamp at entry (nanoseconds, `System.nanoTime()`) |
-| `SI` | Session ID |
+| `VR` | Wire-format version (`<major>.<minor>`) |
+| `TS` | Timestamp at entry (milliseconds since Unix epoch) |
+| `SI` | Session ID (omitted if absent) |
 | `MS` | Method signature |
 | `TN` | Thread name |
 | `RI` | Request ID (groups all calls in one request) |
 | `CL` | Caller line number |
+| `CI` / `PI` | Call ID / parent call ID (UUIDs) |
 | `TI` | This instance (object ID or full JSON) |
 | `AR` | Arguments as JSON |
 | `TE` | Timestamp at exit |
-| `RT` | Return type: VOID, VALUE, or EXCEPTION |
+| `RT` | Return type: `VOID`, `VALUE`, or `EXCEPTION` |
 | `RE` | Return/exception value as JSON |
 | `AX` | Arguments at exit (for mutation detection) |
 
+The full normative tag specification is in [docs/spec/TAGS.md](docs/spec/TAGS.md).
+
 ## Documentation
 
-Full documentation is in [doc/](../doc/):
+Full agent documentation is in [docs/](docs/):
 
-- [Overview](../doc/overview.md) -- what and why
-- [Getting Started](../doc/getting-started.md) -- build, attach, configure
-- [Configuration Reference](../doc/configuration.md) -- all options
-- [Trace Format](../doc/trace-format.md) -- format specification
-- [Architecture](../doc/architecture.md) -- data flow and modules
+- [Getting Started](docs/getting-started.md) -- build, attach, configure
+- [Configuration Reference](docs/configuration.md) -- all options
+- [Architecture](docs/architecture.md) -- agent data flow and modules
+- [Trace Format](docs/spec/TAGS.md) -- rendered tag-line specification
+- [Wire-format spec](docs/spec/SPEC.md) -- the language-neutral protocol contract
 
-Features: [Request ID](../doc/features/request-id.md) |
-[Truncation](../doc/features/truncation.md) |
-[Mutation Detection](../doc/features/mutation-detection.md) |
-[Serialize Modes](../doc/features/serialize-modes.md)
+Features: [Request ID](docs/features/request-id.md) |
+[Truncation](docs/features/truncation.md) |
+[Mutation Detection](docs/features/mutation-detection.md) |
+[Serialize Modes](docs/features/serialize-modes.md)
 
 ## Project structure
 
@@ -152,6 +125,8 @@ deepflow-agent/
     jpa-proxy-resolver-hibernate/   Hibernate proxy/collection unwrapping
   server/
     record-collector-server/        Netty HTTP server (receives binary records)
+    record-processor-server/        Kafka consumer → render → hash → ClickHouse
+    clickhouse-init/                Schema DDL for the ClickHouse container
   demos/
     demo-spring-boot/               Working Spring Boot example
 ```

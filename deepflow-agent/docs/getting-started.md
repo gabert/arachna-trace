@@ -25,7 +25,7 @@ in). SPI resolver JARs are not bundled -- they go on the application classpath.
 ## Configure
 
 Create `deepagent.cfg` (or copy the
-[reference config](../deepflow-agent/deepagent.cfg)):
+[reference config](../deepagent.cfg)):
 
 ```properties
 session_dump_location=D:\temp
@@ -104,7 +104,7 @@ RT;VALUE
 RE;[{"object_id":101,"class":"java.util.ArrayList","value":[...]}]
 ```
 
-See [Trace Format](trace-format.md) for the complete format specification.
+See [Trace Format](spec/TAGS.md) for the complete format specification.
 
 ## Run the Spring Boot demo
 

@@ -4,7 +4,7 @@ The agent module is the entry point of DeepFlow. It is a Java agent that
 attaches to a target application via `-javaagent` and instruments selected
 classes at load time using ByteBuddy.
 
-The agent produces binary records (see [record-format.md](record-format.md))
+The agent produces binary records (see [WIRE-FORMAT.md](../spec/WIRE-FORMAT.md))
 and offers them to an in-memory buffer. A background drainer thread delivers
 records to a configured destination (see [serializer.md](serializer.md)).
 

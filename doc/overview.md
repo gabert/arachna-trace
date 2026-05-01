@@ -60,18 +60,13 @@ production tracing, and team-wide analysis through a query interface.
 
 Both destinations capture the same data. The difference is where it lands.
 
-What gets recorded is fully configurable. The `emit_tags` setting controls
-which record tags are included in the output -- timestamps, arguments,
-return values, object identity, caller line numbers, and so on can each
-be turned on or off independently. Set `serialize_values=false` to skip
-object serialization entirely and record only structural data (which
-methods were called, in what order, by which thread). This is useful for
-dead code detection or when argument values are too large or sensitive to
-capture. Set `expand_this=false` to record only object identity references
-instead of full object state. Set `max_value_size` to cap serialized
-value size. The agent records exactly what you need -- nothing more.
+What gets recorded is fully configurable per agent run -- which tags are
+emitted, whether values are serialized at all, whether `this` is captured
+by reference or by content, and how large a single payload may grow before
+it is truncated. The agent records exactly what you need, nothing more.
 
-See [Configuration Reference](configuration.md) for all options.
+See [the agent's configuration reference](../deepflow-agent/docs/configuration.md)
+for all options.
 
 ## Two modes of use
 
@@ -164,10 +159,10 @@ wasn't there before -- you see exactly which method changed.
 **Understanding unfamiliar code.** Instrument the packages, trigger a user
 flow, read the trace. Real execution with real data.
 
-**Detecting mutations.** Enable AX, compare entry arguments with exit
-arguments. Find which method changed the list, the map, the entity.
+**Detecting mutations.** Capture arguments at both method entry and exit
+and compare them. Find which method changed the list, the map, the entity.
 
-**Finding dead code.** Set `serialize_values=false`, run the test suite.
+**Finding dead code.** Run the test suite in structural-only mode.
 Methods not in the trace were never called.
 
 **Verifying AI-generated code.** Run the feature, read the trace yourself
@@ -187,7 +182,10 @@ compliance or security reviewers as evidence.
 
 ## Further reading
 
-- [Getting Started](getting-started.md) -- build, attach, configure, read output
-- [Configuration Reference](configuration.md) -- all config options
-- [Trace Format](trace-format.md) -- the `.dft` file format specification
-- [Architecture](architecture.md) -- data flow, modules, design decisions
+The agent's own documentation lives next to its source. See
+[deepflow-agent/docs/](../deepflow-agent/docs/) for:
+
+- [Getting Started](../deepflow-agent/docs/getting-started.md) -- build, attach, configure, read output
+- [Configuration Reference](../deepflow-agent/docs/configuration.md) -- all config options
+- [Architecture](../deepflow-agent/docs/architecture.md) -- agent data flow, modules, design decisions
+- [Wire-format spec](../deepflow-agent/docs/spec/SPEC.md) -- the language-neutral protocol contract
