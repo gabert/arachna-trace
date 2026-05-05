@@ -336,6 +336,48 @@ class RecordParserTest {
                 "ME for a previously-evicted call must be treated as orphan");
     }
 
+    @Test
+    void sqTagAttachesSeqByCallId() {
+        Result r = result(
+                "TS;1000", "MS;A()V", "TN;t", "RI;1", "CL;1",
+                "CI;" + OUT,
+                "SQ;" + OUT + "|7",
+                "TE;1100", "TN;t", "RI;1", "CI;" + OUT, "RT;VOID");
+
+        ParsedCall c = new RecordParser().parse(r).get(0);
+        assertEquals(7L, c.seq());
+    }
+
+    @Test
+    void sqTagRoutesByCallIdNotAdjacency() {
+        // Two MS blocks interleaved with their SQ records.
+        // SQ;OUT|10 must land on OUT's call, SQ;INN|11 on INN's, regardless
+        // of which one came first in the stream.
+        Result r = result(
+                "TS;1000", "MS;A()V", "TN;t", "RI;1", "CL;1", "CI;" + OUT,
+                "TS;1100", "MS;B()V", "TN;t", "RI;1", "CL;2", "CI;" + INN, "PI;" + OUT,
+                // The two SQ records arrive in the "wrong" order vs their MSs.
+                "SQ;" + INN + "|11",
+                "SQ;" + OUT + "|10",
+                "TE;1200", "TN;t", "RI;1", "CI;" + INN, "RT;VOID",
+                "TE;1300", "TN;t", "RI;1", "CI;" + OUT, "RT;VOID");
+
+        List<ParsedCall> calls = new RecordParser().parse(r);
+        // Order: inner emitted first (TE for INN) then outer.
+        assertEquals(11L, calls.get(0).seq(), "B's seq must be 11");
+        assertEquals(10L, calls.get(1).seq(), "A's seq must be 10");
+    }
+
+    @Test
+    void sqTagAbsentLeavesSeqAtZero() {
+        // No SQ in the stream — seq stays at the default 0.
+        Result r = result(
+                "TS;1000", "MS;A()V", "TN;t", "RI;1", "CL;1", "CI;" + OUT,
+                "TE;1100", "TN;t", "RI;1", "CI;" + OUT, "RT;VOID");
+
+        assertEquals(0L, new RecordParser().parse(r).get(0).seq());
+    }
+
     private static Result result(String... lines) {
         return new Result("test-thread", List.of(lines));
     }

@@ -11,7 +11,7 @@ import java.util.Set;
 
 
 public class AgentConfig {
-    private static final String DEFAULT_EMIT_TAGS = "SI,TN,RI,TS,CL,TI,AR,RT,RE,TE";
+    private static final String DEFAULT_EMIT_TAGS = "SI,TN,RI,TS,CL,TI,AR,RT,RE,TE,SQ";
 
     private final List<String> matchersInclude;
     private final List<String> matchersExclude;

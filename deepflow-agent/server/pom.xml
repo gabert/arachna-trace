@@ -16,5 +16,6 @@
     <modules>
         <module>record-collector-server</module>
         <module>record-processor-server</module>
+        <module>record-query-server</module>
     </modules>
 </project>

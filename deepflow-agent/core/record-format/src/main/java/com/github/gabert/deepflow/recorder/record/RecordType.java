@@ -10,9 +10,10 @@ public final class RecordType {
     public static final byte THIS_INSTANCE_REF = 0x07;
     public static final byte ARGUMENTS_EXIT    = 0x08;
     public static final byte VERSION           = 0x09;
+    public static final byte SEQUENCE          = 0x0A;
 
     public static final short VERSION_MAJOR = 1;
-    public static final short VERSION_MINOR = 3;
+    public static final short VERSION_MINOR = 4;
 
     static final int HEADER_SIZE            = 5; // 1 byte type + 4 bytes length
     static final int SIGNATURE_LENGTH_SIZE   = Short.BYTES;
@@ -22,6 +23,7 @@ public final class RecordType {
     static final int CALLER_LINE_SIZE      = Integer.BYTES;
     static final int REQUEST_ID_SIZE       = Long.BYTES;
     public static final int UUID_SIZE      = 16;
+    public static final int SEQ_SIZE       = Long.BYTES;
 
     private RecordType() {}
 }

@@ -13,6 +13,7 @@ import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
 /**
@@ -37,6 +38,17 @@ public class RequestRecorder {
     private final boolean emitAr;
     private final boolean emitReturnRecord;
     private final boolean emitAx;
+    private final boolean emitSq;
+
+    /**
+     * Per-agent-run sequence counter. Incremented on each successful method
+     * entry, regardless of thread or request — i.e. it reflects the order in
+     * which the agent <em>observed</em> traced events. Carried on the wire by
+     * {@code SequenceRecord} when {@code emit_tags} includes {@code SQ}, and
+     * is the canonical ordering primitive for downstream consumers (sub-ms
+     * ties on {@code ts_in} are disambiguated by this).
+     */
+    private final AtomicLong seqCounter = new AtomicLong(0);
 
     public RequestRecorder(RecordBuffer recordBuffer, AgentConfig config) {
         this.recordBuffer = recordBuffer;
@@ -51,6 +63,7 @@ public class RequestRecorder {
         // tags are configured, so we only need to know whether either is wanted.
         this.emitReturnRecord = config.shouldEmit("RT") || config.shouldEmit("RE");
         this.emitAx = config.shouldEmit("AX");
+        this.emitSq = config.shouldEmit("SQ");
     }
 
     public RecordBuffer getRecordBuffer() {
@@ -100,14 +113,21 @@ public class RequestRecorder {
             UUID parentCallId = RequestContext.peekParentCallId();
             callId = UUID.randomUUID();
 
+            byte[] sequenceRecord = emitSq
+                    ? RecordWriter.sequence(callId, seqCounter.getAndIncrement())
+                    : null;
+
             if (serializeValues) {
                 Object selfForCapture = emitTi ? self : null;
                 Object[] argsForCapture = emitAr ? allArguments : null;
                 record = buildSerializedEntry(sessionId, signature, threadName, timestamp, callerLine,
-                        requestId, callId, parentCallId, selfForCapture, argsForCapture);
+                        requestId, callId, parentCallId, sequenceRecord, selfForCapture, argsForCapture);
             } else {
-                record = RecordWriter.logEntrySimple(sessionId, signature, threadName, timestamp, callerLine,
-                        requestId, callId, parentCallId);
+                byte[] startRecord = RecordWriter.logEntrySimple(sessionId, signature, threadName, timestamp,
+                        callerLine, requestId, callId, parentCallId);
+                record = sequenceRecord != null
+                        ? BinaryUtil.concat(startRecord, sequenceRecord)
+                        : startRecord;
             }
         } catch (Throwable t) {
             // Roll back depth so the next root entry on this thread still
@@ -188,6 +208,7 @@ public class RequestRecorder {
                                          long timestamp, int callerLine,
                                          long requestId,
                                          UUID callId, UUID parentCallId,
+                                         byte[] sequenceRecord,
                                          Object self, Object[] allArguments) throws IOException {
         byte[] startRecord = RecordWriter.logEntrySimple(sessionId, signature, threadName, timestamp, callerLine,
                 requestId, callId, parentCallId);
@@ -206,7 +227,7 @@ public class RequestRecorder {
             argsRecord = RecordWriter.arguments(valueEncoder.encode(allArguments));
         }
 
-        return BinaryUtil.concat(startRecord, thisRecord, argsRecord);
+        return BinaryUtil.concat(startRecord, sequenceRecord, thisRecord, argsRecord);
     }
 
     private static Map<String, Object> buildExceptionData(Throwable throwable) {

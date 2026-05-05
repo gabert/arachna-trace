@@ -1,9 +1,9 @@
 # Wire Format — Binary Records
 
-**Normative.** Encoded version: **`major=1`, `minor=3`**.
+**Normative.** Encoded version: **`major=1`, `minor=4`**.
 
 A DeepFlow stream is a sequence of self-delimited binary frames. Each
-frame is one **record** of one of the nine types defined in §4.
+frame is one **record** of one of the ten types defined in §4.
 
 This document defines the byte layout exactly. It does **not** define
 the semantic order in which records appear; that is in §5.
@@ -66,8 +66,9 @@ new record types added in future minor versions.
 | 0x07 | THIS_INSTANCE_REF     | `int64` | After METHOD_START on instance methods, when only `this`'s ID is captured. |
 | 0x08 | ARGUMENTS_EXIT        | `cbor` | After METHOD_END, when mutation tracking is enabled. |
 | 0x09 | VERSION               | see §4.9 | Once at the start of a stream. |
+| 0x0A | SEQUENCE              | see §4.10 | After METHOD_START, when sub-millisecond observation order is desired. |
 
-Type bytes `0x00` and `0x0A`–`0xFF` are reserved. A producer MUST NOT
+Type bytes `0x00` and `0x0B`–`0xFF` are reserved. A producer MUST NOT
 emit them. A consumer SHOULD log and skip them rather than fail
 (§3, forward-compatibility).
 
@@ -293,6 +294,37 @@ RETURN or EXCEPTION after every METHOD_END.
 
 VERSION (0x09) MUST appear at most once per stream. When present, it
 SHOULD be the first record.
+
+### 4.10 SEQUENCE (0x0A)
+
+```
++--------+--------+
+| callId | seq    |
+| uuid   | int64  |
++--------+--------+
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `callId` | uuid | The callId of the METHOD_START this seq belongs to. Pairs by UUID, not by adjacency, so the consumer can route correctly when records from different threads interleave on the wire. |
+| `seq` | int64 | A strictly monotonic ordinal scoped to a single agent run. The reference Java agent increments a per-process `AtomicLong` on each successful method entry — i.e. the seq reflects the order in which the agent **observed** events, regardless of thread or request. |
+
+Total fixed size: `16 + 8 = 24` bytes.
+
+Per-call ordering: when emitted, SEQUENCE for a call MUST appear after
+that call's METHOD_START and before its METHOD_END. Within those bounds
+the relative position to ARGUMENTS / THIS_INSTANCE / nested calls is
+not constrained — pairing is by `callId`.
+
+This record is OPTIONAL. The reference Java agent emits it when
+`emit_tags` includes `SQ`, which is on by default. Consumers that read
+no SEQUENCE records SHOULD fall back to ordering by `timestamp` (with
+the millisecond-resolution ambiguity that implies); consumers that read
+SEQUENCE SHOULD use it as the canonical ordering primitive (sub-ms
+ties on `timestamp` are disambiguated by `seq`).
+
+The seq value is meaningful only relative to its agent run; comparing
+seqs across different `agent_run_id`s is undefined.
 
 For nested calls on the same thread, METHOD_START records are
 strictly LIFO with their METHOD_END counterparts:

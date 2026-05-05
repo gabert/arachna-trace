@@ -214,6 +214,7 @@ public class ClickHouseSink implements RecordSink {
         row.put("caller_line", c.callerLine());
         row.put("return_type", c.returnType() != null ? c.returnType() : "VOID");
         row.put("this_id", thisId);
+        row.put("seq", c.seq());
         callBuffer.add(row);
     }
 
@@ -230,6 +231,7 @@ public class ClickHouseSink implements RecordSink {
         row.put("payload_size", json != null ? json.getBytes(StandardCharsets.UTF_8).length : 0);
         row.put("root_hash", extractRootHash(json));
         row.put("object_ids", collectIds(json));
+        row.put("seq", c.seq());
         return row;
     }
 

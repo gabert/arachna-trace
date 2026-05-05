@@ -132,4 +132,8 @@ public final class RecordWriter {
         return VersionRecord.current().toFrame();
     }
 
+    public static byte[] sequence(UUID callId, long seq) {
+        return new SequenceRecord(callId, seq).toFrame();
+    }
+
 }

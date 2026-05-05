@@ -46,7 +46,7 @@ escaping for `;` in tag values — consumers MUST split only on the
 
 | Tag | Source record | Cardinality per call | Value |
 |-----|---------------|----------------------|-------|
-| `VR`| VERSION       | once per stream      | `<major>.<minor>` (e.g. `"1.3"`) |
+| `VR`| VERSION       | once per stream      | `<major>.<minor>` (e.g. `"1.4"`) |
 | `MS`| METHOD_START  | once                 | method signature (UTF-8 string) |
 | `SI`| METHOD_START  | 0..1                 | session id (omitted if empty) |
 | `TN`| METHOD_START + METHOD_END | twice    | thread name |
@@ -61,6 +61,7 @@ escaping for `;` in tag values — consumers MUST split only on the
 | `RT`| RETURN / EXCEPTION | once            | one of `VOID`, `VALUE`, `EXCEPTION` |
 | `RE`| RETURN / EXCEPTION | 0..1            | hashed JSON of return or exception (omitted if `RT;VOID`) |
 | `TE`| METHOD_END    | once                 | exit timestamp (decimal int64) |
+| `SQ`| SEQUENCE      | 0..1                 | `<callId>\|<seq>` — agent-observed monotonic ordinal (per agent run). Pair by `callId`, not by adjacency. |
 
 The `MS` and `VR` tags are **always emitted**, regardless of the
 configured `emit_tags` set — `MS` because every call must be
@@ -90,6 +91,9 @@ THIS block (if any):
 
 ARGUMENTS (if any):
   AR;<json>
+
+SEQUENCE (if any):
+  SQ;<callId>|<seq>
 
 (nested calls' MS blocks recurse here)
 

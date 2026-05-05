@@ -179,13 +179,16 @@ Estimated ~250–400 lines including tests.
 | D-06 | Low      | Coupling    | New          | `is_exception` materialized expression hardcodes literal `'EXCEPTION'` |
 | D-07 | Low      | Cosmic-ray   | New          | UUID collision (2^-128) overwrites `openCalls` entry |
 | D-08 | Low      | Subtle      | New          | `runScoped` body sees swapped stack — caller's outer call invisible |
+| D-09 | Low      | Data quality | New         | Same envelope can hash differently across observations of a cyclic graph (Merkle hash is direction-dependent on cycles) |
+| U-01 | ~~Medium~~ FIXED | UI       | New          | ~~Tree pane stops responding to expand/collapse clicks after a few watch-row navigations~~ — fixed by replacing the global-broadcast highlight model with an imperative navigator + local-only payload viewers |
 | A-01 | -        | Pre-existing | Pre-existing | `new Thread(r).start()` without instrumentation: no propagation |
 | A-02 | -        | Pre-existing | Pre-existing | Custom executors via `CompletableFuture.runAsync` not covered |
 | A-03 | -        | Pre-existing | Pre-existing | Virtual threads — should work via thread-locals, not tested |
 | A-04 | -        | Pre-existing | Pre-existing | No FK enforcement; cross-table joins must tolerate missing rows |
 
 Legend: **B**ug (correctness/wrong data), **L**eak (memory/state),
-**D**ata quality (degradation/inaccuracy), **A**rchitectural (limitations).
+**D**ata quality (degradation/inaccuracy), **A**rchitectural (limitations),
+**U**I (frontend issue in `deepflow-ui/`).
 
 ---
 
@@ -559,6 +562,190 @@ it's a subtle behavior that could surprise.
 
 **Fix:** None needed — this is the intended behavior for async parent
 linkage. Documented for clarity.
+
+---
+
+### D-09 — Cyclic graphs: same envelope hashes differently depending on traversal entry
+
+**Where:** `core/codec/Hasher.java` (Merkle walk) +
+`core/codec/envelope/EnvelopeSerializer.java` (cycle marker emission).
+
+**Trigger:** Any object graph with a cycle (e.g. JPA bidirectional
+`Author` ⇌ `Book`). Two traces of the same logical state can produce
+different envelope hashes.
+
+**Cause:** When a cycle is closed, `EnvelopeSerializer` emits
+`{ref_id: <id-of-the-already-seen-object>, cycle_ref: true}`. The id
+inside that marker — and the *position* where the marker lands —
+depends on which side of the cycle was the traversal root. The Merkle
+hash incorporates that marker, so the asymmetry propagates upward.
+
+Concretely, with `Author#1 ⇌ Book#5`:
+- Root = Author → cycle marker lands inside Book as `{ref_id: 1}`.
+- Root = Book → cycle marker lands inside Author as `{ref_id: 5}`.
+
+Author's hash (or Book's) ends up direction-dependent.
+
+**Symptom in the UI:** The watch panel shows a "hash transition" when
+two methods observed the same object from opposite sides of a cycle,
+even though no field actually changed. False positive in the change
+detection.
+
+**Fix:** None planned. The principled fix would be to drop the
+inline-children optimization in `Hasher.walkMap` and treat every child
+envelope as `{ref_id: id}` — but that downgrades the project's core
+property: a single Merkle hash compare detects any change anywhere in
+a subtree. We accept the cyclic-graph edge case as the cost of keeping
+the Merkle property for the common (acyclic) case.
+
+**Mitigation in clients:** When inspecting a transition flagged on a
+cyclic object, verify the field-level diff manually before trusting it
+as a real change.
+
+#### Follow-up — practical case 2026-05-05 and proposed UI fix
+
+Working on the demo, watching `BookEntity #193` in session
+`01FAFCB8161E242D9CBD36F64B1C57B8`, the watch panel showed four
+distinct deep hashes for what seemed to be the same instance:
+`dd3deb9c`, `7e0950ec`, `fe0d7f3c`, `9279c45c`.
+
+Decomposing the 13 appearances by Book#193's *own* fields revealed
+the four hashes as the cross product of **two cycle entry directions
+× two real ISBN states**:
+
+| State (Book's own isbn)   | Entry direction                     | Hash       |
+|---------------------------|-------------------------------------|------------|
+| `978-0-618-39111-3`       | Book root, Author nested            | dd3deb9c   |
+| `978-0-618-39111-3`       | Author root, Book nested            | 7e0950ec   |
+| `9780618391113`           | Book root, Author nested            | fe0d7f3c   |
+| `9780618391113`           | Author root, Book nested            | 9279c45c   |
+
+The dashes are stripped at `seq=108` by
+`LibraryDAO.normalizeIsbns(...)` — a real mutation. So 2 of the 4
+transitions are honest signal, 2 are cycle-direction noise.
+
+**Why the existing `↺ skip` UX hides the real mutation too:**
+the watch panel skips *every* appearance whose snapshot contains any
+cycle marker anywhere. When the watched envelope is itself in a
+bidirectional cycle (Book ↔ Author is JPA-typical), every snapshot
+has a cycle marker somewhere inside, so every row is skipped — and
+the real ISBN change disappears along with the cycle noise.
+
+**Proposed fix (UI only, no source change):**
+add a second column to the watch panel for instance watches — call
+it *own-state* — computed client-side from each snapshot. It is the
+envelope's own scalar fields plus the **ids** of its referenced
+children (refs collapsed, no Merkle rollup). Book#193's own-state
+changes only when Book's own fields change, and is invariant under
+cycle-entry direction and sibling envelope mutations.
+
+Show both columns. Drop the blunt `skipped` mode.
+
+```
+hash       own-state
+─────────────────────────
+dd3deb9c   abc1234     ← hash A, state A
+7e0950ec   abc1234     ← hash B, state A   (cycle noise: hash moved, state didn't)
+fe0d7f3c   def5678     ← hash C, state B   (real mutation surfaces)
+9279c45c   def5678     ← hash D, state B   (cycle noise on the new state)
+```
+
+The deep hash keeps the "did anything in the subtree change" semantic
+(the project's stated value-prop). The own-state hash answers "did
+*this* object's own data change", which is the question the user is
+usually asking when tracking an instance through layers.
+
+User left this open at end of session 2026-05-05; pick up here.
+
+---
+
+## UI
+
+### U-01 — Tree pane stops responding after several watch-row navigations — FIXED
+
+**Resolution:** the underlying architecture was the bug. The watch-row
+click set a global `highlight` ref that every mounted `JsonTree`
+listened to via deep prop chains, with reactive watchers that
+auto-expanded matching nodes. With several open calls and deep
+payloads, the per-click recompute fanout grew faster than Vue could
+flush, eventually starving the toggle hit-tests.
+
+**Fix (architectural reframe):**
+
+- The page now treats a request as an addressable timeline of frames
+  keyed by the `seq` ordering primitive. Navigation is imperative:
+  `SessionDetailView` keeps a `frameRefs[callId] → FrameCard` map and a
+  single `goto({callId, kind, path})` entry point that walks
+  `frame.revealAt(kind, path)` → `payloadViewer.revealPath(path)`. Only
+  the targeted component is touched per click; nothing else on the
+  page reacts.
+- `PayloadViewer` is the sole owner of expansion state for its tree
+  (a `Set` of JSON-stringified path keys). User toggle and imperative
+  reveal both mutate the same set — no two sources of truth fighting.
+- `JsonTree` is now a dumb recursive renderer: it receives an
+  `isExpanded(key)` callback and emits `toggle(key)` / `pin` /
+  `follow-cycle`. No `highlight` prop, no `containsMatch`/`isMatch`
+  computeds, no auto-expand watchers, no provide/inject of reactive
+  refs.
+- Highlight is pure DOM: `revealPath` queries `[data-path="…"]` after
+  Vue commits, adds a `.flashed` class. No reactive cascade.
+- Cycle-ref chip resolution now lives inside the `PayloadViewer` —
+  the cycle target is by definition an ancestor in the same payload,
+  so a local `findPathToObjectId(data, targetId)` walk suffices; no
+  id-based highlight fallback at the global level.
+
+**Why this also helps future products on the schema side:** the same
+addressing model — `(seq, kind, path)` — composes cleanly into URLs,
+which means "share me a link to that exact field at that exact
+moment" becomes trivial when we add router state for it.
+
+---
+
+**Where:** `deepflow-ui/src/components/JsonTree.vue` and
+`deepflow-ui/src/views/SessionDetailView.vue`.
+
+**Symptom:** In the session view, after pinning a watch and clicking
+on a few rows in the right pane, the JSON tree on the left stops
+responding to expand/collapse clicks. The view sometimes renders an
+empty container area where children should be. Occasionally a click
+"kicks in" later. The condition accumulates across several jumps and
+recovers irregularly.
+
+**Reproduction:**
+1. Open any session, pick a request.
+2. Expand a call, hover an envelope or field, click ⊕ watch.
+3. In the right pane, click several rows of that watch in succession.
+4. After 3–5 clicks, expand/collapse on the left tree no longer reacts.
+
+**Suspected cause:** Cascading reactive recomputes through the
+recursive `JsonTree` component. Every watch-row click changes
+`highlight`, which forces `containsMatch`/`isMatch` to re-evaluate at
+every node along the path, which in turn auto-expands prefix nodes,
+mounts new descendants, and re-runs their setup. The watch on
+`containsMatch` (with `immediate: true`) re-fires on each new mount.
+With several open calls and deep payloads, the update queue grows
+faster than Vue can flush, and pointer/click events are missed.
+
+**What was tried (didn't fix):**
+- Replaced `provide`/`inject` for the envelope context with an
+  explicit `:envContext` prop (same shape, more direct propagation).
+- Memoised payload parsing — `tryParse(payload_json)` now runs once
+  at fetch time; `:data` keeps a stable identity across renders.
+- Removed an inline `:ref` callback that re-triggered
+  `scrollIntoView({behavior: 'smooth'})` on every render.
+- Set `pointer-events: none` on the invisible ⊕ watch button so it
+  no longer eats clicks at the right edge of rows.
+
+**Likely next steps:**
+- Profile re-render counts per JsonTree on a watch-row click.
+- Drop the `containsMatch` auto-expand watch and require the user to
+  expand manually; or replace it with a one-shot expansion driven from
+  the parent (`SessionDetailView.jumpToCall` walks the path and sets
+  expanded flags on a small, known set of nodes instead of having
+  every node react globally).
+- Consider switching the recursive renderer to a flat virtualised
+  list — the current approach instantiates one Vue component per
+  node, which scales poorly with deep payloads and many open calls.
 
 ---
 

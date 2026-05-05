@@ -33,7 +33,8 @@ public record ParsedCall(
         String thisJson,
         String argsJson,
         String argsExitJson,
-        String returnJson
+        String returnJson,
+        long seq
 ) {
 
     public Long effectiveThisId() {

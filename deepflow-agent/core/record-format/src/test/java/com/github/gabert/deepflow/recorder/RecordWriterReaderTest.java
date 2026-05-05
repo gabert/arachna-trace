@@ -8,6 +8,7 @@ import com.github.gabert.deepflow.recorder.record.MethodStartRecord;
 import com.github.gabert.deepflow.recorder.record.RecordReader;
 import com.github.gabert.deepflow.recorder.record.RecordWriter;
 import com.github.gabert.deepflow.recorder.record.ReturnRecord;
+import com.github.gabert.deepflow.recorder.record.SequenceRecord;
 import com.github.gabert.deepflow.recorder.record.TraceRecord;
 import org.junit.jupiter.api.Test;
 
@@ -15,6 +16,7 @@ import java.io.ByteArrayInputStream;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -286,6 +288,31 @@ class RecordWriterReaderTest {
         assertEquals(2, records.size());
         ArgumentsRecord args = assertInstanceOf(ArgumentsRecord.class, records.get(1));
         assertArrayEquals(bigArgs, args.cbor());
+    }
+
+    // --- SEQUENCE record ---
+
+    @Test
+    void sequenceRecordRoundtrip() {
+        UUID callId = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        byte[] data = RecordWriter.sequence(callId, 12345L);
+
+        List<TraceRecord> records = RecordReader.readAll(data);
+        assertEquals(1, records.size());
+
+        SequenceRecord seq = assertInstanceOf(SequenceRecord.class, records.get(0));
+        assertEquals(callId, seq.callId());
+        assertEquals(12345L, seq.seq());
+    }
+
+    @Test
+    void sequenceRecordWithMaxSeq() {
+        UUID callId = UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        byte[] data = RecordWriter.sequence(callId, Long.MAX_VALUE);
+
+        SequenceRecord seq = assertInstanceOf(SequenceRecord.class,
+                RecordReader.readAll(data).get(0));
+        assertEquals(Long.MAX_VALUE, seq.seq());
     }
 
     // --- Test utilities ---

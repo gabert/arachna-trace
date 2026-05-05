@@ -1,0 +1,238 @@
+# UI/UX Design — DeepFlow Trace Browser
+
+Living design doc for `deepflow-ui/` and the read-only `record-query-server/`
+that backs it. Update as decisions firm up.
+
+## Tech stack
+
+- **Vite + Vue 3 + plain JavaScript** (no TypeScript). Keep it simple and reviewable.
+- **PrimeVue** for data components. Chosen over Naive UI specifically for `TreeTable`,
+  which is what the call-tree view needs out of the box.
+- **Pinia** for shared state (current session, selected call, expanded nodes,
+  open object-history pane).
+- **Vue Router** so trace views are shareable URLs (`/sessions/:id/calls/:callId`).
+- **Read API** via `record-query-server` (Java/Netty, port 8082). The browser
+  never touches ClickHouse directly; SQL stays on the server.
+
+## Core user question
+
+> "What happened to my data?"
+
+The UI is not a log viewer. It exists to support a *narrative* — a request came
+in, data flowed through methods, something went wrong. Users need to follow
+that story, not browse raw trace files.
+
+## Product philosophy: microscope, not detective
+
+A request is a **data flow**: data comes in, code transforms it, data
+goes out. Somewhere along the way, in one of the transformations, a
+mapping is wrong, a calculation slips, a side effect drops a field. No
+tool can tell the user *what* is wrong — heuristics for "the suspicious
+diff" or "the auto-detected anomaly" will be wrong half the time and
+erode trust the rest.
+
+What we have that nobody else does is a faithful recording of every
+value at every step. The UI's job is to let a human **point the lens**
+and see clearly. The intelligence lives in the user's eyes; the tool
+makes every transformation, every value, every nested field trivially
+inspectable at arbitrary depth.
+
+Concretely, this rules out:
+
+- Auto-highlighting "what changed" between two payloads.
+- Auto-extracting "the suspicious field."
+- Inferring "the bug location" from heuristics.
+
+And rules in:
+
+- Faithful, fully drillable rendering of every captured envelope.
+- Navigation that lets the user *construct* the focus they want — pin
+  any path, any class, any object id into a watch.
+- Adjacent transformations made comparable **when the user asks**, not
+  pre-emptively.
+
+This is also less code than the smart-detection paths. Fewer heuristics
+to be wrong about.
+
+## Mental model: "session as a recording"
+
+The primary metaphor is a **recording the user walks through**. They sit
+down, pick *their* session from a list, and scrub through what their app
+did. Not a query tool — a playback tool with annotations.
+
+This implies:
+
+- The session list is the only landing page. (No global search bar, no
+  "recent activity" feed at the top level.)
+- Inside a session, the user moves linearly through method calls,
+  forward and back, like stepping through a recording. Tree-shaped
+  drill-down comes second to time-shaped scrubbing.
+
+## Authorised sessions (later)
+
+The session list will eventually be filtered: a user only sees sessions
+they are authorised to see. For now the list is unfiltered and shows
+everything. Auth model is deferred — but the API and UI should not
+assume the list is global, so adding a filter later is a one-place change.
+
+## Markers (user-set chapters)
+
+The user, while working with the running app, will be able to **drop
+markers** at moments they consider significant — typically just before
+doing the operation they want to debug ("I'm about to enter the
+problematic section"). Markers appear on the recording timeline as
+chapter boundaries and let the user scope the view to a window around
+the marker, instead of scrolling thousands of unrelated calls.
+
+Implications (not yet implemented):
+
+- Markers need a **wire path**, not a UI-only annotation. The right
+  answer is an agent-side emit (new record kind, e.g. `MK` carrying
+  label + timestamp + optional tags), so markers travel with the trace,
+  persist in ClickHouse, and survive replay.
+- A small REST/CLI endpoint on the running app for the user to drop a
+  marker, which calls into the agent's recorder.
+- UI affordance: chapter ticks on the left-pane timeline, with "scope
+  to window around marker" as a one-click filter.
+
+## Two views, side by side: the session screen
+
+Inside a chosen session, the screen is a two-pane layout — the core
+working surface of the product.
+
+### Left pane — method-call recording
+
+Linear walkthrough of the calls in the session (filtered by thread, by
+marker window, etc.). User scrubs forward/back through method
+invocations, each row showing signature, duration, return type. Selecting
+a row reveals its arguments, return, and `this`. Mutations are visually
+highlighted (hash change between consecutive observations of the same
+object).
+
+This is *time-shaped* navigation: "what happened next?"
+
+### Right pane — the lens (watch list)
+
+The user-steered focus pane. **Not** a tool-curated index of "classes
+seen" or "fields that look interesting" — those are detective features
+and we don't do those. Instead, this pane is a list the user **builds
+by clicking** in the left pane.
+
+While walking the recording on the left, when the user sees a value
+worth tracking — `customer.address.country`, `invoice.tax`, an
+`object_id`, a class — they click it, and that *path* is pinned to the
+right pane. The right pane then shows every appearance of that path
+across the request, in time order, with its value each time:
+
+```
+Watching: invoice.tax
+─────────────────────────────────────────────────────
+12:34:01.018  AR  TaxService.calc          19.99
+12:34:01.019  RE  TaxService.calc          39.98
+12:34:01.021  AR  CartMapper.toEntity      39.98
+12:34:01.025  TI  CartRepository.save      39.98
+…
+```
+
+A watch generalises across handles:
+
+| Watch on…        | Right pane shows                                                  |
+|------------------|-------------------------------------------------------------------|
+| A JSON path      | Every payload in the request that has that path, with its value   |
+| An `object_id`   | Every payload that mentions that id (existing object-history view)|
+| A class          | Every envelope in the request whose `__meta__.class` matches      |
+| A field name     | Every payload that has a field with that name, regardless of path |
+
+Selecting a watch row on the right scrolls the left pane to that call.
+Selecting a call on the left does **not** auto-pin anything — the user
+chooses what to watch. The tool stays passive.
+
+## Entry points (the three ways a user shows up)
+
+The user usually arrives because *something is wrong*. They have a vague
+signal — "Bob's invoice doubled," "the tax field is null." They don't
+yet know which method is at fault. The landing page must support
+**guess-by-narrowing**, not "click the right method first try."
+
+| # | Entry point         | Mental model                                     | UI affordance                            |
+|---|---------------------|--------------------------------------------------|------------------------------------------|
+| 1 | I know the session  | "I just ran the test, where's my trace?"         | Sessions list (the landing page)         |
+| 2 | I know the type     | "I think `Invoice` is being filled wrong."       | Right-pane class list inside the session |
+| 3 | I know the instance | "Show me everywhere customer 42 was touched."    | Click instance in the right pane         |
+
+(2) and (3) live *inside* the session, not as a global search. That's
+the user's stated mental model: pick your session, then narrow.
+
+## Interaction flow
+
+```
+Sessions list
+  └── Pick session ──► Session view (two panes, side by side)
+                          │
+                          ├── LEFT: method-call recording (linear scrub)
+                          │     ├── Filter: by thread, by marker window
+                          │     ├── Click call ──► reveal AR / AX / RE / this
+                          │     └── Markers shown as chapter ticks
+                          │
+                          └── RIGHT: object navigator
+                                ├── Grouped by class
+                                ├── Expand class ──► instances
+                                ├── Click instance ──► highlight calls on left
+                                └── Mutation count / hash timeline per instance
+```
+
+## Open UX questions
+
+- **How much data by default?** Traces can have thousands of calls. Options:
+  start collapsed, top-N levels, filter by package/class, search by signature.
+- **Visualising mutations** — colour coding, inline diff, side-by-side?
+- **Multi-thread view** — separate tabs per thread, or unified timeline with
+  thread lanes?
+- **Diff between two requests** — Alice's that worked vs. Bob's that didn't.
+  Possibly the most valuable view, not yet sketched.
+- **Streaming / live updates** while the agent is running, or refresh-only?
+
+## Read API surface (record-query-server)
+
+Currently implemented:
+
+| Method & path                                | Purpose                                          |
+|----------------------------------------------|--------------------------------------------------|
+| `GET /api/health`                            | Liveness                                         |
+| `GET /api/sessions`                          | Recent sessions (most recent first)              |
+| `GET /api/sessions/{id}/threads`             | Threads observed in a session, with call counts  |
+| `GET /api/sessions/{id}/calltree?thread=…`   | Paired call rows for the call-tree view          |
+| `GET /api/calls/{id}/payloads`               | TI/AR/AX/RE payloads for one call                |
+| `GET /api/objects/{id}/history`              | Every payload row mentioning the given object id |
+
+To add (driven by the two-pane session view + markers):
+
+| Method & path                                          | Purpose                                                            |
+|--------------------------------------------------------|--------------------------------------------------------------------|
+| `GET /api/sessions/{id}/classes`                       | Right-pane top level: classes seen in the session, with counts     |
+| `GET /api/sessions/{id}/classes/{class}/instances`     | Drill-down: instances of a class, with mutation count & timestamps |
+| `GET /api/sessions/{id}/markers`                       | Markers/chapters set during recording                              |
+| `GET /api/sessions/{id}/recording?from=&to=&marker=…`  | Linear call list scoped to a window or marker chapter              |
+
+Open question for the class/instance endpoints: extracting `__meta__.class`
+from `payload_json` works at small scale but won't at large. The clean
+answer is a derived column or a small `objects_seen(session, class, object_id)`
+materialised view populated by the processor. Defer until we have a query
+that's actually slow.
+
+All endpoints return JSON; the browser holds no SQL and no DB credentials.
+
+## Project layout
+
+```
+flowspy/
+  deepflow-agent/
+    server/record-query-server/   Read API (Netty + ClickHouse HTTP)
+    docs/ui-design.md             ← this file
+  deepflow-ui/                    Vite + Vue 3 + PrimeVue + Pinia
+```
+
+## Build/run
+
+See `deepflow-ui/README.md` for the dev loop. The Vite dev server proxies
+`/api` → `localhost:8082`, so the UI can call the API as if same-origin.

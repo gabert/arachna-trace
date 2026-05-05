@@ -23,7 +23,8 @@ public sealed interface TraceRecord
                 ReturnRecord,
                 ExceptionRecord,
                 ThisInstanceRecord,
-                ThisInstanceRefRecord {
+                ThisInstanceRefRecord,
+                SequenceRecord {
 
     /** Single-byte record-type discriminator (matches {@link RecordType} constants). */
     byte typeByte();
@@ -57,6 +58,7 @@ public sealed interface TraceRecord
             case RecordType.EXCEPTION         -> ExceptionRecord.parse(payload);
             case RecordType.THIS_INSTANCE     -> ThisInstanceRecord.parse(payload);
             case RecordType.THIS_INSTANCE_REF -> ThisInstanceRefRecord.parse(payload);
+            case RecordType.SEQUENCE          -> SequenceRecord.parse(payload);
             default -> throw new IllegalArgumentException(
                     "Unknown record type byte: 0x" + String.format("%02X", typeByte));
         };

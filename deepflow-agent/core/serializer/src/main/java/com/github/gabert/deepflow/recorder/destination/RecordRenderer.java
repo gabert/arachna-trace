@@ -9,6 +9,7 @@ import com.github.gabert.deepflow.recorder.record.MethodEndRecord;
 import com.github.gabert.deepflow.recorder.record.MethodStartRecord;
 import com.github.gabert.deepflow.recorder.record.RecordReader;
 import com.github.gabert.deepflow.recorder.record.ReturnRecord;
+import com.github.gabert.deepflow.recorder.record.SequenceRecord;
 import com.github.gabert.deepflow.recorder.record.ThisInstanceRecord;
 import com.github.gabert.deepflow.recorder.record.ThisInstanceRefRecord;
 import com.github.gabert.deepflow.recorder.record.TraceRecord;
@@ -36,7 +37,7 @@ public final class RecordRenderer {
     private static final String DELIMITER = ";";
     private static final Set<String> ALL_TAGS = Set.of(
             "VR", "MS", "SI", "TN", "RI", "TS", "CL", "TI", "AR", "AX", "RT", "RE", "TE",
-            "CI", "PI");
+            "CI", "PI", "SQ");
 
     private RecordRenderer() {}
 
@@ -97,6 +98,14 @@ public final class RecordRenderer {
         }
         if (record instanceof ExceptionRecord e) {
             return List.of(tag("RT", "EXCEPTION"), tag("RE", decodeCbor(e.cbor())));
+        }
+        if (record instanceof SequenceRecord s) {
+            // Self-contained: value is `<callId>|<seq>` so the parser can
+            // route by callId without re-using the CI tag (which already
+            // carries dual meaning on MS / ME). Robust against multi-thread
+            // interleaving where SQ may not be adjacent to its MS.
+            String value = (s.callId() != null ? s.callId().toString() : "") + "|" + s.seq();
+            return List.of(tag("SQ", value));
         }
         // Sealed permits clause guarantees this is unreachable in correct code.
         throw new IllegalStateException("Unhandled TraceRecord subtype: " + record.getClass());

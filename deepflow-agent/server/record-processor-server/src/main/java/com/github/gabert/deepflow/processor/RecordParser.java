@@ -163,6 +163,25 @@ public final class RecordParser {
                     if (currentExit != null) apply(currentExit, tag, value);
                 }
 
+                case "SQ" -> {
+                    // SQ value is `<callId>|<seq>` — route by callId so it
+                    // pairs with its MS regardless of adjacency on the wire.
+                    int bar = value.indexOf('|');
+                    if (bar < 0) break;
+                    UUID seqCallId = parseUuidOrNull(value.substring(0, bar));
+                    long seq = parseLongOrZero(value.substring(bar + 1));
+                    if (seqCallId == null) break;
+                    Builder b = openCalls.get(seqCallId);
+                    if (b == null && currentEntry != null
+                            && seqCallId.equals(currentEntry.callId)) {
+                        // Common path: SQ arrives in the same MS context, before
+                        // CI has indexed the builder (CI handler also indexes,
+                        // so this is a defensive fast-path).
+                        b = currentEntry;
+                    }
+                    if (b != null) b.seq = seq;
+                }
+
                 default -> {
                     // SI, MS, CL, TI, AR — apply to entry context.
                     if (currentEntry != null) apply(currentEntry, tag, value);
@@ -263,6 +282,7 @@ public final class RecordParser {
         String argsJson;
         String argsExitJson;
         String returnJson;
+        long seq;
 
         Builder(long openedAtMillis) {
             this.openedAtMillis = openedAtMillis;
@@ -274,7 +294,7 @@ public final class RecordParser {
                     sessionId, requestId, threadName,
                     tsIn, tsOut, signature, callerLine,
                     returnType, thisIdRef, thisJson,
-                    argsJson, argsExitJson, returnJson);
+                    argsJson, argsExitJson, returnJson, seq);
         }
     }
 }

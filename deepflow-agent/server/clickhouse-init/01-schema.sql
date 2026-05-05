@@ -33,6 +33,12 @@ CREATE TABLE IF NOT EXISTS deepflow.calls
     return_type    Enum8('VOID' = 0, 'VALUE' = 1, 'EXCEPTION' = 2),
     is_exception   Bool                      MATERIALIZED return_type = 'EXCEPTION',
     this_id        Nullable(Int64),
+    -- Agent-observation order, monotonic per agent run, gap-free across the
+    -- run. Canonical primitive for narrative ordering — sub-millisecond ties
+    -- on ts_in are disambiguated by seq. Zero when the producer omits the
+    -- SQ tag (emit_tags excludes "SQ"); in that mode, ordering falls back
+    -- to ts_in (with the original ms-resolution ambiguity).
+    seq            UInt64 DEFAULT 0,
     -- Retention escape: rows with retain=true survive the TTL DELETE.
     -- Currently no agent/sink path sets this; flip via external SQL when
     -- a debugging or audit need warrants long retention. See SCHEMA_DESIGN.md.
@@ -44,7 +50,7 @@ CREATE TABLE IF NOT EXISTS deepflow.calls
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(ts_in)
-ORDER BY (session_id, request_id, ts_in)
+ORDER BY (session_id, request_id, seq, ts_in)
 TTL toDateTime(ts_in) + INTERVAL 30 DAY DELETE WHERE NOT retain;
 
 CREATE TABLE IF NOT EXISTS deepflow.payloads
@@ -60,6 +66,9 @@ CREATE TABLE IF NOT EXISTS deepflow.payloads
     payload_size  UInt32,
     root_hash     FixedString(32),
     object_ids    Array(Int64),
+    -- Mirrors calls.seq for the call this payload belongs to. Lets payload
+    -- queries order causally without a join back to calls.
+    seq           UInt64 DEFAULT 0,
     retain        Bool DEFAULT false,
     inserted_at   DateTime DEFAULT now(),
 
@@ -68,7 +77,7 @@ CREATE TABLE IF NOT EXISTS deepflow.payloads
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(ts_in)
-ORDER BY (session_id, request_id, kind, ts_in)
+ORDER BY (session_id, request_id, seq, kind, ts_in)
 TTL toDateTime(ts_in) + INTERVAL 30 DAY DELETE WHERE NOT retain;
 
 -- ============================================================
