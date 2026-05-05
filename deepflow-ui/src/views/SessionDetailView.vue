@@ -125,6 +125,10 @@ function captureFrame(callId, instance) {
 }
 
 async function goto({ callId, kind, path }) {
+  // Clear any previous flash anywhere on the page before lighting up
+  // the new target. Pure DOM, no shared reactive state across viewers.
+  document.querySelectorAll('.jt-node.flashed').forEach(el => el.classList.remove('flashed'));
+
   const frame = frameRefs.value[callId];
   if (!frame) return;
   await frame.revealAt(kind, path || []);

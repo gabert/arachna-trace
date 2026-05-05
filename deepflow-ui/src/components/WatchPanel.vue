@@ -28,12 +28,28 @@ function shortSig(s) {
 
 function shortHash(h) {
   if (!h) return '∅';
-  return String(h).slice(0, 8);
+  return String(h).slice(0, 16);
 }
 
 function shortClass(c) {
   if (!c) return 'Object';
   return String(c).split('.').pop();
+}
+
+// 64-bit FNV-1a via BigInt — small, fast, good enough as a visual
+// identifier for the own-state column. Renders 16 hex chars to match
+// the deep-hash column's visual width. Not cryptographic; we just need
+// a stable hex string from a JSON string.
+const FNV64_OFFSET = 0xcbf29ce484222325n;
+const FNV64_PRIME  = 0x100000001b3n;
+const FNV64_MASK   = 0xFFFFFFFFFFFFFFFFn;
+function fnv1a(str) {
+  let h = FNV64_OFFSET;
+  for (let i = 0; i < str.length; i++) {
+    h = (h ^ BigInt(str.charCodeAt(i))) & FNV64_MASK;
+    h = (h * FNV64_PRIME) & FNV64_MASK;
+  }
+  return h.toString(16).padStart(16, '0');
 }
 
 const parsedPayloads = computed(() =>
@@ -47,7 +63,6 @@ function findEnvelopes(node, targetId, results, ctx, currentPath = []) {
     results.push({
       ...ctx,
       hash: meta.hash,
-      hasCycleRef: containsCycleRef(node),
       snapshot: node,
       envelopePath: [...currentPath]
     });
@@ -64,22 +79,37 @@ function findEnvelopes(node, targetId, results, ctx, currentPath = []) {
   }
 }
 
-// True if the snapshot contains any back-reference cycle marker
-// anywhere inside its rendered tree. These appearances are excluded
-// from diff comparison because the marker's position is direction-
-// dependent (see docs/temporal/KNOWN_BUGS.md → D-09).
-function containsCycleRef(node) {
-  if (node == null || typeof node !== 'object') return false;
-  if (!Array.isArray(node) && node.cycle_ref === true && node.ref_id != null) return true;
-  if (Array.isArray(node)) {
-    for (const v of node) if (containsCycleRef(v)) return true;
-    return false;
+// Own-state fingerprint: this envelope's *own* scalar fields plus the
+// **ids** of its referenced children. Nested envelopes are collapsed
+// to `ref:<id>`; cycle markers are also collapsed to `ref:<id>` (same
+// shape). The result is invariant under cycle-entry direction and
+// under mutations of sibling envelopes elsewhere in the subtree —
+// it answers "did *this* object's own data change", not "did anything
+// in this subtree change". Sister signal to the agent's deep Merkle
+// hash; both are honest, neither is hidden.
+function ownStateKey(envelope) {
+  return JSON.stringify(collapse(envelope, /* atRoot */ true));
+}
+
+function collapse(v, atRoot) {
+  if (v == null) return v;
+  if (typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map(x => collapse(x, false));
+  // Both shapes — full envelope and cycle-ref — collapse to the same
+  // {__ref__: id}. Including class would diverge here because the wire
+  // doesn't carry class on cycle markers, so adding it for full
+  // envelopes would make own-state move on every cycle-direction flip.
+  // Class is decoration; identity is the id.
+  if (!atRoot && v.cycle_ref === true && v.ref_id != null) {
+    return { __ref__: v.ref_id };
   }
-  for (const k of Object.keys(node)) {
-    if (k === '__meta__') continue;
-    if (containsCycleRef(node[k])) return true;
+  if (!atRoot && v.__meta__ && v.__meta__.id != null) {
+    return { __ref__: v.__meta__.id };
   }
-  return false;
+  const out = {};
+  const keys = Object.keys(v).filter(k => k !== '__meta__').sort();
+  for (const k of keys) out[k] = collapse(v[k], false);
+  return out;
 }
 
 function appearancesFor(watch) {
@@ -109,32 +139,35 @@ function appearancesFor(watch) {
       r.compareKey = normalizeFieldKey(v);
     }
   } else {
+    // Instance watch: deep hash and own-state both shown honestly.
     for (const r of out) {
-      r.repr = shortHash(r.hash);
-      r.compareKey = r.hash;
+      r.repr = shortHash(r.hash);                       // deep
+      const owk = ownStateKey(r.snapshot);
+      r.ownStateKey = owk;
+      r.ownStateRepr = fnv1a(owk);                      // own-state
+      r.compareKey = r.hash;                            // deep drives bands
     }
   }
 
-  // Bands and "changed" markers.
-  // Instance watches: cycle-bearing snapshots are skipped (hash is
-  //   direction-dependent on cyclic graphs). They render greyed.
-  // Field watches: never skipped — cycle refs and full envelopes
-  //   both reduce to `ref:<id>` in compareKey, so cycle direction
-  //   doesn't produce false transitions.
+  // Bands always come from the primary signal (deep hash for instance,
+  // resolved value for field). Per-row markers tell the user which
+  // signal moved: ▲ on deep-hash transition, △ on own-state transition.
+  // Both markers visible when both moved; neither when stable. No
+  // signal is hidden.
   let band = 0;
   let lastKey = null;
+  let lastOwn = null;
   for (const r of out) {
-    const skip = watch.kind === 'instance' && r.hasCycleRef;
-    if (skip) {
-      r.band = band;
-      r.changed = false;
-      r.skipped = true;
-      continue;
-    }
-    if (lastKey !== null && r.compareKey !== lastKey) band ^= 1;
+    const moved = lastKey !== null && r.compareKey !== lastKey;
+    if (moved) band ^= 1;
     r.band = band;
-    r.changed = lastKey !== null && r.compareKey !== lastKey;
-    r.skipped = false;
+    r.changed = moved;
+    if (watch.kind === 'instance') {
+      r.ownChanged = lastOwn !== null && r.ownStateKey !== lastOwn;
+      lastOwn = r.ownStateKey;
+    } else {
+      r.ownChanged = false;
+    }
     lastKey = r.compareKey;
   }
   return out;
@@ -176,6 +209,9 @@ function changeCount(rows) {
   return rows.filter(r => r.changed).length;
 }
 
+function ownChangeCount(rows) {
+  return rows.filter(r => r.ownChanged).length;
+}
 </script>
 
 <template>
@@ -187,12 +223,14 @@ function changeCount(rows) {
 
     <p v-if="!watches.length" class="wp-empty">
       Hover any value in the recording on the left and click <code>⊕ watch</code>.
-      Hovering an object pins the whole instance (tracked by hash). Hovering
-      a field pins that field on the enclosing instance (tracked by value —
-      the literal for primitives, or <code>#id</code> for object references).
+      Hovering an object pins the whole instance — tracked by both the agent's
+      deep hash and a UI-computed own-state hash side by side. Hovering a field
+      pins that field on the enclosing instance — tracked by value (literal for
+      primitives, <code>#id</code> for object references).
     </p>
 
-    <div v-for="(w, i) in watches" :key="i" class="watch">
+    <div v-for="(w, i) in watches" :key="i" class="watch"
+         :class="['watch-' + w.kind]">
       <header class="watch-head">
         <div class="watch-title">
           <strong>{{ shortClass(w.className) }}</strong>
@@ -204,31 +242,62 @@ function changeCount(rows) {
 
       <div class="watch-meta">
         {{ appearancesFor(w).length }} appearances
-        · <span class="changes">{{ changeCount(appearancesFor(w)) }} {{ w.kind === 'field' ? 'value' : 'hash' }} transitions</span>
+        <template v-if="w.kind === 'instance'">
+          · <span class="changes">{{ changeCount(appearancesFor(w)) }} hash transitions</span>
+          · <span class="own-changes">{{ ownChangeCount(appearancesFor(w)) }} own-state transitions</span>
+        </template>
+        <template v-else>
+          · <span class="changes">{{ changeCount(appearancesFor(w)) }} value transitions</span>
+        </template>
       </div>
 
-      <ol class="watch-results">
-        <li v-for="(r, j) in appearancesFor(w)" :key="r.call_id + ':' + r.kind + ':' + j"
-            :class="[r.skipped ? 'skipped' : ('band-' + r.band), { changed: r.changed }]"
-            @click="emit('jump', {
-              callId: r.call_id,
-              kind: r.kind,
-              objectId: w.objectId,
-              path: w.kind === 'field'
-                ? [...(r.envelopePath || []), ...(w.fieldPath || [])]
-                : r.envelopePath
-            })">
-          <div class="r-line">
-            <span class="r-time">{{ fmtTime(r.ts_in) }}</span>
-            <span class="r-kind" :class="r.kind">{{ r.kind }}</span>
-            <span class="r-sig">{{ shortSig(r.signature) }}</span>
-            <span class="r-hash" :title="w.kind === 'field' ? '' : r.hash">{{ r.repr }}</span>
-            <span v-if="r.skipped" class="r-skip" title="contains a cycle reference — excluded from diff comparison">↺</span>
-            <span v-else-if="r.changed" class="r-change" :title="w.kind === 'field' ? 'value differs from previous appearance' : 'hash differs from previous comparable appearance'">▲</span>
-            <span v-else></span>
-          </div>
-        </li>
-      </ol>
+      <table class="watch-results">
+        <colgroup v-if="w.kind === 'instance'">
+          <col class="c-time"><col class="c-kind"><col class="c-sig">
+          <col class="c-hash"><col class="c-own"><col class="c-marker">
+        </colgroup>
+        <colgroup v-else>
+          <col class="c-time"><col class="c-kind"><col class="c-sig">
+          <col class="c-value"><col class="c-marker">
+        </colgroup>
+        <thead v-if="w.kind === 'instance'">
+          <tr>
+            <th></th><th></th><th></th>
+            <th title="Agent's deep Merkle hash. Includes nested envelope content; moves on cycle direction or sibling subtree change.">deep</th>
+            <th title="UI-computed fingerprint over this object's own scalar fields and child reference IDs. Moves only when this object's own data changes.">own</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(r, j) in appearancesFor(w)" :key="r.call_id + ':' + r.kind + ':' + j"
+              :class="['band-' + r.band, { changed: r.changed, 'own-changed': r.ownChanged }]"
+              @click="emit('jump', {
+                callId: r.call_id,
+                kind: r.kind,
+                objectId: w.objectId,
+                path: w.kind === 'field'
+                  ? [...(r.envelopePath || []), ...(w.fieldPath || [])]
+                  : r.envelopePath
+              })">
+            <td class="r-time">{{ fmtTime(r.ts_in) }}</td>
+            <td class="r-kind"><span :class="r.kind">{{ r.kind }}</span></td>
+            <td class="r-sig">{{ shortSig(r.signature) }}</td>
+
+            <template v-if="w.kind === 'instance'">
+              <td class="r-hash" :title="r.hash">{{ r.repr }}</td>
+              <td class="r-own"  :title="'own-state ' + r.ownStateRepr">{{ r.ownStateRepr }}</td>
+            </template>
+            <template v-else>
+              <td class="r-hash">{{ r.repr }}</td>
+            </template>
+
+            <td class="r-marker">
+              <span v-if="r.changed" class="m-deep" title="deep hash differs from previous appearance">▲</span>
+              <span v-if="r.ownChanged" class="m-own" title="own-state differs from previous appearance">△</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </aside>
 </template>
@@ -269,41 +338,72 @@ function changeCount(rows) {
 .watch-rm:hover { color: var(--accent-red); }
 .watch-meta { color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.4rem; }
 .watch-meta .changes { color: var(--accent-amber); }
+.watch-meta .own-changes { color: #fbbf24; }
 
-.watch-results { list-style: none; margin: 0; padding: 0; border-radius: 3px; overflow: hidden; }
-.watch-results li {
-  padding: 0.3rem 0.4rem;
+.watch-results {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
   font-family: ui-monospace, monospace;
   font-size: var(--mono-size);
+}
+
+/* Column widths via colgroup. table-layout: fixed honours these strictly. */
+.watch-results col.c-time   { width: 13ch; }
+.watch-results col.c-kind   { width: 4ch;  }
+.watch-results col.c-sig    { width: auto; }
+.watch-results col.c-hash   { width: 17ch; }
+.watch-results col.c-own    { width: 17ch; }
+.watch-results col.c-value  { width: auto; }
+.watch-results col.c-marker { width: 5ch; }
+
+.watch-results thead th {
+  font-size: var(--mono-size);
+  font-weight: 500;
+  color: var(--text-muted);
+  text-align: left;
+  padding: 0 0.4rem 0.25rem;
+  cursor: help;
+}
+
+.watch-results tbody tr {
   cursor: pointer;
   border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
-.watch-results li:first-child { border-top: 0; }
-.watch-results li.band-0 { background: rgba(110, 231, 183, 0.10); }
-.watch-results li.band-1 { background: rgba(251, 191, 36, 0.10); }
-.watch-results li:hover { outline: 1px solid var(--accent-blue); outline-offset: -1px; }
-.watch-results li.changed { box-shadow: inset 3px 0 0 var(--accent-red); }
-
-.watch-results li.skipped {
-  background: rgba(255, 255, 255, 0.02);
-  color: var(--text-muted);
+.watch-results tbody tr:first-child { border-top: 0; }
+.watch-results tbody tr.band-0 { background: rgba(110, 231, 183, 0.10); }
+.watch-results tbody tr.band-1 { background: rgba(251, 191, 36, 0.10); }
+.watch-results tbody tr:hover  { outline: 1px solid var(--accent-blue); outline-offset: -1px; }
+.watch-results tbody tr.changed                 { box-shadow: inset 3px 0 0 var(--accent-red); }
+.watch-results tbody tr.own-changed             { box-shadow: inset 3px 0 0 #fbbf24; }
+.watch-results tbody tr.changed.own-changed     {
+  box-shadow: inset 3px 0 0 var(--accent-red), inset 6px 0 0 #fbbf24;
 }
-.watch-results li.skipped .r-time,
-.watch-results li.skipped .r-sig,
-.watch-results li.skipped .r-hash { color: var(--text-muted); }
-.watch-results li.skipped .r-kind { opacity: 0.5; }
 
-.r-line { display: grid; grid-template-columns: 13ch 3ch 1fr minmax(8ch, 18ch) 1ch; gap: 0.4rem; align-items: baseline; }
-.r-hash { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
-.r-time { color: var(--text-muted); }
-.r-kind { font-size: 0.62rem; padding: 0 0.25rem; border-radius: 2px; background: rgba(196, 181, 253, 0.18); color: #c4b5fd; text-align: center; }
-.r-kind.AR { background: rgba(96, 165, 250, 0.18); color: #93c5fd; }
-.r-kind.AX { background: rgba(251, 191, 36, 0.18); color: #fcd34d; }
-.r-kind.RE { background: rgba(110, 231, 183, 0.18); color: #6ee7b7; }
-.r-kind.TI { background: rgba(196, 181, 253, 0.18); color: #c4b5fd; }
-.r-sig { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.r-hash { color: var(--text-muted); }
-.r-change { color: var(--accent-red); font-weight: 700; }
-.r-skip { color: var(--text-muted); font-size: 0.85rem; }
-
+.watch-results tbody td {
+  padding: 0.3rem 0.4rem;
+  vertical-align: baseline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.watch-results td.r-time   { color: var(--text-muted); }
+.watch-results td.r-kind   { padding: 0.3rem 0.2rem; }
+/* Kind pill — same shape as the tree's payload-head kind pills in
+   FrameCard so the eye reads them as the same thing. */
+.watch-results td.r-kind > span { font-size: 0.7rem; padding: 0.05rem 0.4rem; border-radius: 3px; font-weight: 600; background: rgba(196, 181, 253, 0.18); color: #c4b5fd; }
+.watch-results td.r-kind > span.AR { background: rgba(96, 165, 250, 0.18);  color: #93c5fd; }
+.watch-results td.r-kind > span.AX { background: rgba(251, 191, 36, 0.18);  color: #fcd34d; }
+.watch-results td.r-kind > span.RE { background: rgba(110, 231, 183, 0.18); color: #6ee7b7; }
+.watch-results td.r-kind > span.TI { background: rgba(196, 181, 253, 0.18); color: #c4b5fd; }
+.watch-results td.r-sig    { color: var(--text-secondary); }
+.watch-results td.r-hash   { color: var(--text-muted); }
+.watch-results td.r-own    { color: var(--text-secondary); }
+.watch-results td.r-marker {
+  padding: 0.3rem 0.2rem;
+  white-space: nowrap;
+  overflow: visible;
+}
+.m-deep { color: var(--accent-red); font-weight: 700; margin-right: 0.35rem; display: inline-block; }
+.m-own  { color: #fbbf24;            font-weight: 700; display: inline-block; }
 </style>
