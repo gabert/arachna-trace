@@ -1,5 +1,11 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, inject, ref } from 'vue';
+
+// The same `highlight` ref the navigator updates. Provided by
+// SessionDetailView. Shared with the left pane so a single click
+// keeps both sides in sync — the JsonTree node lights up on the
+// left, the originating watch row stays selected on the right.
+const highlight = inject('highlight', ref(null));
 
 const props = defineProps({
   watches: { type: Array, required: true },
@@ -212,6 +218,22 @@ function changeCount(rows) {
 function ownChangeCount(rows) {
   return rows.filter(r => r.ownChanged).length;
 }
+
+// Address each row would set if clicked. Used to mark the currently
+// selected row (the one whose address matches the global `highlight`).
+function rowAddress(w, r) {
+  const path = w.kind === 'field'
+    ? [...(r.envelopePath || []), ...(w.fieldPath || [])]
+    : (r.envelopePath || []);
+  return { callId: r.call_id, kind: r.kind, pathKey: JSON.stringify(path) };
+}
+
+function isCurrent(w, r) {
+  const h = highlight.value;
+  if (!h) return false;
+  const a = rowAddress(w, r);
+  return h.callId === a.callId && h.kind === a.kind && h.pathKey === a.pathKey;
+}
 </script>
 
 <template>
@@ -270,7 +292,7 @@ function ownChangeCount(rows) {
         </thead>
         <tbody>
           <tr v-for="(r, j) in appearancesFor(w)" :key="r.call_id + ':' + r.kind + ':' + j"
-              :class="['band-' + r.band, { changed: r.changed, 'own-changed': r.ownChanged }]"
+              :class="['band-' + r.band, { changed: r.changed, 'own-changed': r.ownChanged, current: isCurrent(w, r) }]"
               @click="emit('jump', {
                 callId: r.call_id,
                 kind: r.kind,
@@ -378,6 +400,14 @@ function ownChangeCount(rows) {
 .watch-results tbody tr.own-changed             { box-shadow: inset 3px 0 0 #fbbf24; }
 .watch-results tbody tr.changed.own-changed     {
   box-shadow: inset 3px 0 0 var(--accent-red), inset 6px 0 0 #fbbf24;
+}
+
+/* Currently selected row — same amber palette as the .flashed node
+   on the left, so both sides visually agree on what's selected. */
+.watch-results tbody tr.current {
+  background: rgba(251, 191, 36, 0.22) !important;
+  outline: 2px solid #fbbf24;
+  outline-offset: -2px;
 }
 
 .watch-results tbody td {

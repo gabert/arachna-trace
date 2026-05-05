@@ -236,3 +236,84 @@ flowspy/
 
 See `deepflow-ui/README.md` for the dev loop. The Vite dev server proxies
 `/api` → `localhost:8082`, so the UI can call the API as if same-origin.
+
+---
+
+## Current architecture (snapshot 2026-05-05)
+
+This section reflects the implementation, not the original sketch. Update
+when shape changes.
+
+### Navigation: one reactive address
+
+A single ref drives every selection:
+
+```
+highlight = { callId, kind, pathKey } | null
+```
+
+Provided by `SessionDetailView` (which also bumps a `navTick` ref on every
+nav so re-clicks of the same address still trigger scroll).
+
+`PayloadViewer` injects `highlight`, computes a *local* highlighted path
+(non-null only when the address's `(callId, kind)` matches its own props),
+forwards it to its `JsonTree` subtree as `highlightedPathKey`, and expands
+the path's prefixes when its local highlight transitions to non-null.
+
+`JsonTree` compares its own `pathKey` to the prop. `isMatch` is one
+equality, no recursive walk. When `isMatch` is true the node renders
+the `.flashed` class; a post-flush watcher scrolls it into view.
+
+`WatchPanel` injects the same `highlight` and marks the row whose address
+matches it with the same `.current` styling — so both sides agree on
+selection by construction. Click a watch row → `goto({callId, kind, path})`
+→ chain expansion + highlight assignment + tick bump → Vue's reactivity
+does the rest.
+
+No imperative method chains. No ref maps. No querySelector. No polling.
+
+### Rendering: nested call tree, top-to-bottom = time
+
+`SessionDetailView` provides a `payloadsByCallId` map (built once from the
+request's bulk-loaded payloads) and a `childrenByParent` map. It renders
+only root frames; each `FrameCard` looks up its own children and renders
+them recursively *inside* its body, between its TI/AR (entry) block and
+its AX/RE (exit) block. Indentation comes from CSS nesting — a dashed
+left border per level.
+
+Expansion is shared state: an `expansionDefault` ref plus an
+`expansionOverrides` `Map<callId, boolean>`. Per-frame toggles write
+into overrides; `expand all` / `collapse all` flip the default and
+clear overrides. New frames inherit the most recent global default.
+
+Default state on request load: collapsed (only root frames visible).
+
+### Watch panel: two honest signals, one table
+
+For instance watches the right pane shows two columns side by side:
+deep hash (agent's Merkle, half-MD5) and own-state hash (UI-computed
+64-bit FNV-1a over the envelope's own scalar fields and child reference
+IDs). Two transition markers per row (▲ deep, △ own). Cycle-direction
+noise shows as ▲ alone; real mutations show ▲△ together. Renders as
+a real `<table>` with `<colgroup>` + `<thead>` so column widths are
+aligned by the browser.
+
+Field watches stay one-column (resolved value) since the value-based
+comparison naturally collapses cycle refs to ids.
+
+### Open issue carried into next session
+
+- **U-02** — Watch-row click correctly applies the `.flashed` class
+  but the left pane sometimes doesn't scroll the target into view.
+  See `docs/temporal/KNOWN_BUGS.md → U-02` for the suspected causes
+  and what to try next.
+
+### Map of the components
+
+| File | Responsibility |
+|---|---|
+| `views/SessionDetailView.vue` | Top-level page. Provides `highlight`, `navTick`, `payloadsByCallId`, `childrenByParent`, expansion state. Hosts `goto`. |
+| `components/FrameCard.vue` | One call's row + body. Recursive — its body contains nested FrameCards between entry and exit payloads. |
+| `components/PayloadViewer.vue` | One payload (TI/AR/AX/RE). Owns its tree's expansion `Set<pathKey>`. Expands path prefixes when its local highlight is set. |
+| `components/JsonTree.vue` | Recursive renderer. Stateless beyond what its props describe. Computes `isMatch`, applies `.flashed`, scrolls itself into view on match. |
+| `components/WatchPanel.vue` | Right pane. Pinned watches, two-column hash display, marks the row whose address matches the global highlight. |

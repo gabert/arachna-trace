@@ -168,6 +168,13 @@ function removeWatch(idx) {
 const highlight = ref(null);
 provide('highlight', highlight);
 
+// Bumped on every goto. JsonTree watches this so re-clicking the
+// already-current row (or clicking when the target was mounted but
+// pushed off-screen by later expansions) still re-scrolls. Without it,
+// a same-address click is a no-op because isMatch never transitions.
+const navTick = ref(0);
+provide('navTick', navTick);
+
 function goto({ callId, kind, path }) {
   // 1. Expand every ancestor of the target so its FrameCard is mounted
   //    by the time Vue settles. (Collapsed frames unmount their bodies,
@@ -193,6 +200,7 @@ function goto({ callId, kind, path }) {
     kind,
     pathKey: JSON.stringify(path || [])
   };
+  navTick.value++;
 }
 
 // --- header collapse-all -------------------------------------------------

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue';
+import { computed, inject, ref, watch } from 'vue';
 
 const props = defineProps({
   data: { required: true },
@@ -51,15 +51,26 @@ const isMatch = computed(() =>
 
 const nodeRef = ref(null);
 
-// One-shot scroll on match-on. flush:post runs after Vue commits the
-// DOM, so nodeRef is bound. immediate:true also catches the case where
-// the JsonTree mounts already-matching (i.e. the highlight was set
-// before the chain finished expanding to here).
-watch(isMatch, (hit) => {
-  if (hit && nodeRef.value) {
-    nodeRef.value.scrollIntoView({ block: 'center' });
-  }
-}, { immediate: true, flush: 'post' });
+// Two coverage paths for "scroll the matching node into view":
+//   - isMatch watch (immediate, post-flush) catches the freshly-mounted
+//     case: the target was just rendered and its match is already true.
+//   - navTick watch fires on every navigation regardless of whether
+//     isMatch transitioned, covering re-click on the already-current
+//     row and any layout shift that pushed the target off-screen
+//     after the original scroll.
+const navTick = inject('navTick', ref(0));
+
+function scrollSelfIfMatching() {
+  if (!isMatch.value || !nodeRef.value) return;
+  // Scroll the row, not the whole .jt-node — the node's bounding box
+  // includes all its expanded children and can be thousands of pixels
+  // tall. Centering the box would push the actual row off-screen.
+  const rowEl = nodeRef.value.firstElementChild || nodeRef.value;
+  rowEl.scrollIntoView({ block: 'center' });
+}
+
+watch(isMatch, scrollSelfIfMatching, { immediate: true, flush: 'post' });
+watch(navTick, scrollSelfIfMatching, { flush: 'post' });
 
 const childEnvContext = computed(() => {
   if (envelope.value) {

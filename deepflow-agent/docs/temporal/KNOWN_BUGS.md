@@ -181,6 +181,7 @@ Estimated ~250–400 lines including tests.
 | D-08 | Low      | Subtle      | New          | `runScoped` body sees swapped stack — caller's outer call invisible |
 | D-09 | Low      | Data quality | New         | Same envelope can hash differently across observations of a cyclic graph (Merkle hash is direction-dependent on cycles) |
 | U-01 | ~~Medium~~ FIXED | UI       | New          | ~~Tree pane stops responding to expand/collapse clicks after a few watch-row navigations~~ — fixed by replacing the global-broadcast highlight model with an imperative navigator + local-only payload viewers |
+| U-02 | Low      | UI           | New          | Watch-row click correctly highlights the matching JsonTree node but the left pane does not always scroll it into view |
 | A-01 | -        | Pre-existing | Pre-existing | `new Thread(r).start()` without instrumentation: no propagation |
 | A-02 | -        | Pre-existing | Pre-existing | Custom executors via `CompletableFuture.runAsync` not covered |
 | A-03 | -        | Pre-existing | Pre-existing | Virtual threads — should work via thread-locals, not tested |
@@ -698,6 +699,67 @@ flush, eventually starving the toggle hit-tests.
 addressing model — `(seq, kind, path)` — composes cleanly into URLs,
 which means "share me a link to that exact field at that exact
 moment" becomes trivial when we add router state for it.
+
+---
+
+### U-02 — Left pane sometimes doesn't scroll to the highlighted node
+
+**Where:** `deepflow-ui/src/components/JsonTree.vue`
+(`scrollSelfIfMatching` — the `watch(isMatch, …)` and `watch(navTick, …)`
+post-flush handlers) and the surrounding navigation flow in
+`SessionDetailView.vue` / `PayloadViewer.vue`.
+
+**Symptom:** clicking a watch row whose target is deep in the tree
+(e.g. one of the later appearances of `BookEntity #193`) correctly
+applies the `.flashed` highlight class to the matching JsonTree
+node, **but** the left pane does not scroll the node into view —
+the user has to scroll manually to find the amber-outlined row.
+The watch panel's "current row" highlight is correct in lockstep,
+so the navigation address is right; only the scrollIntoView side
+is failing.
+
+**Reproduction:**
+1. Pick the demo session, pick a request that mutates a tracked object
+   (e.g. session containing `BookEntity #193` from earlier).
+2. Pin `BookEntity #193` as a watch.
+3. Click the watch's last appearance row (deep in the tree).
+4. Observe: row on the right turns amber, target node has `.flashed`
+   on the left, but the visible scroll position of the left pane
+   is unchanged.
+
+**What was tried:**
+- Two cooperating watchers (`watch(isMatch, …, immediate, post)` plus
+  `watch(navTick, …, post)`) so re-clicks and freshly-mounted matches
+  both run a scroll attempt.
+- Switched the scroll target from `.jt-node` (whose bounding box is
+  the entire expanded subtree, often thousands of pixels tall) to
+  `.jt-row` (the visible row inside the node). User reports the issue
+  persists.
+
+**Suspected causes to investigate:**
+- `scrollIntoView` may resolve to the wrong scrollable ancestor.
+  PrimeVue's Splitter inserts wrapping divs around the SplitterPanel;
+  the actual scroll container may differ from what `:deep(.left-pane)`
+  CSS sets `overflow-y: auto` on. Walk up `parentElement` from the
+  target with `getComputedStyle().overflowY` to confirm which element
+  is doing the scrolling.
+- Post-flush may fire before the deepest recursive levels mount, so
+  `nodeRef.value` is the right element but its position in layout is
+  premature; subsequent renders push it. Adding a
+  `requestAnimationFrame` (or two) before the `scrollIntoView` call
+  may help — wait for layout to settle.
+- The matched element may be technically "in viewport" of the scroll
+  container at the time of the call (so `scrollIntoView` becomes a
+  no-op) yet visually obscured by another stacking context. Replace
+  `scrollIntoView` with explicit `container.scrollTop = …` arithmetic,
+  computing the target offset relative to the scroll container.
+
+**Workaround for now:** the user can scroll manually; the highlight
+class is correct so the target is findable visually once on screen.
+
+**Mitigation in clients:** none required for now — both panes show
+the selection consistently; only the auto-scroll convenience is
+missing.
 
 ---
 
