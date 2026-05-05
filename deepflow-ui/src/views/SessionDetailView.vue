@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, provide, ref, watch } from 'vue';
 import Select from 'primevue/select';
 import Message from 'primevue/message';
 import ProgressSpinner from 'primevue/progressspinner';
@@ -23,31 +23,74 @@ const loadingCalls = ref(false);
 const loadingRequestPayloads = ref(false);
 const error = ref(null);
 
-const callsWithDepth = computed(() => {
-  const byId = new Map();
-  for (const c of calls.value) byId.set(c.call_id, c);
-  const depthCache = new Map();
-  function depthOf(id) {
-    if (depthCache.has(id)) return depthCache.get(id);
-    const c = byId.get(id);
-    if (!c || !c.parent_call_id || !byId.has(c.parent_call_id)) {
-      depthCache.set(id, 0);
-      return 0;
-    }
-    const d = depthOf(c.parent_call_id) + 1;
-    depthCache.set(id, d);
-    return d;
+// Build the parent → ordered children map. Children inherit the
+// server's seq order so iterating them in array order = time order.
+const childrenByParent = computed(() => {
+  const known = new Set(calls.value.map(c => c.call_id));
+  const m = new Map();
+  for (const c of calls.value) {
+    const parent = c.parent_call_id && known.has(c.parent_call_id) ? c.parent_call_id : null;
+    if (!m.has(parent)) m.set(parent, []);
+    m.get(parent).push(c);
   }
-  return calls.value.map(c => ({ ...c, depth: depthOf(c.call_id) }));
+  return m;
 });
 
-// Position of each call in the rendered list — used by WatchPanel to
-// align its row order with the left pane.
+// Calls without a known parent in this request — the rendered roots.
+const rootCalls = computed(() => childrenByParent.value.get(null) || []);
+
+// Reverse lookup: callId → parent's callId. Used by `goto` to walk
+// from a navigation target up to its root, expanding every link so
+// the target is mounted by the time we try to reveal it.
+const parentByCallId = computed(() => {
+  const known = new Set(calls.value.map(c => c.call_id));
+  const m = new Map();
+  for (const c of calls.value) {
+    if (c.parent_call_id && known.has(c.parent_call_id)) {
+      m.set(c.call_id, c.parent_call_id);
+    }
+  }
+  return m;
+});
+
+// Pre-parse payloads once and group by call_id. Distributing this
+// down to FrameCards via provide eliminates per-frame fetching and
+// repeated JSON.parse on every render.
+function tryParse(s) {
+  if (s == null) return null;
+  try { return JSON.parse(s); } catch (_) { return s; }
+}
+const payloadsByCallId = computed(() => {
+  const m = new Map();
+  for (const p of requestPayloads.value) {
+    const arr = m.get(p.call_id) || [];
+    arr.push({ ...p, parsed: p.parsed !== undefined ? p.parsed : tryParse(p.payload_json) });
+    m.set(p.call_id, arr);
+  }
+  return m;
+});
+
+// Position of each call in the server's returned order — used by
+// WatchPanel to align its row order with the visual top-down order.
 const callOrder = computed(() => {
   const m = new Map();
   calls.value.forEach((c, i) => m.set(c.call_id, i));
   return m;
 });
+
+provide('payloadsByCallId', payloadsByCallId);
+provide('childrenByParent', childrenByParent);
+
+// Shared expansion state for the call tree. A frame's expanded-ness
+// is `overrides.get(callId) ?? defaultExpansion`. Per-frame toggles
+// write into overrides; expand-all / collapse-all flip the default
+// and clear the overrides — so newly-mounted children inherit
+// whatever the user most recently asked for, instead of always
+// defaulting to "expanded".
+const expansionDefault = ref(false);
+const expansionOverrides = ref(new Map());
+provide('expansionDefault', expansionDefault);
+provide('expansionOverrides', expansionOverrides);
 
 // --- loaders -------------------------------------------------------------
 
@@ -74,7 +117,9 @@ async function loadCalls() {
   }
   loadingCalls.value = true;
   watches.value = [];
-  frameRefs.value = {};
+  highlight.value = null;
+  expansionOverrides.value = new Map();
+  expansionDefault.value = false;
   try {
     calls.value = await api.callTree(props.sessionId, { requestId: selectedRequestId.value });
   } catch (e) {
@@ -110,39 +155,55 @@ function removeWatch(idx) {
   watches.value = watches.value.filter((_, i) => i !== idx);
 }
 
-// --- imperative navigator -----------------------------------------------
+// --- navigator ----------------------------------------------------------
 //
-// The navigator owns the "go to (seq, kind, path)" entry point used by
-// the watch panel. It looks up the matching FrameCard via a ref map
-// keyed by call_id and delegates path-revealing to it. Nothing is
-// broadcast; only the targeted card touches its own state.
+// One reactive ref drives every navigation: an "address" of the form
+// {callId, kind, pathKey}. Each PayloadViewer compares its own
+// (callId, kind) against this ref; only the matching one forwards
+// pathKey to its JsonTree subtree. The matching JsonTree node — once
+// the chain mounts — sees its own equality flip and renders the flash
+// class plus scrolls itself into view via a single watcher. No ref
+// maps, no querying, no polling.
 
-const frameRefs = ref({});
+const highlight = ref(null);
+provide('highlight', highlight);
 
-function captureFrame(callId, instance) {
-  if (instance) frameRefs.value[callId] = instance;
-  else delete frameRefs.value[callId];
-}
+function goto({ callId, kind, path }) {
+  // 1. Expand every ancestor of the target so its FrameCard is mounted
+  //    by the time Vue settles. (Collapsed frames unmount their bodies,
+  //    so without this the target's PayloadViewer wouldn't exist.)
+  const next = new Map(expansionOverrides.value);
+  let cur = callId;
+  while (cur != null) {
+    next.set(cur, true);
+    cur = parentByCallId.value.get(cur);
+  }
+  expansionOverrides.value = next;
 
-async function goto({ callId, kind, path }) {
-  // Clear any previous flash anywhere on the page before lighting up
-  // the new target. Pure DOM, no shared reactive state across viewers.
-  document.querySelectorAll('.jt-node.flashed').forEach(el => el.classList.remove('flashed'));
-
-  const frame = frameRefs.value[callId];
-  if (!frame) return;
-  await frame.revealAt(kind, path || []);
+  // 2. Set the address. Vue's reactivity does the rest:
+  //    - The target PayloadViewer (matching callId + kind) sees its
+  //      local highlight flip non-null and expands the path's prefixes.
+  //    - The matching JsonTree node sees its own pathKey === highlight
+  //      and renders the flash class; its post-flush watcher scrolls
+  //      it into view.
+  //    - Any previously-matched node sees its match flip false and
+  //      drops the flash class automatically.
+  highlight.value = {
+    callId,
+    kind,
+    pathKey: JSON.stringify(path || [])
+  };
 }
 
 // --- header collapse-all -------------------------------------------------
 
 function collapseAll() {
-  // Imperative: ask each frame ref to close itself. Avoids a global
-  // expanded-set in this view.
-  for (const id of Object.keys(frameRefs.value)) {
-    const f = frameRefs.value[id];
-    if (f && f.collapse) f.collapse();
-  }
+  expansionDefault.value = false;
+  expansionOverrides.value = new Map();
+}
+function expandAll() {
+  expansionDefault.value = true;
+  expansionOverrides.value = new Map();
 }
 
 // --- lifecycle -----------------------------------------------------------
@@ -173,6 +234,8 @@ watch(selectedRequestId, loadCalls);
             </span>
           </template>
         </Select>
+        <button class="tree-btn" @click="expandAll" title="Expand every frame">expand all</button>
+        <button class="tree-btn" @click="collapseAll" title="Collapse every frame">collapse all</button>
       </div>
     </header>
 
@@ -183,10 +246,9 @@ watch(selectedRequestId, loadCalls);
         <div v-if="loadingCalls" class="centered"><ProgressSpinner style="width:2rem;height:2rem" /></div>
 
         <ol v-else class="recording" :start="1">
-          <FrameCard v-for="call in callsWithDepth"
+          <FrameCard v-for="call in rootCalls"
                      :key="call.call_id"
                      :call="call"
-                     :ref="(el) => captureFrame(call.call_id, el)"
                      @pin="pinWatch" />
         </ol>
 
@@ -217,6 +279,11 @@ watch(selectedRequestId, loadCalls);
 .session-title { margin: 0; font-family: ui-monospace, monospace; font-size: 0.9rem; color: var(--text-secondary); }
 .req-pick { display: flex; align-items: center; gap: 0.5rem; }
 .req-pick label { font-size: 0.85rem; color: var(--text-secondary); }
+.tree-btn {
+  background: var(--bg-elevated); border: 1px solid var(--border-strong); color: var(--text-secondary);
+  font-size: 0.75rem; padding: 0.3rem 0.55rem; border-radius: 4px; cursor: pointer;
+}
+.tree-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 .req-option { display: inline-flex; gap: 0.6rem; align-items: baseline; }
 .muted { color: var(--text-muted); font-size: 0.8rem; }
 .centered { display: flex; justify-content: center; padding: 2rem; }

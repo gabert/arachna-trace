@@ -1,17 +1,17 @@
 <script setup>
-import { ref, nextTick } from 'vue';
+import { computed, inject, ref, watch } from 'vue';
 import JsonTree from './JsonTree.vue';
 
 const props = defineProps({
-  data: { required: true },
-  rootRef: { type: HTMLElement, default: null }
+  data:   { required: true },
+  callId: { type: String, required: true },
+  kind:   { type: String, required: true }
 });
 
 const emit = defineEmits(['pin']);
 
-// Sole owner of expansion state for this payload's tree. Path keys are
-// JSON-serialised arrays; the root path is "[]". Two top levels open
-// by default so the user can see the envelope's first layer of fields.
+// Sole owner of expansion state for this payload's tree. Path keys
+// are JSON-stringified arrays; the root path is "[]".
 const expandedKeys = ref(new Set(['[]']));
 
 // Pre-open the immediate children of an array root, so an `RE` payload
@@ -37,45 +37,47 @@ function onToggle(key) {
   expandedKeys.value = next;
 }
 
-const rootEl = ref(null);
+// Highlight is a single ref shared across all viewers. Each viewer
+// only forwards a non-null pathKey to its JsonTree subtree when the
+// global highlight's (callId, kind) match its own — that way only
+// the right subtree ever sees a non-null highlight prop and renders
+// the flash class.
+const highlight = inject('highlight', ref(null));
 
-/**
- * Imperatively reveal a node at the given path: expand every prefix,
- * scroll the node into view, and add a transient `flashed` class so the
- * eye finds it. Pure DOM after the Vue commit — no global reactive
- * cascade, no shared highlight prop.
- */
-async function revealPath(pathArr) {
+const localHighlightPathKey = computed(() => {
+  const h = highlight.value;
+  if (!h) return null;
+  if (h.callId !== props.callId) return null;
+  if (h.kind !== props.kind) return null;
+  return h.pathKey;
+});
+
+// When a navigation lands in this viewer, expand every prefix on the
+// path so the target node mounts. JsonTree's own isMatch watcher will
+// then scroll it into view.
+watch(localHighlightPathKey, (key) => {
+  if (!key) return;
+  let arr;
+  try { arr = JSON.parse(key); } catch (_) { return; }
+  if (!Array.isArray(arr)) return;
   const next = new Set(expandedKeys.value);
-  for (let i = 0; i <= pathArr.length; i++) {
-    next.add(JSON.stringify(pathArr.slice(0, i)));
+  for (let i = 0; i <= arr.length; i++) {
+    next.add(JSON.stringify(arr.slice(0, i)));
   }
   expandedKeys.value = next;
-
-  await nextTick();
-
-  if (!rootEl.value) return;
-  const targetKey = JSON.stringify(pathArr);
-  const escaped = targetKey.replace(/"/g, '\\"');
-  const el = rootEl.value.querySelector(`[data-path="${escaped}"]`);
-  if (!el) return;
-
-  el.scrollIntoView({ block: 'center' });
-
-  // Toggle the flash class. We replay it on the same element so a quick
-  // succession of reveals on the same node still animates.
-  el.classList.remove('flashed');
-  // Force reflow before re-adding so the transition restarts.
-  void el.offsetWidth;
-  el.classList.add('flashed');
-}
+}, { immediate: true });
 
 function onFollowCycle(targetId) {
   // Cycle ref points to an ancestor envelope by object_id. Walk our
-  // own subtree until we find it; the cycle target is by definition
-  // already in the open subtree above this point.
+  // own subtree to find its path, then highlight it as if a watch
+  // row had been clicked.
   const path = findPathToObjectId(props.data, targetId, []);
-  if (path) revealPath(path);
+  if (!path) return;
+  highlight.value = {
+    callId: props.callId,
+    kind: props.kind,
+    pathKey: JSON.stringify(path)
+  };
 }
 
 function findPathToObjectId(node, targetId, currentPath) {
@@ -95,22 +97,15 @@ function findPathToObjectId(node, targetId, currentPath) {
   }
   return null;
 }
-
-defineExpose({ revealPath });
 </script>
 
 <template>
-  <div ref="rootEl" class="payload-viewer">
-    <JsonTree :data="data"
-              :path="[]"
-              :isExpanded="isExpanded"
-              :envContext="null"
-              @toggle="onToggle"
-              @pin="(p) => emit('pin', p)"
-              @follow-cycle="onFollowCycle" />
-  </div>
+  <JsonTree :data="data"
+            :path="[]"
+            :isExpanded="isExpanded"
+            :envContext="null"
+            :highlightedPathKey="localHighlightPathKey"
+            @toggle="onToggle"
+            @pin="(p) => emit('pin', p)"
+            @follow-cycle="onFollowCycle" />
 </template>
-
-<style scoped>
-.payload-viewer { /* container only — JsonTree owns layout */ }
-</style>

@@ -1,16 +1,17 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 const props = defineProps({
   data: { required: true },
   name: { type: [String, Number], default: '' },
   path: { type: Array, default: () => [] },
   depth: { type: Number, default: 0 },
-  // Owner of expansion state — typically the enclosing PayloadViewer.
   isExpanded: { type: Function, required: true },
-  // Enclosing envelope info for field pinning. Plain object, not reactive
-  // chain. Set by the parent JsonTree when it is itself an envelope.
-  envContext: { type: Object, default: null }
+  envContext: { type: Object, default: null },
+  // Single source of truth for "is this the highlighted node".
+  // Equality on pathKey decides; nothing recursive, nothing broadcast
+  // beyond the per-node compare.
+  highlightedPathKey: { type: String, default: null }
 });
 
 const emit = defineEmits(['toggle', 'pin', 'follow-cycle']);
@@ -42,12 +43,24 @@ const cycleRef = computed(() => {
 const ownPath = computed(() =>
   props.name === '' ? props.path : [...props.path, props.name]);
 
-// Path key uses JSON.stringify so every path is globally unique
-// (object keys can contain any character, so no in-band delimiter is safe).
 const pathKey = computed(() => JSON.stringify(ownPath.value));
 const expanded = computed(() => props.isExpanded(pathKey.value));
 
-// Context to forward to children: own envelope wins, else passthrough.
+const isMatch = computed(() =>
+  props.highlightedPathKey != null && pathKey.value === props.highlightedPathKey);
+
+const nodeRef = ref(null);
+
+// One-shot scroll on match-on. flush:post runs after Vue commits the
+// DOM, so nodeRef is bound. immediate:true also catches the case where
+// the JsonTree mounts already-matching (i.e. the highlight was set
+// before the chain finished expanding to here).
+watch(isMatch, (hit) => {
+  if (hit && nodeRef.value) {
+    nodeRef.value.scrollIntoView({ block: 'center' });
+  }
+}, { immediate: true, flush: 'post' });
+
 const childEnvContext = computed(() => {
   if (envelope.value) {
     return {
@@ -138,9 +151,9 @@ function renderScalar(v) {
 </script>
 
 <template>
-  <div class="jt-node"
-       :class="{ container: isContainer && !cycleRef }"
-       :data-path="pathKey">
+  <div ref="nodeRef"
+       class="jt-node"
+       :class="{ container: isContainer && !cycleRef, flashed: isMatch }">
     <div class="jt-row">
       <span v-if="!cycleRef" class="jt-toggle" @click="toggle">
         <template v-if="isContainer">{{ expanded ? '▾' : '▸' }}</template>
@@ -174,6 +187,7 @@ function renderScalar(v) {
                 :depth="depth + 1"
                 :isExpanded="isExpanded"
                 :envContext="childEnvContext"
+                :highlightedPathKey="highlightedPathKey"
                 @toggle="relayToggle"
                 @pin="relayPin"
                 @follow-cycle="relayFollow" />
@@ -224,13 +238,10 @@ function renderScalar(v) {
 }
 .jt-cycle:hover { background: rgba(196, 181, 253, 0.25); }
 
-/* Imperatively-applied flash for navigation. The navigator adds and
-   removes this class via DOM, no reactive prop. */
 .jt-node.flashed > .jt-row {
   background: rgba(251, 191, 36, 0.22);
   outline: 2px solid #fbbf24;
   outline-offset: -2px;
   border-radius: 3px;
-  transition: background 0.4s, outline-color 0.4s;
 }
 </style>
