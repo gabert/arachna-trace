@@ -1,5 +1,6 @@
 package com.github.gabert.deepflow.query;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
@@ -16,8 +17,12 @@ import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.QueryStringDecoder;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.SortedSet;
 
 /**
  * Single Netty handler that owns the read-only HTTP API for the UI.
@@ -32,6 +37,9 @@ import java.util.Map;
  *       — TI/AR/AX/RE payload rows for a single call</li>
  *   <li>{@code GET /api/objects/{object_id}/history}
  *       — every payload row that mentions the given object id</li>
+ *   <li>{@code GET /api/analysis/mutations?session_id=...&request_id=...}
+ *       — within-call argument mutations (AR vs AX own_hash diff) for
+ *         a request, with AR/AX envelope snapshots per mutated object</li>
  * </ul>
  *
  * <p>SQL is concentrated here (not in the UI) so the browser stays a thin
@@ -109,6 +117,10 @@ public class QueryHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         if (parts.length == 5 && parts[1].equals("api") && parts[2].equals("objects")
                 && parts[4].equals("history")) {
             return objectHistory(parts[3]);
+        }
+        // /api/analysis/mutations?session_id=...&request_id=...
+        if (path.equals("/api/analysis/mutations")) {
+            return analysisMutations(params);
         }
         return null;
     }
@@ -208,7 +220,177 @@ public class QueryHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                 """);
     }
 
+    // --- analysis ---------------------------------------------------------
+
+    /**
+     * Within-request mutation detection. For each call where AR and AX
+     * payloads are both present, compare own_hashes index-aligned with
+     * object_ids. Any object whose own_hash moved between AR and AX is
+     * a mutation: same call, before-method state vs after-method state.
+     *
+     * <p>The SQL does the indexed lookup (bloom-filter on object_ids,
+     * length-aligned own_hashes scan) and returns the AR/AX payload
+     * JSON plus the list of mutated ids per call. Java then walks the
+     * JSON to extract the per-id envelope snapshots so the client can
+     * render diffs without re-fetching anything.</p>
+     *
+     * <p>Pre-req: the agent must be emitting AX. Default emit_tags
+     * omits it; calls without AX silently produce no rows here.</p>
+     */
+    private Map<String, Object> analysisMutations(Map<String, List<String>> params) throws Exception {
+        String sessionId = required(params, "session_id");
+        long requestId = Long.parseLong(required(params, "request_id"));
+
+        String sessionLit = sqlString(sessionId);
+        String sql = """
+                SELECT
+                    ar.call_id      AS call_id,
+                    ar.signature    AS signature,
+                    ar.ts_in        AS ts_in,
+                    ar.payload_json AS ar_json,
+                    ax.payload_json AS ax_json,
+                    arrayFilter(
+                        (oid, oh) ->
+                            indexOf(ax.object_ids, oid) > 0
+                            AND ax.own_hashes[indexOf(ax.object_ids, oid)] != oh,
+                        ar.object_ids, ar.own_hashes
+                    ) AS mutated_ids
+                FROM
+                    (SELECT call_id, signature, ts_in,
+                            object_ids, own_hashes, payload_json
+                     FROM payloads
+                     WHERE session_id = """ + sessionLit + " AND request_id = " + requestId + """
+
+                       AND kind = 'AR') ar
+                INNER JOIN
+                    (SELECT call_id, object_ids, own_hashes, payload_json
+                     FROM payloads
+                     WHERE session_id = """ + sessionLit + " AND request_id = " + requestId + """
+
+                       AND kind = 'AX') ax
+                ON ar.call_id = ax.call_id
+                WHERE length(mutated_ids) > 0
+                ORDER BY ar.ts_in
+                """;
+
+        List<Map<String, Object>> sqlRows = ch.query(sql);
+
+        // Group by (call_id, signature, class, changed-path-set). Three
+        // BookEntity rows that all changed `isbn` collapse to one group
+        // with occurrences=3; an Author with `name` mutation stays its
+        // own group. Scales to bulk-transform requests where naive
+        // per-occurrence rendering would be unreadable.
+        //
+        // Per group: keep all member object_ids (so the user can drill),
+        // plus the first member's AR/AX snapshots as a sample for the
+        // default rendering. Detailed per-instance diffs are computed
+        // on the client from already-loaded request payloads.
+        Map<String, Map<String, Object>> groupsByKey = new LinkedHashMap<>();
+        long totalMutations = 0;
+
+        for (Map<String, Object> r : sqlRows) {
+            JsonNode arRoot = MAPPER.readTree((String) r.get("ar_json"));
+            JsonNode axRoot = MAPPER.readTree((String) r.get("ax_json"));
+            @SuppressWarnings("unchecked")
+            List<Object> ids = (List<Object>) r.get("mutated_ids");
+            for (Object idObj : ids) {
+                long oid = Long.parseLong(String.valueOf(idObj));
+                JsonNode arSnapshot = findEnvelope(arRoot, oid);
+                JsonNode axSnapshot = findEnvelope(axRoot, oid);
+                if (arSnapshot == null || axSnapshot == null) continue;
+                totalMutations++;
+
+                String cls = textOrNull(arSnapshot.path("__meta__").path("class"));
+                if (cls == null) cls = textOrNull(axSnapshot.path("__meta__").path("class"));
+                SortedSet<EnvelopeDiff.DiffPath> changed = EnvelopeDiff.changedPaths(arSnapshot, axSnapshot);
+
+                String key = r.get("call_id") + "|" + cls + "|" + changed.toString();
+                Map<String, Object> group = groupsByKey.get(key);
+                if (group == null) {
+                    List<Map<String, Object>> fieldPaths = new ArrayList<>();
+                    for (EnvelopeDiff.DiffPath p : changed) {
+                        fieldPaths.add(Map.of("path", p.path(), "kind", p.kind()));
+                    }
+                    group = new LinkedHashMap<>();
+                    group.put("call_id", r.get("call_id"));
+                    group.put("signature", r.get("signature"));
+                    group.put("ts_in", r.get("ts_in"));
+                    group.put("class", cls);
+                    group.put("field_paths", fieldPaths);
+                    group.put("object_ids", new ArrayList<Long>());
+                    group.put("sample", Map.of(
+                            "object_id", oid,
+                            "ar_snapshot", arSnapshot,
+                            "ax_snapshot", axSnapshot
+                    ));
+                    groupsByKey.put(key, group);
+                }
+                @SuppressWarnings("unchecked")
+                List<Long> memberIds = (List<Long>) group.get("object_ids");
+                memberIds.add(oid);
+            }
+        }
+
+        List<Map<String, Object>> groups = new ArrayList<>(groupsByKey.values());
+        for (Map<String, Object> g : groups) {
+            @SuppressWarnings("unchecked")
+            List<Long> memberIds = (List<Long>) g.get("object_ids");
+            g.put("occurrences", memberIds.size());
+        }
+
+        Map<String, Object> summary = Map.of(
+                "total_mutations", totalMutations,
+                "total_groups", groups.size(),
+                "session_id", sessionId,
+                "request_id", requestId
+        );
+        return Map.of("summary", summary, "groups", groups);
+    }
+
+    private static String textOrNull(JsonNode n) {
+        return (n == null || n.isMissingNode() || n.isNull()) ? null : n.asText();
+    }
+
+    /**
+     * Depth-first walk for the first envelope in {@code node} whose
+     * {@code __meta__.id} equals {@code targetId}. Returns null if the
+     * id never appears as a full envelope in this tree (cycle refs,
+     * which carry {@code ref_id} not {@code __meta__}, are not full
+     * envelopes and are skipped).
+     */
+    private static JsonNode findEnvelope(JsonNode node, long targetId) {
+        if (node == null) return null;
+        if (node.isObject()) {
+            JsonNode meta = node.get("__meta__");
+            if (meta != null) {
+                JsonNode idNode = meta.get("id");
+                if (idNode != null && idNode.isNumber() && idNode.asLong() == targetId) {
+                    return node;
+                }
+            }
+            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                JsonNode found = findEnvelope(fields.next().getValue(), targetId);
+                if (found != null) return found;
+            }
+        } else if (node.isArray()) {
+            for (JsonNode child : node) {
+                JsonNode found = findEnvelope(child, targetId);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
     // --- helpers -----------------------------------------------------------
+
+    private static String required(Map<String, List<String>> params, String name) {
+        String v = singleParam(params, name);
+        if (v == null || v.isEmpty()) {
+            throw new IllegalArgumentException("missing required parameter: " + name);
+        }
+        return v;
+    }
 
     private static String singleParam(Map<String, List<String>> params, String name) {
         List<String> vs = params.get(name);

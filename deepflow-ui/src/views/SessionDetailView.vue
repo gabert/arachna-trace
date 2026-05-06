@@ -8,8 +8,13 @@ import SplitterPanel from 'primevue/splitterpanel';
 import { api } from '../api/client.js';
 import FrameCard from '../components/FrameCard.vue';
 import WatchPanel from '../components/WatchPanel.vue';
+import MutationsPanel from '../components/MutationsPanel.vue';
 
 const props = defineProps({ sessionId: { type: String, required: true } });
+
+// Right-pane tab. Mutations is the discovery surface, default. Watch
+// is the follow-up tool — keeps its pinned items across tab switches.
+const rightTab = ref('mutations');
 
 // --- request / call state -----------------------------------------------
 
@@ -80,6 +85,62 @@ const callOrder = computed(() => {
 
 provide('payloadsByCallId', payloadsByCallId);
 provide('childrenByParent', childrenByParent);
+
+// Per-call AR↔AX analysis: which envelope ids had their own_hash move
+// (mutated) and which appear in AX but not AR (added). Cheap walk over
+// already-loaded payloads. Drives the in-tree per-envelope decorations
+// and the AX header badges.
+const arAxAnalysisByCallId = computed(() => {
+  const out = new Map();
+  for (const [callId, payloads] of payloadsByCallId.value) {
+    const ar = payloads.find(p => p.kind === 'AR');
+    const ax = payloads.find(p => p.kind === 'AX');
+    if (!ar?.parsed || !ax?.parsed) continue;
+    const arHashes = new Map();
+    collectOwnHashes(ar.parsed, arHashes);
+    const axHashes = new Map();
+    collectOwnHashes(ax.parsed, axHashes);
+    const mutated = new Set();
+    const added = new Set();
+    for (const [id, ohAX] of axHashes) {
+      const ohAR = arHashes.get(id);
+      if (ohAR === undefined) added.add(id);
+      else if (ohAR !== ohAX) mutated.add(id);
+    }
+    if (mutated.size > 0 || added.size > 0) {
+      out.set(callId, { mutated, added });
+    }
+  }
+  return out;
+});
+const mutatedObjectsByCallId = computed(() => {
+  const m = new Map();
+  for (const [k, v] of arAxAnalysisByCallId.value) m.set(k, v.mutated);
+  return m;
+});
+const addedObjectsByCallId = computed(() => {
+  const m = new Map();
+  for (const [k, v] of arAxAnalysisByCallId.value) m.set(k, v.added);
+  return m;
+});
+provide('mutatedObjectsByCallId', mutatedObjectsByCallId);
+provide('addedObjectsByCallId', addedObjectsByCallId);
+
+function collectOwnHashes(node, out) {
+  if (node == null || typeof node !== 'object') return;
+  const meta = node.__meta__;
+  if (meta && meta.id != null && meta.own_hash) {
+    if (!out.has(meta.id)) out.set(meta.id, meta.own_hash);
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) collectOwnHashes(item, out);
+  } else {
+    for (const k of Object.keys(node)) {
+      if (k === '__meta__') continue;
+      collectOwnHashes(node[k], out);
+    }
+  }
+}
 
 // Shared expansion state for the call tree. A frame's expanded-ness
 // is `overrides.get(callId) ?? defaultExpansion`. Per-frame toggles
@@ -266,11 +327,32 @@ watch(selectedRequestId, loadCalls);
       </SplitterPanel>
 
       <SplitterPanel :size="35" :minSize="20" class="right-pane">
-        <WatchPanel :watches="watches"
-                    :payloads="requestPayloads"
-                    :callOrder="callOrder"
-                    @remove="removeWatch"
-                    @jump="goto" />
+        <div class="right-pane-shell">
+          <nav class="right-tabs">
+            <button :class="{ active: rightTab === 'mutations' }"
+                    @click="rightTab = 'mutations'">Mutations</button>
+            <button :class="{ active: rightTab === 'watch' }"
+                    @click="rightTab = 'watch'">Watches <span v-if="watches.length" class="tab-count">{{ watches.length }}</span></button>
+          </nav>
+          <div class="right-tab-body">
+            <!-- Both panels stay mounted (v-show, not v-if) so per-row /
+                 per-group expansion state survives tab switches. The
+                 outer v-if guards on having a request selected to avoid
+                 a flash of empty content during initial load. -->
+            <template v-if="selectedRequestId != null">
+              <MutationsPanel v-show="rightTab === 'mutations'"
+                              :sessionId="sessionId"
+                              :requestId="selectedRequestId"
+                              @jump="goto" />
+              <WatchPanel v-show="rightTab === 'watch'"
+                          :watches="watches"
+                          :payloads="requestPayloads"
+                          :callOrder="callOrder"
+                          @remove="removeWatch"
+                          @jump="goto" />
+            </template>
+          </div>
+        </div>
       </SplitterPanel>
     </Splitter>
   </section>
@@ -310,4 +392,38 @@ watch(selectedRequestId, loadCalls);
 :deep(.p-splitter-gutter-handle) { background: var(--text-muted) !important; }
 
 .recording { list-style: none; padding: 0; margin: 0; }
+
+/* Right-pane tab shell — Mutations | Watches. */
+.right-pane-shell { display: flex; flex-direction: column; height: 100%; }
+.right-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+.right-tabs button {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  padding: 0.5rem 0.6rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.right-tabs button:hover { color: var(--text-primary); background: var(--bg-hover); }
+.right-tabs button.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-blue);
+  background: var(--bg-base);
+}
+.tab-count {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  padding: 0 0.4rem;
+  margin-left: 0.3rem;
+  font-size: 0.7rem;
+}
+.right-tab-body { flex: 1; overflow: hidden; }
 </style>

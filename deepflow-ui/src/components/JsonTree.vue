@@ -49,6 +49,28 @@ const expanded = computed(() => props.isExpanded(pathKey.value));
 const isMatch = computed(() =>
   props.highlightedPathKey != null && pathKey.value === props.highlightedPathKey);
 
+// Provided by PayloadViewer when it's rendering an AX payload of a
+// call that had own_hash transitions. A non-null Set means "mark any
+// envelope whose id is in here as mutated". Other payload kinds get
+// null (no marks). Per-envelope precision — does not propagate to
+// parents the way deep / Merkle hash would.
+const mutatedObjectIds = inject('mutatedObjectIds', ref(null));
+const isMutatedEnvelope = computed(() =>
+  envelope.value
+  && mutatedObjectIds.value
+  && mutatedObjectIds.value.has(envelope.value.objectId)
+);
+
+// Same scoping for added envelopes — present in AX, absent from AR.
+// Mutually exclusive with mutated (an added id has no AR own_hash to
+// compare against, so it can't be in the mutated set).
+const addedObjectIds = inject('addedObjectIds', ref(null));
+const isAddedEnvelope = computed(() =>
+  envelope.value
+  && addedObjectIds.value
+  && addedObjectIds.value.has(envelope.value.objectId)
+);
+
 const nodeRef = ref(null);
 
 // Two coverage paths for "scroll the matching node into view":
@@ -164,7 +186,7 @@ function renderScalar(v) {
 <template>
   <div ref="nodeRef"
        class="jt-node"
-       :class="{ container: isContainer && !cycleRef, flashed: isMatch }">
+       :class="{ container: isContainer && !cycleRef, flashed: isMatch, mutated: isMutatedEnvelope, added: isAddedEnvelope }">
     <div class="jt-row">
       <span v-if="!cycleRef" class="jt-toggle" @click="toggle">
         <template v-if="isContainer">{{ expanded ? '▾' : '▸' }}</template>
@@ -254,5 +276,43 @@ function renderScalar(v) {
   outline: 2px solid #fbbf24;
   outline-offset: -2px;
   border-radius: 3px;
+}
+
+/* Per-envelope mutation mark (AX only). Sits on the envelope's own
+   row, not the enclosing payload — so the eye lands on the BookEntity,
+   not on the AuthorEntity that contains it. Slightly subtler than
+   .flashed so a navigated row still wins visually if both apply. */
+.jt-node.mutated > .jt-row {
+  background: rgba(251, 191, 36, 0.10);
+  box-shadow: inset 3px 0 0 #fbbf24;
+}
+.jt-node.mutated > .jt-row::after {
+  content: '⚠ mutation';
+  color: #fcd34d;
+  background: rgba(251, 191, 36, 0.18);
+  font-size: 0.68rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  margin-left: 0.4rem;
+  font-weight: 600;
+}
+
+/* Per-envelope "newly introduced" mark (AX only). The id appears in
+   AX but not in AR — the method created or fetched a new object and
+   placed it in args. Distinct signal from mutation; mutually exclusive
+   in practice (added ids have no AR own_hash to compare against). */
+.jt-node.added > .jt-row {
+  background: rgba(110, 231, 183, 0.10);
+  box-shadow: inset 3px 0 0 #6ee7b7;
+}
+.jt-node.added > .jt-row::after {
+  content: '+ new';
+  color: #6ee7b7;
+  background: rgba(110, 231, 183, 0.18);
+  font-size: 0.68rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  margin-left: 0.4rem;
+  font-weight: 600;
 }
 </style>

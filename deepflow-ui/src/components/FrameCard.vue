@@ -12,6 +12,17 @@ const payloadsByCallId   = inject('payloadsByCallId');
 const childrenByParent   = inject('childrenByParent');
 const expansionDefault   = inject('expansionDefault');
 const expansionOverrides = inject('expansionOverrides');
+const mutatedObjectsByCallId = inject('mutatedObjectsByCallId', ref(new Map()));
+const addedObjectsByCallId   = inject('addedObjectsByCallId',   ref(new Map()));
+
+const mutatedCount = computed(() => {
+  const ids = mutatedObjectsByCallId.value.get(props.call.call_id);
+  return ids ? ids.size : 0;
+});
+const addedCount = computed(() => {
+  const ids = addedObjectsByCallId.value.get(props.call.call_id);
+  return ids ? ids.size : 0;
+});
 
 const expanded = computed({
   get() {
@@ -73,7 +84,7 @@ const exitPayloads  = computed(() => payloads.value.filter(p => p.kind === 'AX' 
         <div v-for="p in entryPayloads" :key="p.kind" class="payload">
           <div class="payload-head">
             <span class="kind" :class="p.kind">{{ p.kind }}</span>
-            <span class="muted">{{ p.payload_size }} B · hash {{ String(p.root_hash).slice(0, 8) }}…</span>
+            <span class="muted" title="Merkle root hash of the rendered payload tree. Differs from the previous payload whenever ANY envelope's content changed anywhere in the subtree — useful as a cheap 'did anything change at all' signal. Per-envelope precision is shown by the in-tree mutation mark, not by this.">{{ p.payload_size }} B · deep {{ String(p.root_hash).slice(0, 8) }}…</span>
           </div>
           <PayloadViewer :data="p.parsed"
                          :callId="call.call_id"
@@ -93,7 +104,15 @@ const exitPayloads  = computed(() => payloads.value.filter(p => p.kind === 'AX' 
         <div v-for="p in exitPayloads" :key="p.kind" class="payload">
           <div class="payload-head">
             <span class="kind" :class="p.kind">{{ p.kind }}</span>
-            <span class="muted">{{ p.payload_size }} B · hash {{ String(p.root_hash).slice(0, 8) }}…</span>
+            <span v-if="p.kind === 'AX' && mutatedCount > 0" class="mutation-badge"
+                  :title="mutatedCount + ' envelope(s) own_hash changed between AR and AX. Look for the highlighted envelope inside.'">
+              ⚠ {{ mutatedCount }} mutation{{ mutatedCount === 1 ? '' : 's' }}
+            </span>
+            <span v-if="p.kind === 'AX' && addedCount > 0" class="added-badge"
+                  :title="addedCount + ' envelope(s) appear in AX but not in AR — newly introduced during the call.'">
+              + {{ addedCount }} new
+            </span>
+            <span class="muted" title="Merkle root hash of the rendered payload tree. Differs from AR whenever ANY envelope's content changed anywhere in the subtree.">{{ p.payload_size }} B · deep {{ String(p.root_hash).slice(0, 8) }}…</span>
           </div>
           <PayloadViewer :data="p.parsed"
                          :callId="call.call_id"
@@ -149,6 +168,27 @@ const exitPayloads  = computed(() => payloads.value.filter(p => p.kind === 'AX' 
 .kind.TI { background: rgba(196, 181, 253, 0.18); color: #c4b5fd; }
 
 .rec-children { list-style: none; padding: 0; margin: 0.25rem 0; }
+
+/* Mutation badge in the AX header. Block-level highlight removed —
+   it implied "the whole AR scope changed", which is the deep / Merkle
+   framing we don't want. The actual mutated envelope inside JsonTree
+   carries its own per-row highlight. */
+.mutation-badge {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fcd34d;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  font-weight: 600;
+}
+.added-badge {
+  background: rgba(110, 231, 183, 0.18);
+  color: #6ee7b7;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  font-weight: 600;
+}
 
 .muted { color: var(--text-muted); font-size: 0.85rem; }
 </style>

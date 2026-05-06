@@ -24,5 +24,11 @@ export const api = {
   callPayloads: (callId) => request(`/calls/${encodeURIComponent(callId)}/payloads`),
   requestPayloads: (sessionId, requestId) =>
     request(`/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}/payloads`),
-  objectHistory: (objectId) => request(`/objects/${encodeURIComponent(objectId)}/history`)
+  objectHistory: (objectId) => request(`/objects/${encodeURIComponent(objectId)}/history`),
+  analysisMutations: (sessionId, requestId) => {
+    const qs = new URLSearchParams();
+    qs.set('session_id', sessionId);
+    qs.set('request_id', requestId);
+    return request(`/analysis/mutations?${qs}`);
+  }
 };

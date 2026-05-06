@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, ref, watch } from 'vue';
+import { computed, inject, provide, ref, watch } from 'vue';
 import JsonTree from './JsonTree.vue';
 
 const props = defineProps({
@@ -7,6 +7,24 @@ const props = defineProps({
   callId: { type: String, required: true },
   kind:   { type: String, required: true }
 });
+
+// Scope the per-call mutation/added id sets down to this viewer.
+// Only AX viewers expose them — AR/TI/RE never carry these marks.
+// JsonTree injects each set and marks any envelope row whose object_id
+// is in it.
+const mutatedObjectsByCallId = inject('mutatedObjectsByCallId', ref(new Map()));
+const mutatedObjectIds = computed(() => {
+  if (props.kind !== 'AX') return null;
+  return mutatedObjectsByCallId.value.get(props.callId) || null;
+});
+provide('mutatedObjectIds', mutatedObjectIds);
+
+const addedObjectsByCallId = inject('addedObjectsByCallId', ref(new Map()));
+const addedObjectIds = computed(() => {
+  if (props.kind !== 'AX') return null;
+  return addedObjectsByCallId.value.get(props.callId) || null;
+});
+provide('addedObjectIds', addedObjectIds);
 
 const emit = defineEmits(['pin']);
 

@@ -1,11 +1,35 @@
 <script setup>
 import { computed, inject, ref } from 'vue';
+import { diffOwnState, formatPath } from '../util/envelopeDiff.js';
 
 // The same `highlight` ref the navigator updates. Provided by
 // SessionDetailView. Shared with the left pane so a single click
 // keeps both sides in sync — the JsonTree node lights up on the
 // left, the originating watch row stays selected on the right.
 const highlight = inject('highlight', ref(null));
+
+// Per-row expansion state for instance changed rows. Keyed by
+// (watchIdx, rowIdx) so different watches' rows don't collide.
+const expandedRows = ref(new Set());
+function rowExpansionKey(watchIdx, j) { return `${watchIdx}:${j}`; }
+function isExpanded(watchIdx, j) { return expandedRows.value.has(rowExpansionKey(watchIdx, j)); }
+function toggleExpand(watchIdx, j) {
+  const k = rowExpansionKey(watchIdx, j);
+  const next = new Set(expandedRows.value);
+  if (next.has(k)) next.delete(k); else next.add(k);
+  expandedRows.value = next;
+}
+
+// Per-watch collapsed state (default expanded). With many watches the
+// panel gets crowded; collapsed watches keep the meta line visible so
+// the user can still scan counts.
+const collapsedWatches = ref(new Set());
+function isWatchCollapsed(idx) { return collapsedWatches.value.has(idx); }
+function toggleWatchCollapse(idx) {
+  const next = new Set(collapsedWatches.value);
+  if (next.has(idx)) next.delete(idx); else next.add(idx);
+  collapsedWatches.value = next;
+}
 
 const props = defineProps({
   watches: { type: Array, required: true },
@@ -116,15 +140,22 @@ function appearancesFor(watch) {
   //   - instance watch → own_hash (this object's own-state)
   //   - field watch    → resolved field value
   // A row marked `changed` is one where the primary signal moved
-  // between this row and the previous one.
+  // between this row and the previous one. For instance watches we
+  // also pre-compute `diffs` against the previous snapshot so the
+  // row can render an inline field-level diff when expanded.
   let band = 0;
   let lastKey = null;
+  let lastSnapshot = null;
   for (const r of out) {
     const moved = lastKey !== null && r.compareKey !== lastKey;
     if (moved) band ^= 1;
     r.band = band;
     r.changed = moved;
+    if (watch.kind === 'instance' && moved && lastSnapshot) {
+      r.diffs = diffOwnState(lastSnapshot, r.snapshot);
+    }
     lastKey = r.compareKey;
+    lastSnapshot = r.snapshot;
   }
   return out;
 }
@@ -201,6 +232,9 @@ function isCurrent(w, r) {
     <div v-for="(w, i) in watches" :key="i" class="watch"
          :class="['watch-' + w.kind]">
       <header class="watch-head">
+        <button class="watch-collapse"
+                :title="isWatchCollapsed(i) ? 'expand' : 'collapse'"
+                @click="toggleWatchCollapse(i)">{{ isWatchCollapsed(i) ? '▶' : '▼' }}</button>
         <div class="watch-title">
           <strong>{{ shortClass(w.className) }}</strong>
           <code>#{{ w.objectId }}</code>
@@ -216,32 +250,65 @@ function isCurrent(w, r) {
         </span>
       </div>
 
-      <table class="watch-results">
+      <table v-if="!isWatchCollapsed(i)" class="watch-results">
         <colgroup>
           <col class="c-time"><col class="c-kind"><col class="c-sig">
           <col :class="w.kind === 'instance' ? 'c-hash' : 'c-value'">
           <col class="c-marker">
         </colgroup>
         <tbody>
-          <tr v-for="(r, j) in appearancesFor(w)" :key="r.call_id + ':' + r.kind + ':' + j"
-              :class="['band-' + r.band, { changed: r.changed, current: isCurrent(w, r) }]"
-              @click="emit('jump', {
-                callId: r.call_id,
-                kind: r.kind,
-                objectId: w.objectId,
-                path: w.kind === 'field'
-                  ? [...(r.envelopePath || []), ...(w.fieldPath || [])]
-                  : r.envelopePath
-              })">
-            <td class="r-time">{{ fmtTime(r.ts_in) }}</td>
-            <td class="r-kind"><span :class="r.kind">{{ r.kind }}</span></td>
-            <td class="r-sig">{{ shortSig(r.signature) }}</td>
-            <td class="r-hash" :title="w.kind === 'instance' ? 'own-state ' + r.repr : ''">{{ r.repr }}</td>
-            <td class="r-marker">
-              <span v-if="r.changed" class="m-own"
-                    :title="w.kind === 'instance' ? 'own-state differs from previous appearance' : 'value differs from previous appearance'">▲</span>
-            </td>
-          </tr>
+          <template v-for="(r, j) in appearancesFor(w)" :key="r.call_id + ':' + r.kind + ':' + j">
+            <tr :class="['band-' + r.band, { changed: r.changed, current: isCurrent(w, r), expanded: isExpanded(i, j) }]"
+                @click="emit('jump', {
+                  callId: r.call_id,
+                  kind: r.kind,
+                  objectId: w.objectId,
+                  path: w.kind === 'field'
+                    ? [...(r.envelopePath || []), ...(w.fieldPath || [])]
+                    : r.envelopePath
+                })">
+              <td class="r-time">{{ fmtTime(r.ts_in) }}</td>
+              <td class="r-kind"><span :class="r.kind">{{ r.kind }}</span></td>
+              <td class="r-sig">{{ shortSig(r.signature) }}</td>
+              <td class="r-hash" :title="w.kind === 'instance' ? 'own-state ' + r.repr : ''">{{ r.repr }}</td>
+              <td class="r-marker">
+                <button v-if="r.changed && w.kind === 'instance'"
+                        class="diff-toggle"
+                        :title="isExpanded(i, j) ? 'collapse changed-fields' : 'show changed fields'"
+                        @click.stop="toggleExpand(i, j)">{{ isExpanded(i, j) ? '▼' : '▶' }}</button>
+                <span v-else-if="r.changed" class="m-own"
+                      title="value differs from previous appearance">▲</span>
+              </td>
+            </tr>
+            <tr v-if="r.changed && w.kind === 'instance' && isExpanded(i, j)"
+                class="diff-row" :class="['band-' + r.band]">
+              <td colspan="5">
+                <ul v-if="r.diffs && r.diffs.length" class="diff-list">
+                  <li v-for="(d, k) in r.diffs" :key="k" :class="['diff-entry', 'diff-' + d.kind]">
+                    <code class="diff-path">{{ formatPath(d.path) }}</code>
+                    <span class="diff-body">
+                      <template v-if="d.kind === 'scalar' || d.kind === 'idSwap'">
+                        <span class="diff-before">{{ formatFieldValue(d.before) }}</span>
+                        <span class="diff-arrow">→</span>
+                        <span class="diff-after">{{ formatFieldValue(d.after) }}</span>
+                      </template>
+                      <template v-else-if="d.kind === 'added'">
+                        <span class="diff-arrow added">+</span>
+                        <span class="diff-after">{{ formatFieldValue(d.after) }}</span>
+                      </template>
+                      <template v-else-if="d.kind === 'removed'">
+                        <span class="diff-arrow removed">−</span>
+                        <span class="diff-before">{{ formatFieldValue(d.before) }}</span>
+                      </template>
+                    </span>
+                  </li>
+                </ul>
+                <p v-else class="diff-empty">
+                  own_hash moved but no scalar/id-ref change found at this level.
+                </p>
+              </td>
+            </tr>
+          </template>
         </tbody>
       </table>
     </div>
@@ -275,8 +342,15 @@ function isCurrent(w, r) {
   background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 4px;
   padding: 0.5rem; margin-bottom: 0.75rem;
 }
-.watch-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.15rem; }
-.watch-title { display: flex; gap: 0.4rem; align-items: baseline; }
+.watch-head { display: flex; justify-content: flex-start; align-items: center; gap: 0.4rem; margin-bottom: 0.15rem; }
+.watch-collapse {
+  background: transparent; border: 0; padding: 0;
+  color: var(--text-muted);
+  font-family: ui-monospace, monospace; font-size: var(--mono-size);
+  cursor: pointer; line-height: 1; flex-shrink: 0;
+}
+.watch-collapse:hover { color: var(--text-primary); }
+.watch-title { display: flex; gap: 0.4rem; align-items: baseline; flex: 1; min-width: 0; overflow: hidden; }
 .watch-title strong { font-size: 0.9rem; color: var(--text-primary); }
 .watch-title code { font-family: ui-monospace, monospace; color: #c4b5fd; font-size: 0.8rem; }
 .watch-title .watch-field { color: var(--text-secondary); font-size: 0.9rem; }
@@ -343,4 +417,47 @@ function isCurrent(w, r) {
   overflow: visible;
 }
 .m-own { color: #fbbf24; font-weight: 700; display: inline-block; }
+
+/* Expand toggle on changed instance rows. Visually replaces ▲ — same
+   colour, same weight, just clickable. Click is stop-propagated so it
+   doesn't also fire the row-level jump handler. */
+.diff-toggle {
+  background: transparent; border: 0; padding: 0;
+  color: #fbbf24; font-weight: 700;
+  font-family: ui-monospace, monospace; font-size: var(--mono-size);
+  cursor: pointer; line-height: 1;
+}
+.diff-toggle:hover { color: #fcd34d; }
+
+/* Field-level diff sub-row, shown when an instance changed-row is
+   expanded. Inherits the parent row's band tint so it reads as one
+   block. Not a click target (no hover outline, default cursor). */
+.watch-results tbody tr.diff-row { cursor: default; }
+.watch-results tbody tr.diff-row:hover { outline: none; }
+.watch-results tbody tr.diff-row > td {
+  padding: 0.3rem 0.6rem 0.45rem 1rem;
+  border-top: 1px dashed rgba(255, 255, 255, 0.06);
+  white-space: normal;
+}
+.diff-list { list-style: none; padding: 0; margin: 0; }
+.diff-entry {
+  padding: 0.1rem 0;
+  font-family: ui-monospace, monospace;
+  font-size: var(--mono-size);
+  line-height: 1.4;
+}
+.diff-path {
+  color: var(--text-secondary);
+  margin-right: 0.7rem;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0 0.35rem;
+  border-radius: 3px;
+}
+.diff-body { color: var(--text-primary); word-break: break-word; }
+.diff-before { color: #fbbf24; }
+.diff-after { color: #6ee7b7; }
+.diff-arrow { color: var(--text-muted); margin: 0 0.4rem; }
+.diff-arrow.added { color: #6ee7b7; }
+.diff-arrow.removed { color: var(--accent-red); }
+.diff-empty { color: var(--text-muted); margin: 0.25rem 0; font-size: var(--mono-size); }
 </style>
