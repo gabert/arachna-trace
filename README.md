@@ -7,6 +7,23 @@ identity, and object mutations -- without any code changes.
 Attach it via `-javaagent`, point it at your packages, reproduce the problem,
 and read the trace.
 
+## Try it in 60 seconds
+
+Only Docker is required. The demo runs a Spring Boot app with the agent
+already attached, fires a small traffic burst on boot, and lands you on
+populated traces.
+
+```bash
+mkdir deepflow && cd deepflow
+curl -O https://raw.githubusercontent.com/gabert/deepflow/main/release/compose.yml
+docker compose up
+```
+
+Open <http://localhost:8080>. Full notes (services, troubleshooting,
+release process) in [`release/`](release/README.md).
+
+When you're ready to instrument your own application, see [Quick start](#quick-start) below.
+
 ## What we built this for
 
 Five use cases drove the design. They all rely on the same kind of

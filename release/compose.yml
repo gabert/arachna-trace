@@ -1,0 +1,105 @@
+# DeepFlow quickstart compose
+#
+#   docker compose up
+#   open http://localhost:8080
+#
+# Pulls pre-built images from GHCR; no source on the host needed.
+# Bump the :v0.0.1 tag (or pin :latest) to upgrade.
+
+services:
+
+  # --- Kafka (KRaft, single-node) ---
+  kafka:
+    image: apache/kafka:3.9.0
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:19092,CONTROLLER://kafka:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: deepflow-firstsetup-cluster
+
+  # --- ClickHouse (schema baked in) ---
+  clickhouse:
+    image: ghcr.io/gabert/deepflow-clickhouse:v0.0.1
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+
+  # --- Collector (receives binary records from agents → Kafka) ---
+  collector:
+    image: ghcr.io/gabert/deepflow-collector:v0.0.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # --- Processor (Kafka → render+hash → ClickHouse) ---
+  processor:
+    image: ghcr.io/gabert/deepflow-processor:v0.0.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+  # --- Query API (read-only HTTP in front of ClickHouse, consumed by UI) ---
+  query:
+    image: ghcr.io/gabert/deepflow-query:v0.0.1
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  # --- UI (nginx serving Vue dist; proxies /api/ → query) ---
+  ui:
+    image: ghcr.io/gabert/deepflow-ui:v0.0.1
+    ports:
+      - "8080:80"
+    depends_on:
+      - query
+
+  # --- Demo Spring Boot (agent baked in) ---
+  demo-spring-boot:
+    image: ghcr.io/gabert/deepflow-demo-spring-boot:v0.0.1
+    depends_on:
+      - collector
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # --- Traffic generator (one-shot: hits the demo so the UI is non-empty) ---
+  demo-traffic:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      demo-spring-boot:
+        condition: service_healthy
+    restart: "no"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        for i in 1 2 3; do
+          echo ">>> demo scenario run $$i"
+          curl -sf -X POST http://demo-spring-boot:8080/api/library/demo-scenario || true
+          sleep 1
+        done
+        echo ">>> demo traffic done"
+
+volumes:
+  clickhouse-data:

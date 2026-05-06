@@ -317,4 +317,161 @@ class HasherTest {
         Map<String, Object> child = (Map<String, Object>) hashed.get(childKey);
         return metaHash(child);
     }
+
+    private static String metaOwnHash(Map<String, Object> hashed) {
+        return (String) ((Map<?, ?>) hashed.get("__meta__")).get("own_hash");
+    }
+
+    private static String childOwnHash(Map<String, Object> hashed, String childKey) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> child = (Map<String, Object>) hashed.get(childKey);
+        return metaOwnHash(child);
+    }
+
+    private static String rootOwnHash(String inputJson) throws IOException {
+        return metaOwnHash(parseJson(Hasher.hash(inputJson)));
+    }
+
+    // --- own_hash tests ---------------------------------------------------
+
+    @Test
+    void everyEnvelopeGetsAnOwnHashAlongsideHash() throws IOException {
+        String json = """
+                {"object_id": 1, "class": "U", "name": "Alice"}
+                """;
+        Map<String, Object> result = parseJson(Hasher.hash(json));
+        Map<?, ?> meta = (Map<?, ?>) result.get("__meta__");
+        assertNotNull(meta.get("own_hash"));
+        assertTrue(meta.get("own_hash").toString().matches("[0-9a-f]{32}"),
+                "own_hash must be 32-char hex MD5");
+        // own_hash and hash are independent values for the same envelope.
+        // For a leaf they happen to be derivable from one another, but the
+        // raw bytes need not match — assert they're both populated, not
+        // equality.
+        assertNotNull(meta.get("hash"));
+    }
+
+    @Test
+    void ownHashChangesWhenScalarFieldMutates() throws IOException {
+        String before = """
+                {"object_id": 1, "class": "Author", "name": "Tolkien"}
+                """;
+        String after = """
+                {"object_id": 1, "class": "Author", "name": "Lewis"}
+                """;
+        assertNotEquals(rootOwnHash(before), rootOwnHash(after));
+    }
+
+    @Test
+    void parentOwnHashUnchangedWhenChildContentMutates() throws IOException {
+        // The headline invariant. Author's deep hash propagates child changes
+        // up; Author's own_hash must not — only the child's own_hash moves.
+        String before = """
+                {"object_id": 1, "class": "Author", "name": "Tolkien",
+                 "books": [{"object_id": 2, "class": "Book", "isbn": "abc"}]}
+                """;
+        String after = """
+                {"object_id": 1, "class": "Author", "name": "Tolkien",
+                 "books": [{"object_id": 2, "class": "Book", "isbn": "DIFFERENT"}]}
+                """;
+
+        Map<String, Object> r1 = parseJson(Hasher.hash(before));
+        Map<String, Object> r2 = parseJson(Hasher.hash(after));
+
+        // Deep hash MUST move (Merkle propagation).
+        assertNotEquals(metaHash(r1), metaHash(r2));
+        // Own hash on the parent (Author) MUST NOT move — its own scalars
+        // and child id-refs are identical.
+        assertEquals(metaOwnHash(r1), metaOwnHash(r2));
+
+        // The child's (Book) own hash MUST move.
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> books1 = (List<Map<String, Object>>) r1.get("books");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> books2 = (List<Map<String, Object>>) r2.get("books");
+        assertNotEquals(metaOwnHash(books1.get(0)), metaOwnHash(books2.get(0)));
+    }
+
+    @Test
+    void parentOwnHashChangesWhenChildReferenceChanges() throws IOException {
+        // Same parent scalars, but the referenced child id changes →
+        // parent own_hash should move (the reference graph changed).
+        String before = """
+                {"object_id": 1, "class": "Author", "name": "Tolkien",
+                 "books": [{"object_id": 2, "class": "Book", "isbn": "abc"}]}
+                """;
+        String after = """
+                {"object_id": 1, "class": "Author", "name": "Tolkien",
+                 "books": [{"object_id": 7, "class": "Book", "isbn": "abc"}]}
+                """;
+        assertNotEquals(rootOwnHash(before), rootOwnHash(after));
+    }
+
+    @Test
+    void parentOwnHashChangesWhenChildListReorders() throws IOException {
+        String original = """
+                {"object_id": 1, "class": "P",
+                 "books": [{"object_id": 2, "class": "B", "v": "x"},
+                           {"object_id": 3, "class": "B", "v": "y"}]}
+                """;
+        String reversed = """
+                {"object_id": 1, "class": "P",
+                 "books": [{"object_id": 3, "class": "B", "v": "y"},
+                           {"object_id": 2, "class": "B", "v": "x"}]}
+                """;
+        assertNotEquals(rootOwnHash(original), rootOwnHash(reversed));
+    }
+
+    @Test
+    void ownHashIgnoresClassLabel() throws IOException {
+        // Two different classes, same scalars and child shape — own_hash
+        // matches. Documents the deliberate "class is not in own-hash input"
+        // decision (mirrors the UI's WatchPanel collapse rule).
+        String a = """
+                {"object_id": 1, "class": "ClassA", "v": 1}
+                """;
+        String b = """
+                {"object_id": 1, "class": "ClassB", "v": 1}
+                """;
+        assertEquals(rootOwnHash(a), rootOwnHash(b));
+    }
+
+    @Test
+    void ownHashCollapsesCycleRefToChildIdRef() throws IOException {
+        // {ref_id: 1, cycle_ref: true} should collapse to {__ref__: 1}.
+        // Outer scalars unchanged → outer own_hash same as if a real
+        // envelope #1 were referenced there.
+        String cyclic = """
+                {"object_id": 1, "class": "Node", "v": "x",
+                 "self": {"ref_id": 1, "cycle_ref": true}}
+                """;
+        String idRef = """
+                {"object_id": 1, "class": "Node", "v": "x",
+                 "self": {"object_id": 1, "class": "Node", "v": "x"}}
+                """;
+        // The non-cyclic version embeds the same id but as a non-root
+        // envelope; ownHashInput collapses it to {__ref__: 1}, matching
+        // the cycle-ref shape.
+        assertEquals(rootOwnHash(cyclic), rootOwnHash(idRef));
+    }
+
+    @Test
+    void ownHashIsStableAcrossInvocations() throws IOException {
+        String json = """
+                {"object_id": 1, "class": "P", "name": "x",
+                 "child": {"object_id": 2, "class": "C", "v": 1}}
+                """;
+        assertEquals(rootOwnHash(json), rootOwnHash(json));
+    }
+
+    @Test
+    void ownHashIndependentOfInputKeyOrder() throws IOException {
+        String a = """
+                {"object_id": 1, "class": "P", "x": 1, "y": 2, "z": 3}
+                """;
+        String b = """
+                {"z": 3, "object_id": 1, "y": 2, "class": "P", "x": 1}
+                """;
+        assertEquals(rootOwnHash(a), rootOwnHash(b));
+    }
 }

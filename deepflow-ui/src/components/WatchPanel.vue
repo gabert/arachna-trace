@@ -42,26 +42,14 @@ function shortClass(c) {
   return String(c).split('.').pop();
 }
 
-// 64-bit FNV-1a via BigInt — small, fast, good enough as a visual
-// identifier for the own-state column. Renders 16 hex chars to match
-// the deep-hash column's visual width. Not cryptographic; we just need
-// a stable hex string from a JSON string.
-const FNV64_OFFSET = 0xcbf29ce484222325n;
-const FNV64_PRIME  = 0x100000001b3n;
-const FNV64_MASK   = 0xFFFFFFFFFFFFFFFFn;
-function fnv1a(str) {
-  let h = FNV64_OFFSET;
-  for (let i = 0; i < str.length; i++) {
-    h = (h ^ BigInt(str.charCodeAt(i))) & FNV64_MASK;
-    h = (h * FNV64_PRIME) & FNV64_MASK;
-  }
-  return h.toString(16).padStart(16, '0');
-}
-
 const parsedPayloads = computed(() =>
   props.payloads.map(p => ({ ...p, parsed: tryParse(p.payload_json) }))
 );
 
+// Both signals are server-authoritative now: __meta__.hash is the deep
+// Merkle hash; __meta__.own_hash is the own-state hash (collapses child
+// envelopes to {__ref__: id}; see core/codec/Hasher.java#ownHashInput).
+// The UI no longer reimplements either.
 function findEnvelopes(node, targetId, results, ctx, currentPath = []) {
   if (node == null || typeof node !== 'object') return;
   const meta = node.__meta__;
@@ -69,6 +57,7 @@ function findEnvelopes(node, targetId, results, ctx, currentPath = []) {
     results.push({
       ...ctx,
       hash: meta.hash,
+      ownHash: meta.own_hash || '',
       snapshot: node,
       envelopePath: [...currentPath]
     });
@@ -83,39 +72,6 @@ function findEnvelopes(node, targetId, results, ctx, currentPath = []) {
       findEnvelopes(node[k], targetId, results, ctx, [...currentPath, k]);
     }
   }
-}
-
-// Own-state fingerprint: this envelope's *own* scalar fields plus the
-// **ids** of its referenced children. Nested envelopes are collapsed
-// to `ref:<id>`; cycle markers are also collapsed to `ref:<id>` (same
-// shape). The result is invariant under cycle-entry direction and
-// under mutations of sibling envelopes elsewhere in the subtree —
-// it answers "did *this* object's own data change", not "did anything
-// in this subtree change". Sister signal to the agent's deep Merkle
-// hash; both are honest, neither is hidden.
-function ownStateKey(envelope) {
-  return JSON.stringify(collapse(envelope, /* atRoot */ true));
-}
-
-function collapse(v, atRoot) {
-  if (v == null) return v;
-  if (typeof v !== 'object') return v;
-  if (Array.isArray(v)) return v.map(x => collapse(x, false));
-  // Both shapes — full envelope and cycle-ref — collapse to the same
-  // {__ref__: id}. Including class would diverge here because the wire
-  // doesn't carry class on cycle markers, so adding it for full
-  // envelopes would make own-state move on every cycle-direction flip.
-  // Class is decoration; identity is the id.
-  if (!atRoot && v.cycle_ref === true && v.ref_id != null) {
-    return { __ref__: v.ref_id };
-  }
-  if (!atRoot && v.__meta__ && v.__meta__.id != null) {
-    return { __ref__: v.__meta__.id };
-  }
-  const out = {};
-  const keys = Object.keys(v).filter(k => k !== '__meta__').sort();
-  for (const k of keys) out[k] = collapse(v[k], false);
-  return out;
 }
 
 function appearancesFor(watch) {
@@ -145,35 +101,29 @@ function appearancesFor(watch) {
       r.compareKey = normalizeFieldKey(v);
     }
   } else {
-    // Instance watch: deep hash and own-state both shown honestly.
+    // Instance watch: own-state hash only. Deep / Merkle hash is no
+    // longer surfaced here — in a flat row context it propagates child
+    // changes upward and forces the reader to mentally disambiguate
+    // "did this object change or did something below it." Drill via
+    // the call tree and JsonTree if you need the deep view.
     for (const r of out) {
-      r.repr = shortHash(r.hash);                       // deep
-      const owk = ownStateKey(r.snapshot);
-      r.ownStateKey = owk;
-      r.ownStateRepr = fnv1a(owk);                      // own-state
-      r.compareKey = r.hash;                            // deep drives bands
+      r.repr = shortHash(r.ownHash);
+      r.compareKey = r.ownHash;
     }
   }
 
-  // Bands always come from the primary signal (deep hash for instance,
-  // resolved value for field). Per-row markers tell the user which
-  // signal moved: ▲ on deep-hash transition, △ on own-state transition.
-  // Both markers visible when both moved; neither when stable. No
-  // signal is hidden.
+  // Bands flip on the row's primary signal:
+  //   - instance watch → own_hash (this object's own-state)
+  //   - field watch    → resolved field value
+  // A row marked `changed` is one where the primary signal moved
+  // between this row and the previous one.
   let band = 0;
   let lastKey = null;
-  let lastOwn = null;
   for (const r of out) {
     const moved = lastKey !== null && r.compareKey !== lastKey;
     if (moved) band ^= 1;
     r.band = band;
     r.changed = moved;
-    if (watch.kind === 'instance') {
-      r.ownChanged = lastOwn !== null && r.ownStateKey !== lastOwn;
-      lastOwn = r.ownStateKey;
-    } else {
-      r.ownChanged = false;
-    }
     lastKey = r.compareKey;
   }
   return out;
@@ -215,10 +165,6 @@ function changeCount(rows) {
   return rows.filter(r => r.changed).length;
 }
 
-function ownChangeCount(rows) {
-  return rows.filter(r => r.ownChanged).length;
-}
-
 // Address each row would set if clicked. Used to mark the currently
 // selected row (the one whose address matches the global `highlight`).
 function rowAddress(w, r) {
@@ -245,10 +191,11 @@ function isCurrent(w, r) {
 
     <p v-if="!watches.length" class="wp-empty">
       Hover any value in the recording on the left and click <code>⊕ watch</code>.
-      Hovering an object pins the whole instance — tracked by both the agent's
-      deep hash and a UI-computed own-state hash side by side. Hovering a field
-      pins that field on the enclosing instance — tracked by value (literal for
-      primitives, <code>#id</code> for object references).
+      Hovering an object pins the whole instance — tracked by its own-state
+      hash (moves only when this object's own scalars or child references
+      change; mutations of nested children don't count). Hovering a field
+      pins that field on the enclosing instance — tracked by value (literal
+      for primitives, <code>#id</code> for object references).
     </p>
 
     <div v-for="(w, i) in watches" :key="i" class="watch"
@@ -264,35 +211,20 @@ function isCurrent(w, r) {
 
       <div class="watch-meta">
         {{ appearancesFor(w).length }} appearances
-        <template v-if="w.kind === 'instance'">
-          · <span class="changes">{{ changeCount(appearancesFor(w)) }} hash transitions</span>
-          · <span class="own-changes">{{ ownChangeCount(appearancesFor(w)) }} own-state transitions</span>
-        </template>
-        <template v-else>
-          · <span class="changes">{{ changeCount(appearancesFor(w)) }} value transitions</span>
-        </template>
+        · <span class="changes">{{ changeCount(appearancesFor(w)) }}
+          {{ w.kind === 'instance' ? 'own-state transitions' : 'value transitions' }}
+        </span>
       </div>
 
       <table class="watch-results">
-        <colgroup v-if="w.kind === 'instance'">
+        <colgroup>
           <col class="c-time"><col class="c-kind"><col class="c-sig">
-          <col class="c-hash"><col class="c-own"><col class="c-marker">
+          <col :class="w.kind === 'instance' ? 'c-hash' : 'c-value'">
+          <col class="c-marker">
         </colgroup>
-        <colgroup v-else>
-          <col class="c-time"><col class="c-kind"><col class="c-sig">
-          <col class="c-value"><col class="c-marker">
-        </colgroup>
-        <thead v-if="w.kind === 'instance'">
-          <tr>
-            <th></th><th></th><th></th>
-            <th title="Agent's deep Merkle hash. Includes nested envelope content; moves on cycle direction or sibling subtree change.">deep</th>
-            <th title="UI-computed fingerprint over this object's own scalar fields and child reference IDs. Moves only when this object's own data changes.">own</th>
-            <th></th>
-          </tr>
-        </thead>
         <tbody>
           <tr v-for="(r, j) in appearancesFor(w)" :key="r.call_id + ':' + r.kind + ':' + j"
-              :class="['band-' + r.band, { changed: r.changed, 'own-changed': r.ownChanged, current: isCurrent(w, r) }]"
+              :class="['band-' + r.band, { changed: r.changed, current: isCurrent(w, r) }]"
               @click="emit('jump', {
                 callId: r.call_id,
                 kind: r.kind,
@@ -304,18 +236,10 @@ function isCurrent(w, r) {
             <td class="r-time">{{ fmtTime(r.ts_in) }}</td>
             <td class="r-kind"><span :class="r.kind">{{ r.kind }}</span></td>
             <td class="r-sig">{{ shortSig(r.signature) }}</td>
-
-            <template v-if="w.kind === 'instance'">
-              <td class="r-hash" :title="r.hash">{{ r.repr }}</td>
-              <td class="r-own"  :title="'own-state ' + r.ownStateRepr">{{ r.ownStateRepr }}</td>
-            </template>
-            <template v-else>
-              <td class="r-hash">{{ r.repr }}</td>
-            </template>
-
+            <td class="r-hash" :title="w.kind === 'instance' ? 'own-state ' + r.repr : ''">{{ r.repr }}</td>
             <td class="r-marker">
-              <span v-if="r.changed" class="m-deep" title="deep hash differs from previous appearance">▲</span>
-              <span v-if="r.ownChanged" class="m-own" title="own-state differs from previous appearance">△</span>
+              <span v-if="r.changed" class="m-own"
+                    :title="w.kind === 'instance' ? 'own-state differs from previous appearance' : 'value differs from previous appearance'">▲</span>
             </td>
           </tr>
         </tbody>
@@ -359,8 +283,7 @@ function isCurrent(w, r) {
 .watch-rm { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 1.05rem; line-height: 1; }
 .watch-rm:hover { color: var(--accent-red); }
 .watch-meta { color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.4rem; }
-.watch-meta .changes { color: var(--accent-amber); }
-.watch-meta .own-changes { color: #fbbf24; }
+.watch-meta .changes { color: #fbbf24; }
 
 .watch-results {
   width: 100%;
@@ -375,18 +298,8 @@ function isCurrent(w, r) {
 .watch-results col.c-kind   { width: 4ch;  }
 .watch-results col.c-sig    { width: auto; }
 .watch-results col.c-hash   { width: 17ch; }
-.watch-results col.c-own    { width: 17ch; }
 .watch-results col.c-value  { width: auto; }
 .watch-results col.c-marker { width: 5ch; }
-
-.watch-results thead th {
-  font-size: var(--mono-size);
-  font-weight: 500;
-  color: var(--text-muted);
-  text-align: left;
-  padding: 0 0.4rem 0.25rem;
-  cursor: help;
-}
 
 .watch-results tbody tr {
   cursor: pointer;
@@ -396,11 +309,7 @@ function isCurrent(w, r) {
 .watch-results tbody tr.band-0 { background: rgba(110, 231, 183, 0.10); }
 .watch-results tbody tr.band-1 { background: rgba(251, 191, 36, 0.10); }
 .watch-results tbody tr:hover  { outline: 1px solid var(--accent-blue); outline-offset: -1px; }
-.watch-results tbody tr.changed                 { box-shadow: inset 3px 0 0 var(--accent-red); }
-.watch-results tbody tr.own-changed             { box-shadow: inset 3px 0 0 #fbbf24; }
-.watch-results tbody tr.changed.own-changed     {
-  box-shadow: inset 3px 0 0 var(--accent-red), inset 6px 0 0 #fbbf24;
-}
+.watch-results tbody tr.changed { box-shadow: inset 3px 0 0 #fbbf24; }
 
 /* Currently selected row — same amber palette as the .flashed node
    on the left, so both sides visually agree on what's selected. */
@@ -427,13 +336,11 @@ function isCurrent(w, r) {
 .watch-results td.r-kind > span.RE { background: rgba(110, 231, 183, 0.18); color: #6ee7b7; }
 .watch-results td.r-kind > span.TI { background: rgba(196, 181, 253, 0.18); color: #c4b5fd; }
 .watch-results td.r-sig    { color: var(--text-secondary); }
-.watch-results td.r-hash   { color: var(--text-muted); }
-.watch-results td.r-own    { color: var(--text-secondary); }
+.watch-results td.r-hash   { color: var(--text-secondary); }
 .watch-results td.r-marker {
   padding: 0.3rem 0.2rem;
   white-space: nowrap;
   overflow: visible;
 }
-.m-deep { color: var(--accent-red); font-weight: 700; margin-right: 0.35rem; display: inline-block; }
-.m-own  { color: #fbbf24;            font-weight: 700; display: inline-block; }
+.m-own { color: #fbbf24; font-weight: 700; display: inline-block; }
 </style>

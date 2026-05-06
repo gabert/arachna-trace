@@ -66,6 +66,12 @@ CREATE TABLE IF NOT EXISTS deepflow.payloads
     payload_size  UInt32,
     root_hash     FixedString(32),
     object_ids    Array(Int64),
+    -- Length-aligned with object_ids: own_hashes[i] is the own-state hash
+    -- of object_ids[i] at its first appearance in this payload. Lets the
+    -- query "find calls where some object had own_hash X" run as a single
+    -- bloom-filter probe instead of JSON scanning. Empty strings for
+    -- payloads enriched before own_hash existed (graceful coexistence).
+    own_hashes    Array(String),
     -- Mirrors calls.seq for the call this payload belongs to. Lets payload
     -- queries order causally without a join back to calls.
     seq           UInt64 DEFAULT 0,
@@ -73,6 +79,7 @@ CREATE TABLE IF NOT EXISTS deepflow.payloads
     inserted_at   DateTime DEFAULT now(),
 
     INDEX idx_object_ids object_ids TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_own_hashes own_hashes TYPE bloom_filter(0.01) GRANULARITY 1,
     INDEX idx_call_id    call_id    TYPE bloom_filter(0.01) GRANULARITY 1
 )
 ENGINE = MergeTree
@@ -187,20 +194,40 @@ GROUP BY agent_run_id, session_id, request_id;
 -- Clean-read view: collapses any unmerged parts at query time and
 -- exposes the derived columns (`has_exception`, `duration_ms`) so
 -- UI / ad-hoc queries don't need to know about SimpleAggregateFunction.
+--
+-- The aggregation lives in an inner subquery so the outer SELECT can
+-- derive `has_exception` and `duration_ms` from plain values. Without
+-- the subquery, ClickHouse resolves the second `exception_count`
+-- reference to the alias (itself a `sum(...)`) and rejects the view as
+-- nested aggregation.
 CREATE VIEW IF NOT EXISTS deepflow.requests_view AS
 SELECT
     agent_run_id,
     session_id,
     request_id,
-    min(started_at)                                          AS started_at,
-    max(ended_at)                                            AS ended_at,
-    sum(call_count)                                          AS call_count,
-    sum(exception_count)                                     AS exception_count,
-    max(entry_signature)                                     AS entry_signature,
-    max(thread_name)                                         AS thread_name,
-    sum(exception_count) > 0                                 AS has_exception,
-    dateDiff('millisecond', min(started_at), max(ended_at))  AS duration_ms,
-    -- retain is a regular column, not aggregated — `any` is fine
-    any(retain)                                              AS retain
-FROM deepflow.requests
-GROUP BY agent_run_id, session_id, request_id;
+    started_at,
+    ended_at,
+    call_count,
+    exception_count,
+    entry_signature,
+    thread_name,
+    exception_count > 0                                AS has_exception,
+    dateDiff('millisecond', started_at, ended_at)      AS duration_ms,
+    retain
+FROM
+(
+    SELECT
+        agent_run_id,
+        session_id,
+        request_id,
+        min(started_at)      AS started_at,
+        max(ended_at)        AS ended_at,
+        sum(call_count)      AS call_count,
+        sum(exception_count) AS exception_count,
+        max(entry_signature) AS entry_signature,
+        max(thread_name)     AS thread_name,
+        -- retain is a regular column, not aggregated — `any` is fine
+        any(retain)          AS retain
+    FROM deepflow.requests
+    GROUP BY agent_run_id, session_id, request_id
+);

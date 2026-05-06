@@ -22,7 +22,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -230,7 +229,9 @@ public class ClickHouseSink implements RecordSink {
         row.put("payload_json", json);
         row.put("payload_size", json != null ? json.getBytes(StandardCharsets.UTF_8).length : 0);
         row.put("root_hash", extractRootHash(json));
-        row.put("object_ids", collectIds(json));
+        ObjectIdCollector.Result envelopes = collectEnvelopes(json);
+        row.put("object_ids", envelopes.ids());
+        row.put("own_hashes", envelopes.ownHashes());
         row.put("seq", c.seq());
         return row;
     }
@@ -309,12 +310,11 @@ public class ClickHouseSink implements RecordSink {
         return null;
     }
 
-    private static List<Long> collectIds(String json) {
+    private static ObjectIdCollector.Result collectEnvelopes(String json) {
         try {
-            Set<Long> ids = ObjectIdCollector.collect(json);
-            return new ArrayList<>(ids);
+            return ObjectIdCollector.collectBoth(json);
         } catch (IOException e) {
-            return List.of();
+            return ObjectIdCollector.Result.empty();
         }
     }
 

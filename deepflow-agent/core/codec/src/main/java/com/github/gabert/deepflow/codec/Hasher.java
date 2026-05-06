@@ -19,19 +19,32 @@ import java.util.Map;
  * <p>Each envelope node — a map carrying both {@code object_id} and
  * {@code class} keys — is rewritten to:</p>
  *
- * <pre>{ "__meta__": { "id": &lt;object_id&gt;, "class": "&lt;class&gt;", "hash": "&lt;md5&gt;" }, ...userFields }</pre>
+ * <pre>{ "__meta__": { "id": &lt;object_id&gt;, "class": "&lt;class&gt;", "hash": "&lt;md5&gt;", "own_hash": "&lt;md5&gt;" }, ...userFields }</pre>
  *
- * <p>The hash is MD5 of a canonical (sorted-keys) JSON serialization of the
- * object's user fields, where each child envelope is replaced by its own hash
- * string. This Merkle property guarantees that a change anywhere in the
- * subtree changes the root hash — one comparison at the top tells you whether
- * anything below changed.</p>
+ * <p>Two hashes are emitted per envelope, answering different questions:</p>
+ *
+ * <ul>
+ *   <li><b>{@code hash} — deep / Merkle.</b> MD5 of a canonical (sorted-keys)
+ *       JSON serialization of the envelope's user fields, where each child
+ *       envelope is replaced by its own deep hash string. Changes anywhere
+ *       in the subtree change this hash. Right shape for tree drilling
+ *       ("something changed below — walk down to find it").</li>
+ *   <li><b>{@code own_hash} — own state.</b> MD5 of the same canonical form,
+ *       except each child envelope is replaced by {@code {"__ref__": &lt;id&gt;}}.
+ *       Changes only when this object's own scalar fields change, or when
+ *       its set / order of child references changes. Right shape for
+ *       per-row mutation detection ("did THIS object's own state move
+ *       between two appearances"). Class label is not included — matches
+ *       the UI's {@code WatchPanel} own-state collapse rule.</li>
+ * </ul>
  *
  * <p>List ordering is preserved (not sorted): list order is data, and sorting
  * would hide real mutations of ordered collections.</p>
  *
- * <p>Cycle references (maps with {@code ref_id}) pass through unchanged — they
- * are pointers, not data.</p>
+ * <p>Cycle references (maps with {@code ref_id}) pass through unchanged for
+ * the deep walk and collapse to {@code {"__ref__": &lt;ref_id&gt;}} for the own
+ * walk — same shape as a non-root envelope, so own_hash is invariant under
+ * cycle-entry direction.</p>
  */
 public final class Hasher {
 
@@ -150,15 +163,65 @@ public final class Hasher {
         }
 
         String hashHex = md5(MAPPER.writeValueAsString(hashInput));
+        // Own hash: same canonical form, but children collapsed to id-refs
+        // instead of hashes. Computed from the original node so we don't
+        // see the freshly-written __meta__ blocks of children.
+        String ownHashHex = md5(MAPPER.writeValueAsString(ownHashInput(map, true)));
+
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("id", map.get("object_id"));
         meta.put("class", map.get("class"));
         meta.put("hash", hashHex);
+        meta.put("own_hash", ownHashHex);
 
         Map<String, Object> finalNode = new LinkedHashMap<>();
         finalNode.put("__meta__", meta);
         finalNode.putAll(transformed);
         return new Walked(finalNode, hashHex);
+    }
+
+    /**
+     * Build the input for own-state hashing of an envelope (or a non-envelope
+     * sub-tree of an envelope).
+     *
+     * <p>At the root of an envelope's own-hash walk ({@code atRoot=true}),
+     * {@code object_id} and {@code class} are excluded — the hash is over
+     * the user fields only — so two same-class instances with identical
+     * scalar fields collide on own_hash. That collision is intentional:
+     * own_hash answers "did this object's own data move", and id is the
+     * only stable identity at envelope boundaries.</p>
+     */
+    private static Object ownHashInput(Object node, boolean atRoot) {
+        if (node instanceof Map<?, ?> map) {
+            // Cycle ref → {__ref__: id}. Same shape as a non-root envelope
+            // collapse, so own_hash doesn't move under cycle-direction flips.
+            if (map.containsKey("ref_id")) {
+                Map<String, Object> ref = new LinkedHashMap<>();
+                ref.put("__ref__", map.get("ref_id"));
+                return ref;
+            }
+            boolean isEnvelope = map.containsKey("object_id") && map.containsKey("class");
+            if (isEnvelope && !atRoot) {
+                Map<String, Object> ref = new LinkedHashMap<>();
+                ref.put("__ref__", map.get("object_id"));
+                return ref;
+            }
+            // Root envelope OR plain (non-envelope) map. Walk all fields,
+            // dropping the envelope identity keys at the root.
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                String key = String.valueOf(entry.getKey());
+                if (isEnvelope && (key.equals("object_id") || key.equals("class"))) continue;
+                out.put(key, ownHashInput(entry.getValue(), false));
+            }
+            return out;
+        }
+        if (node instanceof List<?> list) {
+            List<Object> out = new ArrayList<>(list.size());
+            for (Object item : list) out.add(ownHashInput(item, false));
+            return out;
+        }
+        return node;
     }
 
     private static Walked walkList(List<?> list) throws IOException {
