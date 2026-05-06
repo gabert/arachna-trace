@@ -1,6 +1,12 @@
 <script setup>
 import { computed, inject, ref } from 'vue';
 import PayloadViewer from './PayloadViewer.vue';
+import { fmtTime, shortSig } from '../util/format.js';
+import {
+  PAYLOADS_BY_CALL_ID, CHILDREN_BY_PARENT,
+  EXPANSION_DEFAULT, EXPANSION_OVERRIDES,
+  MUTATED_OBJECTS_BY_CALL_ID, ADDED_OBJECTS_BY_CALL_ID
+} from '../keys.js';
 
 const props = defineProps({
   call: { type: Object, required: true }
@@ -8,12 +14,12 @@ const props = defineProps({
 
 const emit = defineEmits(['pin']);
 
-const payloadsByCallId   = inject('payloadsByCallId');
-const childrenByParent   = inject('childrenByParent');
-const expansionDefault   = inject('expansionDefault');
-const expansionOverrides = inject('expansionOverrides');
-const mutatedObjectsByCallId = inject('mutatedObjectsByCallId', ref(new Map()));
-const addedObjectsByCallId   = inject('addedObjectsByCallId',   ref(new Map()));
+const payloadsByCallId   = inject(PAYLOADS_BY_CALL_ID);
+const childrenByParent   = inject(CHILDREN_BY_PARENT);
+const expansionDefault   = inject(EXPANSION_DEFAULT);
+const expansionOverrides = inject(EXPANSION_OVERRIDES);
+const mutatedObjectsByCallId = inject(MUTATED_OBJECTS_BY_CALL_ID, ref(new Map()));
+const addedObjectsByCallId   = inject(ADDED_OBJECTS_BY_CALL_ID,   ref(new Map()));
 
 const mutatedCount = computed(() => {
   const ids = mutatedObjectsByCallId.value.get(props.call.call_id);
@@ -41,16 +47,6 @@ function toggle() { expanded.value = !expanded.value; }
 const payloads = computed(() => payloadsByCallId.value.get(props.call.call_id) || []);
 const children = computed(() => childrenByParent.value.get(props.call.call_id) || []);
 const hasChildren = computed(() => children.value.length > 0);
-
-function shortSig(s) {
-  if (!s) return '';
-  return s.replace(/\(.*$/, '').split('.').slice(-2).join('.');
-}
-
-function fmtTime(ts) {
-  if (!ts) return '';
-  return String(ts).replace(/^\d{4}-\d\d-\d\d /, '').slice(0, 12);
-}
 
 const layer = computed(() => layerOf(props.call.signature));
 function layerOf(signature) {
@@ -161,11 +157,6 @@ const exitPayloads  = computed(() => payloads.value.filter(p => p.kind === 'AX' 
 }
 .payload { margin: 0.4rem 0; }
 .payload-head { display: flex; gap: 0.6rem; align-items: baseline; margin-bottom: 0.2rem; }
-.kind { font-size: 0.7rem; padding: 0.05rem 0.4rem; border-radius: 3px; font-weight: 600; }
-.kind.AR { background: rgba(96, 165, 250, 0.18);  color: #93c5fd; }
-.kind.AX { background: rgba(251, 191, 36, 0.18);  color: #fcd34d; }
-.kind.RE { background: rgba(110, 231, 183, 0.18); color: #6ee7b7; }
-.kind.TI { background: rgba(196, 181, 253, 0.18); color: #c4b5fd; }
 
 .rec-children { list-style: none; padding: 0; margin: 0.25rem 0; }
 

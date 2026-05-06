@@ -1,5 +1,7 @@
 <script setup>
 import { computed, inject, ref, watch } from 'vue';
+import { isCycleRef, isEnvelope } from '../util/envelope.js';
+import { MUTATED_OBJECT_IDS, ADDED_OBJECT_IDS, NAV_TICK } from '../keys.js';
 
 const props = defineProps({
   data: { required: true },
@@ -25,19 +27,14 @@ const kind = computed(() => {
 const isContainer = computed(() => kind.value === 'object' || kind.value === 'array');
 
 const envelope = computed(() => {
-  if (kind.value !== 'object') return null;
+  if (!isEnvelope(props.data)) return null;
   const m = props.data.__meta__;
-  if (!m || m.id == null) return null;
   return { objectId: m.id, className: m.class || 'Object', hash: m.hash };
 });
 
 const cycleRef = computed(() => {
-  if (kind.value !== 'object') return null;
-  const d = props.data;
-  if (d && d.ref_id != null && d.cycle_ref === true) {
-    return { objectId: d.ref_id };
-  }
-  return null;
+  if (!isCycleRef(props.data)) return null;
+  return { objectId: props.data.ref_id };
 });
 
 const ownPath = computed(() =>
@@ -54,7 +51,7 @@ const isMatch = computed(() =>
 // envelope whose id is in here as mutated". Other payload kinds get
 // null (no marks). Per-envelope precision — does not propagate to
 // parents the way deep / Merkle hash would.
-const mutatedObjectIds = inject('mutatedObjectIds', ref(null));
+const mutatedObjectIds = inject(MUTATED_OBJECT_IDS, ref(null));
 const isMutatedEnvelope = computed(() =>
   envelope.value
   && mutatedObjectIds.value
@@ -64,7 +61,7 @@ const isMutatedEnvelope = computed(() =>
 // Same scoping for added envelopes — present in AX, absent from AR.
 // Mutually exclusive with mutated (an added id has no AR own_hash to
 // compare against, so it can't be in the mutated set).
-const addedObjectIds = inject('addedObjectIds', ref(null));
+const addedObjectIds = inject(ADDED_OBJECT_IDS, ref(null));
 const isAddedEnvelope = computed(() =>
   envelope.value
   && addedObjectIds.value
@@ -80,7 +77,7 @@ const nodeRef = ref(null);
 //     isMatch transitioned, covering re-click on the already-current
 //     row and any layout shift that pushed the target off-screen
 //     after the original scroll.
-const navTick = inject('navTick', ref(0));
+const navTick = inject(NAV_TICK, ref(0));
 
 function scrollSelfIfMatching() {
   if (!isMatch.value || !nodeRef.value) return;

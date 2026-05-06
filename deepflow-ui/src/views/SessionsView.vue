@@ -157,18 +157,6 @@ function open(row) {
 }
 .page-title { margin: 0; font-size: 1rem; color: var(--text-primary); }
 
-.workspace {
-  flex: 1; overflow: hidden;
-  border-radius: 0; border: 0;
-  background: var(--bg-base);
-}
-:deep(.left-pane)  { overflow-y: auto !important; padding: 0; background: var(--bg-base); }
-:deep(.right-pane) { overflow-y: auto !important; padding: 0; background: var(--bg-base); }
-:deep(.p-splitter-gutter) { background: var(--border) !important; width: 6px !important; }
-:deep(.p-splitter-gutter:hover),
-:deep(.p-splitter-gutter.p-splitter-gutter-resizing) { background: var(--accent-blue) !important; }
-:deep(.p-splitter-gutter-handle) { background: var(--text-muted) !important; }
-
 /* Preview pane */
 .preview { display: flex; flex-direction: column; height: 100%; }
 .preview-head {

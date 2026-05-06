@@ -79,20 +79,47 @@ html, body, #app {
   margin-bottom: 1rem;
 }
 
-.row {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-}
-
-.payload pre {
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  padding: 0.75rem;
-  overflow: auto;
-  max-height: 30rem;
-  font-size: 0.85rem;
-}
-
 .error { color: var(--accent-red); }
+
+/* Splitter workspace shared by SessionsView and SessionDetailView.
+   Both wrap a PrimeVue <Splitter class="workspace"> with left + right
+   panes. The PrimeVue gutter overrides are global because :deep() per
+   view duplicated the same rules — fight scoping at the boundary, not
+   in every consumer. */
+.workspace {
+  flex: 1; overflow: hidden;
+  border-radius: 0; border: 0;
+  background: var(--bg-base);
+}
+.workspace .left-pane,
+.workspace .right-pane {
+  overflow-y: auto !important;
+  padding: 0;
+  background: var(--bg-base);
+}
+.workspace .p-splitter-gutter {
+  background: var(--border) !important;
+  width: 6px !important;
+}
+.workspace .p-splitter-gutter:hover,
+.workspace .p-splitter-gutter.p-splitter-gutter-resizing {
+  background: var(--accent-blue) !important;
+}
+.workspace .p-splitter-gutter-handle { background: var(--text-muted) !important; }
+
+/* Kind pill — record kind (AR / AX / RE / TI) shown as a small chip
+   in the call tree (FrameCard payload header) and in the watch
+   appearance table (WatchItem). Same shape, same palette, lifted here
+   so the two consumers can't drift. */
+.kind {
+  font-size: 0.7rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  font-weight: 600;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+.kind.AR { background: rgba(96, 165, 250, 0.18);  color: #93c5fd; }
+.kind.AX { background: rgba(251, 191, 36, 0.18);  color: #fcd34d; }
+.kind.RE { background: rgba(110, 231, 183, 0.18); color: #6ee7b7; }
+.kind.TI { background: rgba(196, 181, 253, 0.18); color: #c4b5fd; }

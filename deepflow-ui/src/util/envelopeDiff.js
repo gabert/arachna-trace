@@ -12,27 +12,7 @@
 // collapse rule in core/codec/Hasher.java#ownHashInput (children →
 // {__ref__: id}, drop object_id/class at the root).
 
-const ENVELOPE_NOISE = new Set([
-  '__meta__', 'object_id', 'class', 'ref_id', 'cycle_ref'
-]);
-
-function isEnvelope(v) {
-  return v && typeof v === 'object' && v.__meta__ && v.__meta__.id != null;
-}
-
-function isCycleRef(v) {
-  return v && typeof v === 'object' && v.cycle_ref === true && v.ref_id != null;
-}
-
-function refIdOf(v) {
-  if (isEnvelope(v)) return v.__meta__.id;
-  if (isCycleRef(v)) return v.ref_id;
-  return null;
-}
-
-function ownKeys(obj) {
-  return Object.keys(obj).filter(k => !ENVELOPE_NOISE.has(k));
-}
+import { ownKeys, refIdOf } from './envelope.js';
 
 export function diffOwnState(before, after) {
   if (before == null || after == null) return [];

@@ -17,12 +17,6 @@ const routes = [
     props: true
   },
   {
-    path: '/sessions/:sessionId/calls/:callId',
-    name: 'call-detail',
-    component: () => import('../views/CallDetailView.vue'),
-    props: true
-  },
-  {
     path: '/objects/:objectId',
     name: 'object-history',
     component: () => import('../views/ObjectHistoryView.vue'),

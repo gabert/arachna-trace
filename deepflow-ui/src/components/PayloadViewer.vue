@@ -1,6 +1,12 @@
 <script setup>
 import { computed, inject, provide, ref, watch } from 'vue';
 import JsonTree from './JsonTree.vue';
+import { findPathToObjectId } from '../util/envelope.js';
+import {
+  MUTATED_OBJECTS_BY_CALL_ID, ADDED_OBJECTS_BY_CALL_ID,
+  MUTATED_OBJECT_IDS, ADDED_OBJECT_IDS,
+  HIGHLIGHT
+} from '../keys.js';
 
 const props = defineProps({
   data:   { required: true },
@@ -12,19 +18,19 @@ const props = defineProps({
 // Only AX viewers expose them — AR/TI/RE never carry these marks.
 // JsonTree injects each set and marks any envelope row whose object_id
 // is in it.
-const mutatedObjectsByCallId = inject('mutatedObjectsByCallId', ref(new Map()));
+const mutatedObjectsByCallId = inject(MUTATED_OBJECTS_BY_CALL_ID, ref(new Map()));
 const mutatedObjectIds = computed(() => {
   if (props.kind !== 'AX') return null;
   return mutatedObjectsByCallId.value.get(props.callId) || null;
 });
-provide('mutatedObjectIds', mutatedObjectIds);
+provide(MUTATED_OBJECT_IDS, mutatedObjectIds);
 
-const addedObjectsByCallId = inject('addedObjectsByCallId', ref(new Map()));
+const addedObjectsByCallId = inject(ADDED_OBJECTS_BY_CALL_ID, ref(new Map()));
 const addedObjectIds = computed(() => {
   if (props.kind !== 'AX') return null;
   return addedObjectsByCallId.value.get(props.callId) || null;
 });
-provide('addedObjectIds', addedObjectIds);
+provide(ADDED_OBJECT_IDS, addedObjectIds);
 
 const emit = defineEmits(['pin']);
 
@@ -60,7 +66,7 @@ function onToggle(key) {
 // global highlight's (callId, kind) match its own — that way only
 // the right subtree ever sees a non-null highlight prop and renders
 // the flash class.
-const highlight = inject('highlight', ref(null));
+const highlight = inject(HIGHLIGHT, ref(null));
 
 const localHighlightPathKey = computed(() => {
   const h = highlight.value;
@@ -89,31 +95,13 @@ function onFollowCycle(targetId) {
   // Cycle ref points to an ancestor envelope by object_id. Walk our
   // own subtree to find its path, then highlight it as if a watch
   // row had been clicked.
-  const path = findPathToObjectId(props.data, targetId, []);
+  const path = findPathToObjectId(props.data, targetId);
   if (!path) return;
   highlight.value = {
     callId: props.callId,
     kind: props.kind,
     pathKey: JSON.stringify(path)
   };
-}
-
-function findPathToObjectId(node, targetId, currentPath) {
-  if (node == null || typeof node !== 'object') return null;
-  if (node.__meta__ && node.__meta__.id === targetId) return currentPath;
-  if (Array.isArray(node)) {
-    for (let i = 0; i < node.length; i++) {
-      const r = findPathToObjectId(node[i], targetId, [...currentPath, i]);
-      if (r) return r;
-    }
-    return null;
-  }
-  for (const k of Object.keys(node)) {
-    if (k === '__meta__') continue;
-    const r = findPathToObjectId(node[k], targetId, [...currentPath, k]);
-    if (r) return r;
-  }
-  return null;
 }
 </script>
 
