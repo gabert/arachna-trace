@@ -9,14 +9,22 @@ and read the trace.
 
 ## Try it in 60 seconds
 
-Only Docker is required. The demo runs a Spring Boot app with the agent
-already attached, fires a small traffic burst on boot, and lands you on
-populated traces.
+Only Docker plus Docker Compose are required. Docker Desktop
+(Mac / Windows) ships Compose. On stock Linux, install it with:
+
+```bash
+sudo apt install docker-compose       # Debian / Ubuntu
+sudo dnf install docker-compose       # Fedora / RHEL
+```
+
+The demo runs a Spring Boot app with the agent already attached,
+fires a small traffic burst on boot, and lands you on populated
+traces.
 
 ```bash
 mkdir deepflow && cd deepflow
-curl -O https://raw.githubusercontent.com/gabert/deepflow/main/release/compose.yml
-docker compose up
+curl -fsSLO https://raw.githubusercontent.com/gabert/deepflow/main/release/compose.yml
+docker-compose up
 ```
 
 Open <http://localhost:8080>. Full notes (services, troubleshooting,
