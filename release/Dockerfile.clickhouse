@@ -4,7 +4,7 @@
 # database initializes itself on first start with no host-side mount.
 # Build context: repo root.
 
-FROM clickhouse/clickhouse-server:24.12
+FROM clickhouse/clickhouse-server:24.12@sha256:a65ca89ddbe8e04a05036dd7d7110a203256293b407b9359130ed5e4333f45ff
 
 # Schema is loaded on first start by ClickHouse's docker-entrypoint.
 # Subsequent starts keep the existing data volume and skip init.

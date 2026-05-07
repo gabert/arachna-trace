@@ -4,7 +4,7 @@
 #   open http://localhost:8080
 #
 # Pulls pre-built images from GHCR; no source on the host needed.
-# Bump the :v0.0.1 tag (or pin :latest) to upgrade.
+# Bump the :v0.0.2 tag (or pin :latest) to upgrade.
 
 services:
 
@@ -31,7 +31,7 @@ services:
 
   # --- ClickHouse (schema baked in) ---
   clickhouse:
-    image: ghcr.io/gabert/deepflow-clickhouse:v0.0.1
+    image: ghcr.io/gabert/deepflow-clickhouse:v0.0.2
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
       interval: 5s
@@ -42,14 +42,14 @@ services:
 
   # --- Collector (receives binary records from agents → Kafka) ---
   collector:
-    image: ghcr.io/gabert/deepflow-collector:v0.0.1
+    image: ghcr.io/gabert/deepflow-collector:v0.0.2
     depends_on:
       kafka:
         condition: service_healthy
 
   # --- Processor (Kafka → render+hash → ClickHouse) ---
   processor:
-    image: ghcr.io/gabert/deepflow-processor:v0.0.1
+    image: ghcr.io/gabert/deepflow-processor:v0.0.2
     depends_on:
       kafka:
         condition: service_healthy
@@ -58,14 +58,14 @@ services:
 
   # --- Query API (read-only HTTP in front of ClickHouse, consumed by UI) ---
   query:
-    image: ghcr.io/gabert/deepflow-query:v0.0.1
+    image: ghcr.io/gabert/deepflow-query:v0.0.2
     depends_on:
       clickhouse:
         condition: service_healthy
 
   # --- UI (nginx serving Vue dist; proxies /api/ → query) ---
   ui:
-    image: ghcr.io/gabert/deepflow-ui:v0.0.1
+    image: ghcr.io/gabert/deepflow-ui:v0.0.2
     ports:
       - "8080:80"
     depends_on:
@@ -73,7 +73,7 @@ services:
 
   # --- Demo Spring Boot (agent baked in) ---
   demo-spring-boot:
-    image: ghcr.io/gabert/deepflow-demo-spring-boot:v0.0.1
+    image: ghcr.io/gabert/deepflow-demo-spring-boot:v0.0.2
     depends_on:
       - collector
     healthcheck:

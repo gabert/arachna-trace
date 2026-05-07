@@ -140,6 +140,8 @@ EOF
     # into an unusual shape; in that case re-run `docker login`.
     if command -v jq >/dev/null 2>&1; then
         GHCR_AUTH=$(jq -r '.auths."ghcr.io".auth // empty' "$CONFIG_FILE" 2>/dev/null)
+        CREDS_STORE=$(jq -r '.credsStore // empty' "$CONFIG_FILE" 2>/dev/null)
+        CREDS_HELPER=$(jq -r '.credHelpers."ghcr.io" // empty' "$CONFIG_FILE" 2>/dev/null)
     else
         GHCR_AUTH=$(awk '
             /"ghcr\.io"/ { in_block = 1; next }
@@ -151,10 +153,27 @@ EOF
             }
             in_block && /\}/ { in_block = 0 }
         ' "$CONFIG_FILE")
+        CREDS_STORE=$(awk -F'"' '/"credsStore"[[:space:]]*:/ { print $4; exit }' "$CONFIG_FILE")
+        CREDS_HELPER=""
+    fi
+
+    # Credential helpers (Docker Desktop on Win/Mac, pass on Linux, ...)
+    # store the secret OUTSIDE config.json — the inline "auth" field stays
+    # empty by design. Probe the helper directly to confirm a usable
+    # credential is present, the same way `docker push` resolves it at
+    # runtime.
+    if [[ -z "$GHCR_AUTH" ]]; then
+        helper="${CREDS_HELPER:-$CREDS_STORE}"
+        if [[ -n "$helper" ]] && command -v "docker-credential-$helper" >/dev/null 2>&1; then
+            if echo "ghcr.io" | "docker-credential-$helper" get 2>/dev/null | grep -q '"Secret"'; then
+                yellow "    auth via credential helper '$helper' (creds resolved for ghcr.io)"
+                GHCR_AUTH="<helper:$helper>"
+            fi
+        fi
     fi
 
     if [[ -z "$GHCR_AUTH" ]]; then
-        red "    no ghcr.io credentials in $CONFIG_FILE"
+        red "    no ghcr.io credentials in $CONFIG_FILE (and no working credential helper)"
         login_hint
         exit 1
     fi

@@ -82,6 +82,6 @@ builder, GHCR auth, repo layout), then builds all six images for
 
 ### After the release
 
-Update the version pinned in `release/compose.yml` (the `:v0.0.1`
+Update the version pinned in `release/compose.yml` (the `:vX.Y.Z`
 tags) and commit. That's the version users will pull on their next
 `docker compose pull && docker compose up`.

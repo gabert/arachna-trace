@@ -13,7 +13,7 @@
 # -------------------------------------------------------------------
 # Builder
 # -------------------------------------------------------------------
-FROM maven:3.9-eclipse-temurin-17 AS builder
+FROM maven:3.9-eclipse-temurin-17@sha256:036d1a6f2965e4368157bb87f02cd31652a96918a26f7eb5ae45a0aa33f2cb8e AS builder
 WORKDIR /src
 
 # Copy the whole agent reactor and build everything in one pass.
@@ -28,8 +28,8 @@ RUN --mount=type=cache,target=/root/.m2/repository \
 # -------------------------------------------------------------------
 # Common JRE base for runtime stages
 # -------------------------------------------------------------------
-FROM eclipse-temurin:17-jre-alpine AS jre-base
-RUN addgroup -S deepflow && adduser -S -G deepflow deepflow
+FROM eclipse-temurin:17-jre@sha256:07c1f0f0c3f3c714cea7a9250a8418ec329baa2cea1f77dcda2a7332ff937633 AS jre-base
+RUN groupadd -r deepflow && useradd -r -g deepflow deepflow
 WORKDIR /app
 USER deepflow
 
