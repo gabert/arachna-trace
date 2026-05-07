@@ -17,6 +17,7 @@ import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.QueryStringDecoder;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -93,13 +94,14 @@ public class QueryHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             return listSessions();
         }
         String[] parts = path.split("/");
-        // /api/sessions/{id}/{threads|calltree|requests}
+        // /api/sessions/{id}/{threads|calltree|requests|size}
         if (parts.length == 5 && parts[1].equals("api") && parts[2].equals("sessions")) {
             String sessionId = parts[3];
             switch (parts[4]) {
                 case "threads": return listThreads(sessionId);
                 case "calltree": return callTree(sessionId, params);
                 case "requests": return listRequests(sessionId);
+                case "size": return sessionSize(sessionId);
                 default: return null;
             }
         }
@@ -121,6 +123,10 @@ public class QueryHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         // /api/analysis/mutations?session_id=...&request_id=...
         if (path.equals("/api/analysis/mutations")) {
             return analysisMutations(params);
+        }
+        // /api/analysis/value-search?session_id=...[&request_id=...]&value=...
+        if (path.equals("/api/analysis/value-search")) {
+            return analysisValueSearch(params);
         }
         return null;
     }
@@ -208,6 +214,49 @@ public class QueryHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                 """);
     }
 
+    /**
+     * Session-scoped storage footprint, surfaced in the UI's status
+     * bar so the developer can see at a glance how much data this
+     * session has produced. Reports the uncompressed JSON payload
+     * bytes (the bulk of what the session stores) plus row counts
+     * for context. ClickHouse's actual on-disk footprint after
+     * compression is ~10× smaller for typical JSON, but the
+     * "uncompressed payload bytes" number maps best to the
+     * developer's mental model of "how big is the trace I just
+     * generated."
+     */
+    private Map<String, Object> sessionSize(String sessionId) throws Exception {
+        String safe = sqlString(sessionId);
+        List<Map<String, Object>> payloadAgg = ch.query("""
+                SELECT count() AS payload_rows,
+                       sum(payload_size) AS payload_bytes
+                FROM payloads
+                WHERE session_id = """ + safe + """
+
+                """);
+        List<Map<String, Object>> callAgg = ch.query("""
+                SELECT count() AS call_rows
+                FROM calls
+                WHERE session_id = """ + safe + """
+
+                """);
+        Map<String, Object> p = payloadAgg.isEmpty() ? Map.of() : payloadAgg.get(0);
+        Map<String, Object> c = callAgg.isEmpty() ? Map.of() : callAgg.get(0);
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("session_id", sessionId);
+        out.put("payload_rows", asLong(p.get("payload_rows")));
+        out.put("payload_bytes", asLong(p.get("payload_bytes")));
+        out.put("call_rows", asLong(c.get("call_rows")));
+        return out;
+    }
+
+    private static long asLong(Object o) {
+        if (o == null) return 0;
+        if (o instanceof Number n) return n.longValue();
+        try { return Long.parseLong(String.valueOf(o)); } catch (NumberFormatException e) { return 0; }
+    }
+
     private List<Map<String, Object>> objectHistory(String objectId) throws Exception {
         long parsed = Long.parseLong(objectId);
         return ch.query("""
@@ -254,7 +303,11 @@ public class QueryHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                             indexOf(ax.object_ids, oid) > 0
                             AND ax.own_hashes[indexOf(ax.object_ids, oid)] != oh,
                         ar.object_ids, ar.own_hashes
-                    ) AS mutated_ids
+                    ) AS mutated_ids,
+                    arrayFilter(
+                        oid -> indexOf(ar.object_ids, oid) <= 0,
+                        ax.object_ids
+                    ) AS added_ids
                 FROM
                     (SELECT call_id, signature, ts_in,
                             object_ids, own_hashes, payload_json
@@ -269,7 +322,7 @@ public class QueryHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
                        AND kind = 'AX') ax
                 ON ar.call_id = ax.call_id
-                WHERE length(mutated_ids) > 0
+                WHERE length(mutated_ids) > 0 OR length(added_ids) > 0
                 ORDER BY ar.ts_in
                 """;
 
@@ -338,17 +391,213 @@ public class QueryHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             g.put("occurrences", memberIds.size());
         }
 
+        // Per-call summary of object-level changes. UI's in-tree marks
+        // (mutated / added envelope highlights inside JsonTree) read
+        // from this directly instead of re-walking the parsed payloads
+        // client-side. Same SQL pass already classifies the ids; we
+        // just expose them per call_id alongside the grouped view.
+        // ClickHouse Int64 → JSON: serialised as strings by the CH
+        // client (avoiding JS precision loss for full Int64). UI Sets
+        // are keyed by numeric envelope ids, so coerce to Long here
+        // — Jackson then writes them as JSON numbers.
+        List<Map<String, Object>> perCall = new ArrayList<>(sqlRows.size());
+        for (Map<String, Object> r : sqlRows) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("call_id", r.get("call_id"));
+            entry.put("mutated", toLongList(r.get("mutated_ids")));
+            entry.put("added", toLongList(r.get("added_ids")));
+            perCall.add(entry);
+        }
+
         Map<String, Object> summary = Map.of(
                 "total_mutations", totalMutations,
                 "total_groups", groups.size(),
                 "session_id", sessionId,
                 "request_id", requestId
         );
-        return Map.of("summary", summary, "groups", groups);
+        return Map.of("summary", summary, "groups", groups, "perCall", perCall);
+    }
+
+    /**
+     * Find every appearance of a scalar value within a session (or one
+     * request when {@code request_id} is given). Powers the Origin /
+     * value-search panel without forcing the client to walk every parsed
+     * payload — the bloom-filter skip-index over {@code payload_tokens}
+     * lets the row scan run as an indexed probe, and the JSON walk to
+     * resolve exact paths happens once on the server per matching row
+     * rather than per-payload-on-every-click on the client.
+     *
+     * <p>Required: {@code session_id}, {@code value}.
+     * Optional: {@code request_id} (omit for session-wide).</p>
+     *
+     * <p>Response: {@code [{ call_id, kind, signature, ts_in, request_id,
+     * path }]} sorted by {@code ts_in}. {@code path} is a JSON array of
+     * string-or-int segments from the payload root to the matching leaf.
+     * One row per leaf occurrence — the same value at multiple paths in
+     * one payload yields multiple rows.</p>
+     */
+    private List<Map<String, Object>> analysisValueSearch(Map<String, List<String>> params) throws Exception {
+        String sessionId = required(params, "session_id");
+        String value = required(params, "value");
+        String requestIdStr = singleParam(params, "request_id");
+        String mode = singleParam(params, "mode");
+        boolean substring = "substring".equalsIgnoreCase(mode);
+
+        StringBuilder where = new StringBuilder("WHERE session_id = ").append(sqlString(sessionId));
+        if (requestIdStr != null) {
+            where.append(" AND request_id = ").append(Long.parseLong(requestIdStr));
+        }
+        if (substring) {
+            // Full-scan substring filter. positionCaseInsensitive returns
+            // 1-based offset, 0 if not found. No bloom-filter help — this
+            // mode is the deliberate slow path for "Tolkien matches J.R.R.
+            // Tolkien" cases the exact-match index can't catch.
+            where.append(" AND positionCaseInsensitive(payload_json, ")
+                 .append(sqlString(value)).append(") > 0");
+        } else {
+            // Bloom-filter probe over payload_tokens — fast at session
+            // / cross-session scale. Exact value equality only.
+            where.append(" AND has(payload_tokens, ").append(sqlString(value)).append(")");
+        }
+
+        String sql = """
+                SELECT call_id, kind, signature, ts_in, request_id, payload_json
+                FROM payloads
+                """ + where + """
+
+                ORDER BY ts_in
+                LIMIT 5000
+                """;
+        List<Map<String, Object>> rows = ch.query(sql);
+
+        String needleLower = substring ? value.toLowerCase(java.util.Locale.ROOT) : null;
+        List<Map<String, Object>> hits = new ArrayList<>();
+        for (Map<String, Object> r : rows) {
+            String json = (String) r.get("payload_json");
+            if (json == null) continue;
+            JsonNode root = MAPPER.readTree(json);
+            List<List<Object>> paths = new ArrayList<>();
+            if (substring) {
+                findPathsContainingScalar(root, needleLower, new ArrayDeque<>(), paths);
+            } else {
+                findPathsToScalar(root, value, new ArrayDeque<>(), paths);
+            }
+            for (List<Object> path : paths) {
+                Map<String, Object> hit = new LinkedHashMap<>();
+                hit.put("call_id", r.get("call_id"));
+                hit.put("kind", r.get("kind"));
+                hit.put("signature", r.get("signature"));
+                hit.put("ts_in", r.get("ts_in"));
+                hit.put("request_id", r.get("request_id"));
+                hit.put("path", path);
+                hits.add(hit);
+            }
+        }
+        return hits;
+    }
+
+    /**
+     * DFS over the hashed payload tree. For every leaf scalar whose
+     * canonical string form equals {@code target}, append a copy of
+     * the current path to {@code out}. Skips {@code __meta__} blocks
+     * (envelope identity, not user data) and cycle refs (graph
+     * pointers). Mirrors {@code ScalarTokenCollector}'s walk shape
+     * so that "what's in the bloom filter" and "what we surface here"
+     * stay aligned.
+     */
+    private static void findPathsToScalar(
+            JsonNode node, String target,
+            ArrayDeque<Object> path, List<List<Object>> out) {
+        if (node == null || node.isNull()) return;
+        if (node.isObject()) {
+            JsonNode cycleRef = node.get("cycle_ref");
+            if (cycleRef != null && cycleRef.isBoolean() && cycleRef.asBoolean()) return;
+            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> e = fields.next();
+                if ("__meta__".equals(e.getKey())) continue;
+                path.addLast(e.getKey());
+                findPathsToScalar(e.getValue(), target, path, out);
+                path.removeLast();
+            }
+        } else if (node.isArray()) {
+            for (int i = 0; i < node.size(); i++) {
+                path.addLast(i);
+                findPathsToScalar(node.get(i), target, path, out);
+                path.removeLast();
+            }
+        } else {
+            String canonical;
+            if (node.isTextual()) canonical = node.asText();
+            else if (node.isNumber()) canonical = node.numberValue().toString();
+            else if (node.isBoolean()) canonical = Boolean.toString(node.asBoolean());
+            else return;
+            if (canonical.equals(target)) {
+                out.add(new ArrayList<>(path));
+            }
+        }
+    }
+
+    /**
+     * Substring variant of {@link #findPathsToScalar}. Used when the
+     * search ran in {@code mode=substring} — emits paths to leaves
+     * whose canonical string form CONTAINS the (already lowercased)
+     * needle, case-insensitive. Slower than the indexed exact path
+     * by definition; offered as a fallback when the bloom-filter
+     * exact match returns nothing useful (e.g. {@code "Tolkien"}
+     * versus {@code "J.R.R. Tolkien"}).
+     */
+    private static void findPathsContainingScalar(
+            JsonNode node, String needleLower,
+            ArrayDeque<Object> path, List<List<Object>> out) {
+        if (node == null || node.isNull()) return;
+        if (node.isObject()) {
+            JsonNode cycleRef = node.get("cycle_ref");
+            if (cycleRef != null && cycleRef.isBoolean() && cycleRef.asBoolean()) return;
+            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> e = fields.next();
+                if ("__meta__".equals(e.getKey())) continue;
+                path.addLast(e.getKey());
+                findPathsContainingScalar(e.getValue(), needleLower, path, out);
+                path.removeLast();
+            }
+        } else if (node.isArray()) {
+            for (int i = 0; i < node.size(); i++) {
+                path.addLast(i);
+                findPathsContainingScalar(node.get(i), needleLower, path, out);
+                path.removeLast();
+            }
+        } else {
+            String canonical;
+            if (node.isTextual()) canonical = node.asText();
+            else if (node.isNumber()) canonical = node.numberValue().toString();
+            else if (node.isBoolean()) canonical = Boolean.toString(node.asBoolean());
+            else return;
+            if (canonical.toLowerCase(java.util.Locale.ROOT).contains(needleLower)) {
+                out.add(new ArrayList<>(path));
+            }
+        }
     }
 
     private static String textOrNull(JsonNode n) {
         return (n == null || n.isMissingNode() || n.isNull()) ? null : n.asText();
+    }
+
+    /**
+     * Coerces the ClickHouse client's array-of-something into a typed
+     * {@code List<Long>} so Jackson serialises it as JSON numbers
+     * rather than strings. The CH client renders {@code Array(Int64)}
+     * as a list of String to preserve precision; the UI's Sets compare
+     * with numeric envelope ids, so we round-trip through {@code Long}.
+     */
+    private static List<Long> toLongList(Object raw) {
+        if (raw == null) return List.of();
+        @SuppressWarnings("unchecked")
+        List<Object> list = (List<Object>) raw;
+        List<Long> out = new ArrayList<>(list.size());
+        for (Object o : list) out.add(Long.parseLong(String.valueOf(o)));
+        return out;
     }
 
     /**

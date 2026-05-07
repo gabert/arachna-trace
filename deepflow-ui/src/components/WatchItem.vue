@@ -1,61 +1,68 @@
-<script setup>
+<script setup lang="ts">
 // One watch's appearance table. Owns its own collapse state + per-row
 // diff expansion state so the parent panel doesn't have to key Sets
 // by (watchIdx, rowIdx). Dropping the watch removes this entire item,
 // and with it all its local state — exactly what we want.
 
 import { computed, inject, ref } from 'vue';
-import { appearancesFor } from '../composables/useAppearances.js';
-import { fmtTime, shortClass, shortSig } from '../util/format.js';
-import { HIGHLIGHT } from '../keys.js';
+import type { AppearanceRow } from '../util/appearances';
+import { appearancesFor } from '../util/appearances';
+import { fmtTime, shortClass, shortSig } from '../util/format';
+import { HIGHLIGHT } from '../keys';
 import DiffEntries from './DiffEntries.vue';
+import type { CallMeta, JumpAddress, Path, PayloadRow, Watch } from '../types';
 
-const props = defineProps({
-  watch: { type: Object, required: true },
-  parsedPayloads: { type: Array, required: true },
-  callOrder: { type: Map, default: () => new Map() }
+const props = withDefaults(defineProps<{
+  watch: Watch;
+  parsedPayloads: PayloadRow[];
+  callMeta?: Map<string, CallMeta>;
+}>(), {
+  callMeta: () => new Map<string, CallMeta>()
 });
 
-const emit = defineEmits(['remove', 'jump']);
+const emit = defineEmits<{
+  (e: 'remove'): void;
+  (e: 'jump', addr: JumpAddress): void;
+}>();
 
 const highlight = inject(HIGHLIGHT, ref(null));
 
 const collapsed = ref(false);
-function toggleCollapse() { collapsed.value = !collapsed.value; }
+function toggleCollapse(): void { collapsed.value = !collapsed.value; }
 
-const expandedRows = ref(new Set());
-function isRowExpanded(j) { return expandedRows.value.has(j); }
-function toggleRowExpand(j) {
+const expandedRows = ref<Set<number>>(new Set());
+function isRowExpanded(j: number): boolean { return expandedRows.value.has(j); }
+function toggleRowExpand(j: number): void {
   const next = new Set(expandedRows.value);
   if (next.has(j)) next.delete(j); else next.add(j);
   expandedRows.value = next;
 }
 
-const rows = computed(() =>
-  appearancesFor(props.watch, props.parsedPayloads, props.callOrder));
+const rows = computed<AppearanceRow[]>(() =>
+  appearancesFor(props.watch, props.parsedPayloads, props.callMeta));
 
 const changedCount = computed(() => rows.value.filter(r => r.changed).length);
 
-function pathFor(r) {
+function pathFor(r: AppearanceRow): Path {
   return props.watch.kind === 'field'
     ? [...(r.envelopePath || []), ...(props.watch.fieldPath || [])]
     : (r.envelopePath || []);
 }
 
-function rowAddress(r) {
-  return { callId: r.call_id, kind: r.kind, pathKey: JSON.stringify(pathFor(r)) };
+function rowAddress(r: AppearanceRow): { callId: string; kind: string; pathKey: string } {
+  return { callId: r.callId, kind: r.kind, pathKey: JSON.stringify(pathFor(r)) };
 }
 
-function isCurrent(r) {
+function isCurrent(r: AppearanceRow): boolean {
   const h = highlight.value;
   if (!h) return false;
   const a = rowAddress(r);
   return h.callId === a.callId && h.kind === a.kind && h.pathKey === a.pathKey;
 }
 
-function onRowClick(r) {
+function onRowClick(r: AppearanceRow): void {
   emit('jump', {
-    callId: r.call_id,
+    callId: r.callId,
     kind: r.kind,
     objectId: props.watch.objectId,
     path: pathFor(r)
@@ -65,16 +72,18 @@ function onRowClick(r) {
 
 <template>
   <div class="watch" :class="['watch-' + watch.kind]">
-    <header class="watch-head">
-      <button class="watch-collapse"
-              :title="collapsed ? 'expand' : 'collapse'"
-              @click="toggleCollapse">{{ collapsed ? '▶' : '▼' }}</button>
+    <header class="watch-head"
+            role="button"
+            :aria-expanded="!collapsed"
+            :title="collapsed ? 'expand' : 'collapse'"
+            @click="toggleCollapse">
+      <span class="watch-collapse" aria-hidden="true">{{ collapsed ? '▶' : '▼' }}</span>
       <div class="watch-title">
         <strong>{{ shortClass(watch.className) }}</strong>
         <code>#{{ watch.objectId }}</code>
         <code v-if="watch.kind === 'field'" class="watch-field">.{{ (watch.fieldPath || []).join('.') }}</code>
       </div>
-      <button class="watch-rm" @click="emit('remove')" title="Remove watch">×</button>
+      <button class="watch-rm" @click.stop="emit('remove')" title="Remove watch">×</button>
     </header>
 
     <div class="watch-meta">
@@ -91,10 +100,10 @@ function onRowClick(r) {
         <col class="c-marker">
       </colgroup>
       <tbody>
-        <template v-for="(r, j) in rows" :key="r.call_id + ':' + r.kind + ':' + j">
+        <template v-for="(r, j) in rows" :key="r.callId + ':' + r.kind + ':' + j">
           <tr :class="['band-' + r.band, { changed: r.changed, current: isCurrent(r), expanded: isRowExpanded(j) }]"
               @click="onRowClick(r)">
-            <td class="r-time">{{ fmtTime(r.ts_in) }}</td>
+            <td class="r-time">{{ fmtTime(r.ts) }}</td>
             <td class="r-kind"><span class="kind" :class="r.kind">{{ r.kind }}</span></td>
             <td class="r-sig">{{ shortSig(r.signature) }}</td>
             <td class="r-hash" :title="watch.kind === 'instance' ? 'own-state ' + r.repr : ''">{{ r.repr }}</td>
@@ -124,14 +133,21 @@ function onRowClick(r) {
   background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 4px;
   padding: 0.5rem; margin-bottom: 0.75rem;
 }
-.watch-head { display: flex; justify-content: flex-start; align-items: center; gap: 0.4rem; margin-bottom: 0.15rem; }
+.watch-head {
+  display: flex; justify-content: flex-start; align-items: center; gap: 0.4rem;
+  margin-bottom: 0.15rem;
+  padding: 0.1rem 0.2rem;
+  border-radius: 3px;
+  cursor: pointer;                     /* whole header toggles — same affordance as FrameCard's row click */
+  user-select: none;
+}
+.watch-head:hover { background: var(--bg-hover); }
+.watch-head:hover .watch-collapse { color: var(--text-primary); }
 .watch-collapse {
-  background: transparent; border: 0; padding: 0;
   color: var(--text-muted);
   font-family: ui-monospace, monospace; font-size: var(--mono-size);
-  cursor: pointer; line-height: 1; flex-shrink: 0;
+  line-height: 1; flex-shrink: 0;
 }
-.watch-collapse:hover { color: var(--text-primary); }
 .watch-title { display: flex; gap: 0.4rem; align-items: baseline; flex: 1; min-width: 0; overflow: hidden; }
 .watch-title strong { font-size: 0.9rem; color: var(--text-primary); }
 .watch-title code { font-family: ui-monospace, monospace; color: #c4b5fd; font-size: 0.8rem; }

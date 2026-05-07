@@ -1,44 +1,73 @@
-<script setup>
-import { computed, inject, ref, watch } from 'vue';
-import { isCycleRef, isEnvelope } from '../util/envelope.js';
-import { MUTATED_OBJECT_IDS, ADDED_OBJECT_IDS, NAV_TICK } from '../keys.js';
+<script setup lang="ts">
+import { computed, inject, onMounted, ref, watch } from 'vue';
+import { isCycleRef, isEnvelope } from '../util/envelope';
+import { MUTATED_OBJECT_IDS, ADDED_OBJECT_IDS, NAV_TICK } from '../keys';
+import type { Path, PathSegment, Watch } from '../types';
 
-const props = defineProps({
-  data: { required: true },
-  name: { type: [String, Number], default: '' },
-  path: { type: Array, default: () => [] },
-  depth: { type: Number, default: 0 },
-  isExpanded: { type: Function, required: true },
-  envContext: { type: Object, default: null },
+interface EnvContext {
+  objectId: number;
+  className: string;
+  basePath: Path;
+}
+
+const props = withDefaults(defineProps<{
+  data: unknown;
+  name?: PathSegment | '';
+  path?: Path;
+  depth?: number;
+  isExpanded: (key: string) => boolean;
+  envContext?: EnvContext | null;
   // Single source of truth for "is this the highlighted node".
   // Equality on pathKey decides; nothing recursive, nothing broadcast
   // beyond the per-node compare.
-  highlightedPathKey: { type: String, default: null }
+  highlightedPathKey?: string | null;
+}>(), {
+  name: '',
+  path: () => [],
+  depth: 0,
+  envContext: null,
+  highlightedPathKey: null
 });
 
-const emit = defineEmits(['toggle', 'pin', 'follow-cycle']);
+const emit = defineEmits<{
+  (e: 'toggle', pathKey: string): void;
+  (e: 'pin', payload: Watch): void;
+  (e: 'follow-cycle', objectId: number): void;
+  // Provenance — emitted from scalar leaves only. PayloadViewer
+  // enriches with callId/kind before bubbling up. Path is relative
+  // to the payload root.
+  (e: 'origin', target: { path: Path; value: unknown }): void;
+}>();
 
-const kind = computed(() => {
+type NodeKind = 'null' | 'array' | 'object' | 'string' | 'number' | 'boolean' | 'undefined' | 'function' | 'symbol' | 'bigint';
+
+const kind = computed<NodeKind>(() => {
   if (props.data === null) return 'null';
   if (Array.isArray(props.data)) return 'array';
   if (typeof props.data === 'object') return 'object';
-  return typeof props.data;
+  return typeof props.data as NodeKind;
 });
 const isContainer = computed(() => kind.value === 'object' || kind.value === 'array');
 
-const envelope = computed(() => {
+interface EnvelopeRef {
+  objectId: number;
+  className: string;
+  hash?: string;
+}
+
+const envelope = computed<EnvelopeRef | null>(() => {
   if (!isEnvelope(props.data)) return null;
   const m = props.data.__meta__;
   return { objectId: m.id, className: m.class || 'Object', hash: m.hash };
 });
 
-const cycleRef = computed(() => {
+const cycleRef = computed<{ objectId: number } | null>(() => {
   if (!isCycleRef(props.data)) return null;
   return { objectId: props.data.ref_id };
 });
 
-const ownPath = computed(() =>
-  props.name === '' ? props.path : [...props.path, props.name]);
+const ownPath = computed<Path>(() =>
+  props.name === '' ? props.path : [...props.path, props.name as PathSegment]);
 
 const pathKey = computed(() => JSON.stringify(ownPath.value));
 const expanded = computed(() => props.isExpanded(pathKey.value));
@@ -51,24 +80,24 @@ const isMatch = computed(() =>
 // envelope whose id is in here as mutated". Other payload kinds get
 // null (no marks). Per-envelope precision — does not propagate to
 // parents the way deep / Merkle hash would.
-const mutatedObjectIds = inject(MUTATED_OBJECT_IDS, ref(null));
+const mutatedObjectIds = inject(MUTATED_OBJECT_IDS, computed(() => null));
 const isMutatedEnvelope = computed(() =>
-  envelope.value
-  && mutatedObjectIds.value
+  !!envelope.value
+  && !!mutatedObjectIds.value
   && mutatedObjectIds.value.has(envelope.value.objectId)
 );
 
 // Same scoping for added envelopes — present in AX, absent from AR.
 // Mutually exclusive with mutated (an added id has no AR own_hash to
 // compare against, so it can't be in the mutated set).
-const addedObjectIds = inject(ADDED_OBJECT_IDS, ref(null));
+const addedObjectIds = inject(ADDED_OBJECT_IDS, computed(() => null));
 const isAddedEnvelope = computed(() =>
-  envelope.value
-  && addedObjectIds.value
+  !!envelope.value
+  && !!addedObjectIds.value
   && addedObjectIds.value.has(envelope.value.objectId)
 );
 
-const nodeRef = ref(null);
+const nodeRef = ref<HTMLElement | null>(null);
 
 // Two coverage paths for "scroll the matching node into view":
 //   - isMatch watch (immediate, post-flush) catches the freshly-mounted
@@ -79,19 +108,69 @@ const nodeRef = ref(null);
 //     after the original scroll.
 const navTick = inject(NAV_TICK, ref(0));
 
-function scrollSelfIfMatching() {
+function scrollSelfIfMatching(): void {
   if (!isMatch.value || !nodeRef.value) return;
-  // Scroll the row, not the whole .jt-node — the node's bounding box
-  // includes all its expanded children and can be thousands of pixels
-  // tall. Centering the box would push the actual row off-screen.
-  const rowEl = nodeRef.value.firstElementChild || nodeRef.value;
-  rowEl.scrollIntoView({ block: 'center' });
+  // Defer the geometry read + scroll to the next animation frame.
+  // Vue's `flush: 'post'` runs after the DOM update queue, but the
+  // browser's layout pass may not have settled yet — particularly
+  // when this watcher fires inside a freshly-expanded ancestor
+  // (search-hit / origin-jump landing in a previously-collapsed
+  // frame). Reading getBoundingClientRect() at that moment can
+  // return stale or zero rects, and the "already visible" check
+  // bails on a false positive. After one rAF the browser has
+  // computed layout; rect / visibility / scrollIntoView all see
+  // honest numbers.
+  requestAnimationFrame(() => {
+    if (!isMatch.value || !nodeRef.value) return;
+    // Scroll the row, not the whole .jt-node — the node's bounding
+    // box includes all its expanded children and can be thousands
+    // of pixels tall. Centering the box would push the actual row
+    // off-screen.
+    const rowEl = (nodeRef.value.firstElementChild as HTMLElement | null) || nodeRef.value;
+    // Skip the scroll when the target row is already fully visible
+    // inside its scrollable ancestor — re-scrolling a row the user
+    // can already see is just visual noise (especially when the
+    // user is comparing two visible occurrences side by side).
+    if (isFullyVisible(rowEl)) return;
+    rowEl.scrollIntoView({ block: 'center' });
+  });
 }
 
-watch(isMatch, scrollSelfIfMatching, { immediate: true, flush: 'post' });
+function isFullyVisible(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  let parent: HTMLElement | null = el.parentElement;
+  while (parent) {
+    const style = window.getComputedStyle(parent);
+    if (style.overflowY === 'auto' || style.overflowY === 'scroll') break;
+    parent = parent.parentElement;
+  }
+  const top = parent ? parent.getBoundingClientRect().top : 0;
+  const bottom = parent ? parent.getBoundingClientRect().bottom : window.innerHeight;
+  return rect.top >= top && rect.bottom <= bottom;
+}
+
+// Three coverage paths for "scroll the matching node into view":
+//
+//   - onMounted: a freshly-mounted JsonTree whose isMatch is already
+//     true at mount time (the common search-hit / origin-jump case
+//     where the navigation triggered an ancestor frame to expand and
+//     this node mounted with the highlight already pointing at it).
+//     Replaces the older `immediate: true` watch — which fired
+//     during setup() while the template ref was still null and
+//     silently bailed.
+//   - isMatch watch (post-flush): catches the *transition* case —
+//     the node was mounted before, isMatch flipped from false to
+//     true (e.g. user clicks a different hit, the highlighted
+//     pathKey changes, this node is the new match).
+//   - navTick watch (post-flush): catches re-click on the same
+//     row, plus layout shifts that pushed the row off-screen
+//     between the click and now. isMatch hasn't transitioned but
+//     navTick bumped, so we re-scroll.
+onMounted(scrollSelfIfMatching);
+watch(isMatch, scrollSelfIfMatching, { flush: 'post' });
 watch(navTick, scrollSelfIfMatching, { flush: 'post' });
 
-const childEnvContext = computed(() => {
+const childEnvContext = computed<EnvContext | null>(() => {
   if (envelope.value) {
     return {
       objectId: envelope.value.objectId,
@@ -102,22 +181,65 @@ const childEnvContext = computed(() => {
   return props.envContext;
 });
 
-const entries = computed(() => {
+// Clip very long arrays so a 5k-element list doesn't materialize 5k
+// JsonTree component instances on a single expand. Object containers
+// and small arrays render in full; large arrays render the first
+// ARRAY_RENDER_LIMIT entries with an opt-in "show all" button. A
+// navigation that targets an index past the limit auto-flips the
+// switch (see watch on highlightedPathKey below) so links stay
+// honored.
+const ARRAY_RENDER_LIMIT = 200;
+const showAllArray = ref(false);
+
+const arrayLength = computed(() =>
+  kind.value === 'array' ? (props.data as unknown[]).length : 0);
+
+const arrayClipped = computed(() =>
+  kind.value === 'array' && !showAllArray.value && arrayLength.value > ARRAY_RENDER_LIMIT);
+
+const arrayHidden = computed(() =>
+  arrayClipped.value ? arrayLength.value - ARRAY_RENDER_LIMIT : 0);
+
+const entries = computed<[PathSegment, unknown][]>(() => {
   if (kind.value === 'object') {
-    const keys = Object.keys(props.data).filter(k => k !== '__meta__');
-    return keys.map(k => [k, props.data[k]]);
+    const obj = props.data as Record<string, unknown>;
+    const keys = Object.keys(obj).filter(k => k !== '__meta__');
+    return keys.map(k => [k, obj[k]] as [PathSegment, unknown]);
   }
   if (kind.value === 'array') {
-    return props.data.map((v, i) => [i, v]);
+    const arr = props.data as unknown[];
+    const slice = arrayClipped.value ? arr.slice(0, ARRAY_RENDER_LIMIT) : arr;
+    return slice.map((v, i) => [i, v] as [PathSegment, unknown]);
   }
   return [];
 });
 
+// If the global highlight lands on an index inside this array that's
+// past the clip threshold, reveal the rest so the target node mounts
+// and the existing scrollIntoView path can fire.
+watch(() => props.highlightedPathKey, (key) => {
+  if (!key || kind.value !== 'array' || showAllArray.value) return;
+  if (!arrayClipped.value) return;
+  let parsed: unknown;
+  try { parsed = JSON.parse(key); } catch { return; }
+  if (!Array.isArray(parsed)) return;
+  const ours = ownPath.value;
+  if (parsed.length <= ours.length) return;
+  for (let i = 0; i < ours.length; i++) {
+    if (parsed[i] !== ours[i]) return;
+  }
+  const childIdx = parsed[ours.length];
+  if (typeof childIdx === 'number' && childIdx >= ARRAY_RENDER_LIMIT) {
+    showAllArray.value = true;
+  }
+}, { immediate: true });
+
 const summary = computed(() => {
-  if (kind.value === 'array') return `[${props.data.length}]`;
+  if (kind.value === 'array') return `[${(props.data as unknown[]).length}]`;
   if (kind.value === 'object') {
-    const meta = props.data.__meta__;
-    const keys = Object.keys(props.data).filter(k => k !== '__meta__');
+    const obj = props.data as Record<string, unknown>;
+    const meta = (obj as { __meta__?: { class?: string; id?: number } }).__meta__;
+    const keys = Object.keys(obj).filter(k => k !== '__meta__');
     if (meta && meta.class) {
       const cls = String(meta.class).split('.').pop();
       return `${cls} #${meta.id ?? '?'}  · ${keys.length} fields`;
@@ -127,15 +249,20 @@ const summary = computed(() => {
   return '';
 });
 
-function toggle() {
+function toggle(): void {
   if (!isContainer.value || cycleRef.value) return;
   emit('toggle', pathKey.value);
 }
 
-function pinSelf() {
+function pinSelf(): void {
   if (cycleRef.value) return;
   if (envelope.value) {
-    emit('pin', { kind: 'instance', ...envelope.value });
+    emit('pin', {
+      kind: 'instance',
+      objectId: envelope.value.objectId,
+      className: envelope.value.className,
+      hash: envelope.value.hash
+    });
     return;
   }
   if (props.envContext) {
@@ -150,7 +277,7 @@ function pinSelf() {
   }
 }
 
-function followCycle() {
+function followCycle(): void {
   if (cycleRef.value) emit('follow-cycle', cycleRef.value.objectId);
 }
 
@@ -169,11 +296,23 @@ const pinTitle = computed(() => {
   return 'Watch';
 });
 
-function relayToggle(p) { emit('toggle', p); }
-function relayPin(p)    { emit('pin', p); }
-function relayFollow(id){ emit('follow-cycle', id); }
+function relayToggle(p: string): void { emit('toggle', p); }
+function relayPin(p: Watch): void    { emit('pin', p); }
+function relayFollow(id: number): void { emit('follow-cycle', id); }
+function relayOrigin(t: { path: Path; value: unknown }): void { emit('origin', t); }
 
-function renderScalar(v) {
+// Origin (provenance) is meaningful only for scalar leaves. Containers
+// have no single "value" to chain on; envelopes are tracked by id
+// linkage (handled by watch instead); cycle refs are graph pointers.
+const canTraceOrigin = computed(() =>
+  !cycleRef.value && !isContainer.value && !envelope.value);
+
+function originSelf(): void {
+  if (!canTraceOrigin.value) return;
+  emit('origin', { path: ownPath.value, value: props.data });
+}
+
+function renderScalar(v: unknown): string {
   if (v === null) return 'null';
   if (typeof v === 'string') return JSON.stringify(v);
   return String(v);
@@ -206,6 +345,9 @@ function renderScalar(v) {
         <button v-if="canPin" class="jt-pin"
                 @click.stop="pinSelf"
                 :title="pinTitle">⊕ watch</button>
+        <button v-if="canTraceOrigin" class="jt-origin"
+                @click.stop="originSelf"
+                title="Trace where this value came from in this request (heuristic — see Origin panel)">↤ origin</button>
       </template>
     </div>
     <div v-if="isContainer && !cycleRef && expanded" class="jt-children">
@@ -220,7 +362,14 @@ function renderScalar(v) {
                 :highlightedPathKey="highlightedPathKey"
                 @toggle="relayToggle"
                 @pin="relayPin"
-                @follow-cycle="relayFollow" />
+                @follow-cycle="relayFollow"
+                @origin="relayOrigin" />
+      <button v-if="arrayClipped"
+              class="jt-show-all"
+              :title="`Rendering only the first ${ARRAY_RENDER_LIMIT} of ${arrayLength} elements; click to render the remaining ${arrayHidden} (may be slow on very large arrays).`"
+              @click="showAllArray = true">
+        + show {{ arrayHidden }} more
+      </button>
     </div>
   </div>
 </template>
@@ -254,7 +403,37 @@ function renderScalar(v) {
 }
 .jt-row:hover .jt-pin { opacity: 1; pointer-events: auto; }
 .jt-pin:hover { background: rgba(96, 165, 250, 0.3); }
+
+.jt-origin {
+  opacity: 0;
+  pointer-events: none;
+  background: rgba(196, 181, 253, 0.18);
+  border: 1px solid rgba(196, 181, 253, 0.4);
+  color: #c4b5fd;
+  font-size: 0.7rem;
+  cursor: pointer;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  transition: opacity 0.1s;
+  font-family: inherit;
+}
+.jt-row:hover .jt-origin { opacity: 1; pointer-events: auto; }
+.jt-origin:hover { background: rgba(196, 181, 253, 0.3); }
 .jt-children { padding-left: 1.4ch; border-left: 1px dashed var(--border); margin-left: 0.4ch; }
+
+.jt-show-all {
+  display: inline-block;
+  margin: 0.2rem 0 0.2rem 1.4ch;
+  background: rgba(96, 165, 250, 0.12);
+  border: 1px dashed rgba(96, 165, 250, 0.4);
+  color: #93c5fd;
+  font-family: inherit;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.jt-show-all:hover { background: rgba(96, 165, 250, 0.22); }
 
 .jt-cycle {
   background: rgba(196, 181, 253, 0.15);
@@ -275,10 +454,12 @@ function renderScalar(v) {
   border-radius: 3px;
 }
 
-/* Per-envelope mutation mark (AX only). Sits on the envelope's own
-   row, not the enclosing payload — so the eye lands on the BookEntity,
-   not on the AuthorEntity that contains it. Slightly subtler than
-   .flashed so a navigated row still wins visually if both apply. */
+/* Per-envelope mutation mark, applied on both AR (mutation SITE — this
+   envelope is about to change in this call) and AX (mutation RESULT —
+   the post-mutation state). Sits on the envelope's own row, not the
+   enclosing payload — so the eye lands on the BookEntity, not on the
+   AuthorEntity that contains it. Slightly subtler than .flashed so a
+   navigated row still wins visually if both apply. */
 .jt-node.mutated > .jt-row {
   background: rgba(251, 191, 36, 0.10);
   box-shadow: inset 3px 0 0 #fbbf24;

@@ -1,4 +1,4 @@
-package com.github.gabert.deepflow.codec;
+package com.github.gabert.deepflow.processor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -10,7 +10,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Walks a {@link Hasher}-produced JSON tree and collects, for every envelope
+ * Walks a {@link com.github.gabert.deepflow.codec.Hasher}-produced JSON tree
+ * and collects, for every envelope
  * encountered, its {@code __meta__.id} and (when present) its
  * {@code __meta__.own_hash}.
  *

@@ -72,15 +72,23 @@ CREATE TABLE IF NOT EXISTS deepflow.payloads
     -- bloom-filter probe instead of JSON scanning. Empty strings for
     -- payloads enriched before own_hash existed (graceful coexistence).
     own_hashes    Array(String),
+    -- Distinct canonicalized scalar values present in the payload tree
+    -- (strings, numbers, booleans). Populated at enrich time by
+    -- ScalarTokenCollector. Powers value-search and provenance lookups
+    -- as a bloom-filter `has(...)` probe instead of `payload_json LIKE`
+    -- full-table scans. Empty for payloads enriched before this column
+    -- existed; the index just produces no false-positives for those.
+    payload_tokens Array(String),
     -- Mirrors calls.seq for the call this payload belongs to. Lets payload
     -- queries order causally without a join back to calls.
     seq           UInt64 DEFAULT 0,
     retain        Bool DEFAULT false,
     inserted_at   DateTime DEFAULT now(),
 
-    INDEX idx_object_ids object_ids TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_own_hashes own_hashes TYPE bloom_filter(0.01) GRANULARITY 1,
-    INDEX idx_call_id    call_id    TYPE bloom_filter(0.01) GRANULARITY 1
+    INDEX idx_object_ids     object_ids     TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_own_hashes     own_hashes     TYPE bloom_filter(0.01) GRANULARITY 1,
+    INDEX idx_payload_tokens payload_tokens TYPE bloom_filter(0.01) GRANULARITY 4,
+    INDEX idx_call_id        call_id        TYPE bloom_filter(0.01) GRANULARITY 1
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(ts_in)

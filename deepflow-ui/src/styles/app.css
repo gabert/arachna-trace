@@ -30,14 +30,16 @@ html, body, #app {
   height: 100%;
   background: var(--bg-base);
   color: var(--text-primary);
+  overflow: hidden;            /* outer page never scrolls; only the inner panes do */
 }
 
 .app-shell {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;               /* lock to viewport — inner views fill the remainder via flex */
   background: var(--bg-base);
   color: var(--text-primary);
+  overflow: hidden;
 }
 
 .app-header {
@@ -50,8 +52,9 @@ html, body, #app {
 }
 
 .app-header .brand {
-  font-weight: 600;
-  font-size: 1.1rem;
+  font-weight: 700;
+  font-size: 1.4rem;
+  letter-spacing: 0.01em;
   text-decoration: none;
   color: var(--text-primary);
 }
@@ -69,7 +72,9 @@ html, body, #app {
 
 .app-main {
   flex: 1;
-  padding: 1rem 1.25rem;
+  min-height: 0;               /* let the flex child collapse below its content; pairs with overflow:hidden */
+  overflow: hidden;
+  padding: 0.5rem;             /* small frame around the workspace; viewport-bound inner view fills the rest */
 }
 
 .view-header {

@@ -2,7 +2,6 @@ package com.github.gabert.deepflow.processor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.gabert.deepflow.codec.Hasher;
-import com.github.gabert.deepflow.codec.ObjectIdCollector;
 import com.github.gabert.deepflow.recorder.destination.RecordRenderer.Result;
 
 import java.io.IOException;
@@ -232,6 +231,7 @@ public class ClickHouseSink implements RecordSink {
         ObjectIdCollector.Result envelopes = collectEnvelopes(json);
         row.put("object_ids", envelopes.ids());
         row.put("own_hashes", envelopes.ownHashes());
+        row.put("payload_tokens", collectTokens(json));
         row.put("seq", c.seq());
         return row;
     }
@@ -315,6 +315,14 @@ public class ClickHouseSink implements RecordSink {
             return ObjectIdCollector.collectBoth(json);
         } catch (IOException e) {
             return ObjectIdCollector.Result.empty();
+        }
+    }
+
+    private static List<String> collectTokens(String json) {
+        try {
+            return ScalarTokenCollector.collect(json);
+        } catch (IOException e) {
+            return List.of();
         }
     }
 

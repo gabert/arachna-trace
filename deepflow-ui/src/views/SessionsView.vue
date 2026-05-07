@@ -1,51 +1,50 @@
-<script setup>
+<script setup lang="ts">
 import { onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import DataTable from 'primevue/datatable';
-import Column from 'primevue/column';
 import Button from 'primevue/button';
 import Message from 'primevue/message';
 import ProgressSpinner from 'primevue/progressspinner';
 import Splitter from 'primevue/splitter';
 import SplitterPanel from 'primevue/splitterpanel';
-import { api } from '../api/client.js';
+import { api } from '../api/client';
+import type { RequestRow, SessionRow } from '../types';
 
 const router = useRouter();
 
 // --- list state ---------------------------------------------------------
 
-const sessions = ref([]);
+const sessions = ref<SessionRow[]>([]);
 const loading = ref(true);
-const error = ref(null);
+const error = ref<string | null>(null);
 
 // --- preview (right pane) state -----------------------------------------
 
-const selected = ref(null);
-const previewRequests = ref([]);
+const selected = ref<SessionRow | null>(null);
+const previewRequests = ref<RequestRow[]>([]);
 const loadingPreview = ref(false);
-const previewError = ref(null);
+const previewError = ref<string | null>(null);
 
-async function loadList() {
+async function loadList(): Promise<void> {
   loading.value = true;
   error.value = null;
   try {
     sessions.value = await api.listSessions();
   } catch (e) {
-    error.value = e.message;
+    error.value = (e as Error).message;
   } finally {
     loading.value = false;
   }
 }
 onMounted(loadList);
 
-async function loadPreview(sessionId) {
+async function loadPreview(sessionId: string): Promise<void> {
   loadingPreview.value = true;
   previewError.value = null;
   previewRequests.value = [];
   try {
     previewRequests.value = await api.listRequests(sessionId);
   } catch (e) {
-    previewError.value = e.message;
+    previewError.value = (e as Error).message;
   } finally {
     loadingPreview.value = false;
   }
@@ -56,7 +55,15 @@ watch(selected, (row) => {
   else { previewRequests.value = []; previewError.value = null; }
 });
 
-function open(row) {
+function selectSession(row: SessionRow): void {
+  selected.value = row;
+}
+
+function isSelected(row: SessionRow): boolean {
+  return selected.value?.session_id === row.session_id;
+}
+
+function open(row: SessionRow | null): void {
   if (!row) return;
   router.push({ name: 'session-detail', params: { sessionId: row.session_id } });
 }
@@ -73,19 +80,45 @@ function open(row) {
 
     <Splitter class="workspace" stateKey="deepflow-sessions-splitter" stateStorage="local">
       <SplitterPanel :size="45" :minSize="25" class="left-pane">
-        <DataTable :value="sessions"
-                   :loading="loading"
-                   stripedRows
-                   selectionMode="single"
-                   v-model:selection="selected"
-                   dataKey="session_id"
-                   @row-dblclick="(e) => open(e.data)"
-                   class="sessions-table">
-          <Column field="session_id" header="Session" />
-          <Column field="agent_run_id" header="Agent run" />
-          <Column field="last_seen" header="Last seen" />
-          <Column field="retain" header="Retain" />
-        </DataTable>
+        <div v-if="loading" class="centered">
+          <ProgressSpinner style="width:1.75rem;height:1.75rem" />
+        </div>
+
+        <div v-else-if="!sessions.length" class="empty">
+          <p class="muted">No sessions yet — run an instrumented app to populate.</p>
+        </div>
+
+        <table v-else class="data-table sessions-table">
+          <colgroup>
+            <col class="c-session" />
+            <col class="c-run" />
+            <col class="c-ts" />
+            <col class="c-retain" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Session</th>
+              <th>Agent run</th>
+              <th>Last seen</th>
+              <th>Retain</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="s in sessions"
+                :key="s.session_id"
+                :class="{ selected: isSelected(s) }"
+                @click="selectSession(s)"
+                @dblclick="open(s)">
+              <td class="mono"><code>{{ s.session_id }}</code></td>
+              <td class="mono"><code>{{ s.agent_run_id }}</code></td>
+              <td class="mono muted">{{ s.last_seen }}</td>
+              <td>
+                <span v-if="s.retain" class="badge">retain</span>
+                <span v-else class="muted">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </SplitterPanel>
 
       <SplitterPanel :size="55" :minSize="25" class="right-pane">
@@ -114,27 +147,34 @@ function open(row) {
             <ProgressSpinner style="width:1.75rem;height:1.75rem" />
           </div>
 
-          <DataTable v-else
-                     :value="previewRequests"
-                     stripedRows
-                     selectionMode="single"
-                     dataKey="request_id"
-                     @row-select="(e) => open(selected)"
-                     class="requests-table"
-                     :rows="50"
-                     scrollable
-                     scrollHeight="flex">
-            <Column field="request_id" header="#" style="width:5rem">
-              <template #body="{ data }"><strong>#{{ data.request_id }}</strong></template>
-            </Column>
-            <Column field="thread_name" header="Thread" />
-            <Column field="call_count" header="Calls" style="width:6rem" />
-            <Column field="span_ms" header="ms" style="width:6rem" />
-          </DataTable>
+          <table v-else-if="previewRequests.length" class="data-table requests-table">
+            <colgroup>
+              <col class="c-req" />
+              <col class="c-thread" />
+              <col class="c-calls" />
+              <col class="c-ms" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Thread</th>
+                <th>Calls</th>
+                <th>ms</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in previewRequests"
+                  :key="r.request_id"
+                  @dblclick="open(selected)">
+                <td class="mono"><strong>#{{ r.request_id }}</strong></td>
+                <td class="mono">{{ r.thread_name }}</td>
+                <td class="mono num">{{ r.call_count }}</td>
+                <td class="mono num">{{ r.span_ms }}</td>
+              </tr>
+            </tbody>
+          </table>
 
-          <p v-if="!loadingPreview && !previewRequests.length" class="muted centered">
-            no requests in this session
-          </p>
+          <p v-else class="muted centered">no requests in this session</p>
         </div>
       </SplitterPanel>
     </Splitter>
@@ -144,7 +184,8 @@ function open(row) {
 <style scoped>
 .sessions-view {
   display: flex; flex-direction: column;
-  height: calc(100vh - 60px);
+  height: 100%;                /* fills .app-main; outer shell already viewport-locked */
+  min-height: 0;
   background: var(--bg-base);
 }
 
@@ -157,31 +198,86 @@ function open(row) {
 }
 .page-title { margin: 0; font-size: 1rem; color: var(--text-primary); }
 
+/* Shared table style — same look as WatchItem's results, JsonTree
+   monospace and dark theme tokens. Used for both the session list
+   on the left pane and the request preview on the right pane. */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: var(--mono-size);
+  color: var(--text-primary);
+}
+.data-table thead th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0.5rem 0.6rem;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.data-table tbody tr {
+  cursor: pointer;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+.data-table tbody tr:first-child { border-top: 0; }
+.data-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.015); }
+.data-table tbody tr:hover  { background: var(--bg-hover); }
+.data-table tbody tr.selected {
+  background: rgba(96, 165, 250, 0.18) !important;
+  outline: 1px solid var(--accent-blue);
+  outline-offset: -1px;
+}
+.data-table tbody td {
+  padding: 0.4rem 0.6rem;
+  vertical-align: baseline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.data-table td.mono code { color: inherit; font-family: inherit; }
+.data-table td.num { text-align: right; color: var(--text-secondary); }
+
+.sessions-table col.c-session { width: 35%; }
+.sessions-table col.c-run     { width: 30%; }
+.sessions-table col.c-ts      { width: 23%; }
+.sessions-table col.c-retain  { width: 7ch; }
+
+.requests-table col.c-req    { width: 6ch; }
+.requests-table col.c-thread { width: auto; }
+.requests-table col.c-calls  { width: 7ch; }
+.requests-table col.c-ms     { width: 7ch; }
+
 /* Preview pane */
-.preview { display: flex; flex-direction: column; height: 100%; }
+.preview { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .preview-head {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--bg-surface);
+  flex-shrink: 0;
 }
 .meta { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.85rem; }
 .label { color: var(--text-muted); margin-right: 0.4rem; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.04em; }
-.meta code { color: var(--text-primary); font-family: ui-monospace, monospace; }
+.meta code { color: var(--text-primary); font-family: ui-monospace, monospace; font-size: var(--mono-size); }
 .row-times { display: flex; gap: 1rem; flex-wrap: wrap; }
 .badge {
   background: var(--bg-elevated); color: var(--text-secondary);
   border: 1px solid var(--border-strong); padding: 0.05rem 0.5rem;
   border-radius: 4px; font-size: 0.7rem; text-transform: uppercase;
+  font-family: system-ui, sans-serif;
 }
 
 .empty { padding: 2rem 1.25rem; }
 .small { font-size: 0.8rem; }
 .muted { color: var(--text-muted); }
 .centered { display: flex; justify-content: center; padding: 1.5rem; }
-
-:deep(.sessions-table .p-datatable-wrapper),
-:deep(.requests-table .p-datatable-wrapper) {
-  background: var(--bg-base);
-}
 </style>

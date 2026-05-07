@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 // Right-pane peer to WatchPanel. Shows every (call, class, changed-
 // fields) PATTERN where one or more objects were silently mutated
 // between AR and AX in the loaded request — i.e. the method changed
@@ -6,80 +6,71 @@
 // isbn rewrite) collapse to one group, not 5000 rows.
 //
 // Detection is server-side (indexed own_hashes scan + grouping by
-// changed-path-set). Sample diff is rendered from snapshots the
-// server returns. Per-instance diffs (on expand) are computed
-// client-side from already-loaded request payloads — no extra
-// round-trip.
-import { computed, inject, ref, watch } from 'vue';
+// changed-path-set in QueryHandler.analysisMutations). Sample diff
+// is rendered from snapshots the server returns. Per-instance diffs
+// (on expand) are computed client-side from already-loaded request
+// payloads — no extra round-trip.
+//
+// The fetch itself is owned by SessionDetailView via useObjectChanges
+// so the same call powers JsonTree's in-tree marks and this panel
+// from a single network request.
+import { computed, inject, ref } from 'vue';
 import ProgressSpinner from 'primevue/progressspinner';
 import Message from 'primevue/message';
-import { api } from '../api/client.js';
-import { diffOwnState } from '../util/envelopeDiff.js';
-import { findByObjectId, findPathToObjectId } from '../util/envelope.js';
-import { shortClass, shortSig } from '../util/format.js';
-import { PAYLOADS_BY_CALL_ID } from '../keys.js';
+import { diffOwnState } from '../util/envelopeDiff';
+import { findByObjectId, findPathToObjectId } from '../util/envelope';
+import { shortClass, shortSig } from '../util/format';
+import { PAYLOADS_BY_CALL_ID } from '../keys';
 import DiffEntries from './DiffEntries.vue';
+import type {
+  DiffEntry,
+  JumpAddress,
+  MutationGroup,
+  MutationsSummary,
+  PayloadRow
+} from '../types';
 
-const props = defineProps({
-  sessionId: { type: String, required: true },
-  requestId: { type: [Number, String], default: null }
-});
+const props = defineProps<{
+  groups: MutationGroup[];
+  summary: MutationsSummary;
+  loading: boolean;
+  error: string | null;
+}>();
 
-const emit = defineEmits(['jump']);
+const emit = defineEmits<{
+  (e: 'jump', addr: JumpAddress): void;
+}>();
 
 // SessionDetailView's already-loaded request payloads, indexed by
 // call_id. Used for per-instance diff lookups when a group is expanded.
-const payloadsByCallId = inject(PAYLOADS_BY_CALL_ID, ref(new Map()));
+const payloadsByCallId = inject(PAYLOADS_BY_CALL_ID, computed(() => new Map<string, PayloadRow[]>()));
 
-const loading = ref(false);
-const error = ref(null);
-const rawGroups = ref([]);
-const summary = ref({ total_mutations: 0, total_groups: 0 });
+interface MutationGroupView extends MutationGroup {
+  sampleDiff: DiffEntry[];
+}
 
-const expanded = ref(new Set());
-function groupKey(g) {
+const expanded = ref<Set<string>>(new Set());
+function groupKey(g: MutationGroup): string {
   return `${g.call_id}|${g.class}|${g.field_paths.map(p => p.path + ':' + p.kind).join(',')}`;
 }
-function isExpanded(g) { return expanded.value.has(groupKey(g)); }
-function toggleExpand(g) {
+function isExpanded(g: MutationGroup): boolean { return expanded.value.has(groupKey(g)); }
+function toggleExpand(g: MutationGroup): void {
   const k = groupKey(g);
   const next = new Set(expanded.value);
   if (next.has(k)) next.delete(k); else next.add(k);
   expanded.value = next;
 }
 
-const groups = computed(() =>
-  rawGroups.value.map(g => ({
+const groupsView = computed<MutationGroupView[]>(() =>
+  props.groups.map(g => ({
     ...g,
     sampleDiff: diffOwnState(g.sample.ar_snapshot, g.sample.ax_snapshot)
   }))
 );
 
-async function load() {
-  if (props.sessionId == null || props.requestId == null) {
-    rawGroups.value = [];
-    summary.value = { total_mutations: 0, total_groups: 0 };
-    return;
-  }
-  loading.value = true;
-  error.value = null;
-  try {
-    const result = await api.analysisMutations(props.sessionId, props.requestId);
-    rawGroups.value = result.groups || [];
-    summary.value = result.summary || {};
-  } catch (e) {
-    error.value = e.message;
-    rawGroups.value = [];
-  } finally {
-    loading.value = false;
-  }
-}
-
-watch(() => [props.sessionId, props.requestId], load, { immediate: true });
-
 // Per-instance diff for expanded groups. Looks up AR/AX envelopes by
 // id from the request's loaded payloads (browser already has them).
-function memberDiff(callId, objectId) {
+function memberDiff(callId: string, objectId: number): DiffEntry[] | null {
   const calls = payloadsByCallId.value.get(callId) || [];
   const ar = calls.find(p => p.kind === 'AR');
   const ax = calls.find(p => p.kind === 'AX');
@@ -90,7 +81,7 @@ function memberDiff(callId, objectId) {
   return diffOwnState(arEnv, axEnv);
 }
 
-function jumpTo(callId, objectId) {
+function jumpTo(callId: string, objectId: number): void {
   // Land on the actual mutated envelope inside AX (e.g. the BookEntity),
   // not the AX args-array root. Walk the loaded AX payload to find the
   // path; PayloadViewer's existing highlight machinery does the rest
@@ -119,7 +110,7 @@ function jumpTo(callId, objectId) {
 
     <Message v-else-if="error" severity="error" :closable="false">{{ error }}</Message>
 
-    <p v-else-if="!groups.length" class="mp-empty">
+    <p v-else-if="!groupsView.length" class="mp-empty">
       No within-call mutations in this request. Mutations are detected by
       comparing each method's args at entry (AR) vs at exit (AX) — if the
       agent isn't emitting AX (default config), this panel will always be
@@ -127,16 +118,22 @@ function jumpTo(callId, objectId) {
     </p>
 
     <ul v-else class="mp-list">
-      <li v-for="(g, i) in groups" :key="i" class="mp-group">
-        <header class="mp-row-head" @click="jumpTo(g.call_id, g.sample.object_id)">
-          <code class="mp-sig">{{ shortSig(g.signature) }}</code>
-          <span class="mp-arrow-sep">⏵</span>
-          <strong class="mp-class">{{ shortClass(g.class) }}</strong>
-          <code class="mp-id">#{{ g.sample.object_id }}</code>
-          <span v-if="g.occurrences > 1" class="mp-plus">+{{ g.occurrences - 1 }} more</span>
-        </header>
+      <li v-for="(g, i) in groupsView" :key="i" class="mp-group">
+        <!-- The sample (first occurrence) header AND its diff entries
+             share one click target — same affordance as the per-member
+             rows below. Avoids "wide row clickable up top, narrow text
+             clickable for the same hop". -->
+        <div class="mp-sample" @click="jumpTo(g.call_id, g.sample.object_id)">
+          <header class="mp-row-head">
+            <code class="mp-sig">{{ shortSig(g.signature) }}</code>
+            <span class="mp-arrow-sep">⏵</span>
+            <strong class="mp-class">{{ shortClass(g.class) }}</strong>
+            <code class="mp-id">#{{ g.sample.object_id }}</code>
+            <span v-if="g.occurrences > 1" class="mp-plus">+{{ g.occurrences - 1 }} more</span>
+          </header>
 
-        <DiffEntries :diffs="g.sampleDiff" />
+          <DiffEntries :diffs="g.sampleDiff" />
+        </div>
 
         <button v-if="g.occurrences > 1" class="mp-expand" @click.stop="toggleExpand(g)">
           {{ isExpanded(g)
@@ -195,15 +192,20 @@ function jumpTo(callId, objectId) {
   padding: 0.55rem 0.7rem;
   margin-bottom: 0.5rem;
 }
+.mp-sample {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0.1rem 0.2rem;
+  margin: -0.1rem -0.2rem 0.1rem;       /* extend the click target a hair beyond text bounds without bloating layout */
+}
+.mp-sample:hover { outline: 1px solid var(--accent-blue); outline-offset: -1px; }
 .mp-row-head {
   display: flex; gap: 0.35rem; align-items: baseline;
   margin-bottom: 0.35rem;
   font-family: ui-monospace, monospace;
   font-size: var(--mono-size);
   flex-wrap: wrap;
-  cursor: pointer;
 }
-.mp-row-head:hover { outline: 1px solid var(--accent-blue); outline-offset: 2px; border-radius: 2px; }
 .mp-sig { color: var(--text-secondary); }
 .mp-arrow-sep { color: var(--text-muted); }
 .mp-class { color: var(--text-primary); font-weight: 600; }

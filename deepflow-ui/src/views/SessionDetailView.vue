@@ -1,5 +1,5 @@
-<script setup>
-import { computed, provide, ref, toRef, watch } from 'vue';
+<script setup lang="ts">
+import { provide, ref, toRef, watch } from 'vue';
 import Select from 'primevue/select';
 import Message from 'primevue/message';
 import ProgressSpinner from 'primevue/progressspinner';
@@ -8,42 +8,62 @@ import SplitterPanel from 'primevue/splitterpanel';
 import FrameCard from '../components/FrameCard.vue';
 import WatchPanel from '../components/WatchPanel.vue';
 import MutationsPanel from '../components/MutationsPanel.vue';
-import { useRequestData } from '../composables/useRequestData.js';
-import { useNavigator } from '../composables/useNavigator.js';
-import { useArAxAnalysis } from '../composables/useArAxAnalysis.js';
+import OriginPanel from '../components/OriginPanel.vue';
+import SearchPanel from '../components/SearchPanel.vue';
+import { useRequestData } from '../composables/useRequestData';
+import { useNavigator } from '../composables/useNavigator';
+import { useObjectChanges } from '../composables/useObjectChanges';
+import { useProvenance } from '../composables/useProvenance';
+import { useValueSearch } from '../composables/useValueSearch';
 import {
   PAYLOADS_BY_CALL_ID, CHILDREN_BY_PARENT,
-  EXPANSION_DEFAULT, EXPANSION_OVERRIDES,
+  EXPANSION_DEFAULT, EXPANSION_OVERRIDES, CHILDREN_EXPANDED_OVERRIDES,
   MUTATED_OBJECTS_BY_CALL_ID, ADDED_OBJECTS_BY_CALL_ID,
   HIGHLIGHT, NAV_TICK
-} from '../keys.js';
+} from '../keys';
+import type { OriginTarget, Watch } from '../types';
 
-const props = defineProps({ sessionId: { type: String, required: true } });
+
+const props = defineProps<{ sessionId: string }>();
 
 // Right-pane tab. Mutations is the discovery surface, default. Watch
 // is the follow-up tool — keeps its pinned items across tab switches.
-const rightTab = ref('mutations');
+// Origin is the trace-where-it-came-from view — auto-activated when
+// the user clicks ↤ origin on a value in the call tree.
+type RightTab = 'mutations' | 'watch' | 'origin' | 'search';
+const rightTab = ref<RightTab>('mutations');
 
-const selectedRequestId = ref(null);
+const selectedRequestId = ref<number | null>(null);
 
 const sessionIdRef = toRef(props, 'sessionId');
 const {
-  requests, calls, requestPayloads,
+  requests, calls, parsedPayloads,
   loadingRequests, loadingCalls, error,
-  payloadsByCallId, childrenByParent, rootCalls, parentByCallId, callOrder
+  payloadsByCallId, childrenByParent, rootCalls, parentByCallId, callMeta
 } = useRequestData(sessionIdRef, selectedRequestId);
 
 const {
-  highlight, navTick, expansionDefault, expansionOverrides,
+  highlight, navTick, expansionDefault, expansionOverrides, childrenExpandedOverrides,
   goto, expandAll, collapseAll, reset: resetNavigator
 } = useNavigator(parentByCallId);
 
-const { mutatedObjectsByCallId, addedObjectsByCallId } = useArAxAnalysis(payloadsByCallId);
+const {
+  loading: loadingMutations,
+  error: mutationsError,
+  groups: mutationGroups,
+  summary: mutationsSummary,
+  mutatedObjectsByCallId,
+  addedObjectsByCallId
+} = useObjectChanges(sessionIdRef, selectedRequestId);
+
+const provenance = useProvenance(parsedPayloads, callMeta, sessionIdRef, selectedRequestId);
+const valueSearch = useValueSearch(sessionIdRef, selectedRequestId);
 
 provide(PAYLOADS_BY_CALL_ID, payloadsByCallId);
 provide(CHILDREN_BY_PARENT, childrenByParent);
 provide(EXPANSION_DEFAULT, expansionDefault);
 provide(EXPANSION_OVERRIDES, expansionOverrides);
+provide(CHILDREN_EXPANDED_OVERRIDES, childrenExpandedOverrides);
 provide(MUTATED_OBJECTS_BY_CALL_ID, mutatedObjectsByCallId);
 provide(ADDED_OBJECTS_BY_CALL_ID, addedObjectsByCallId);
 provide(HIGHLIGHT, highlight);
@@ -51,27 +71,46 @@ provide(NAV_TICK, navTick);
 
 // Watch model. Local to this view because it scopes to one
 // (session, request) — moving requests should clear watches.
-const watches = ref([]);
+const watches = ref<Watch[]>([]);
 
-function pinWatch(w) {
+function pinWatch(w: Watch | null | undefined): void {
   if (!w || w.objectId == null) return;
   const key = watchKey(w);
-  if (watches.value.some(x => watchKey(x) === key)) return;
-  watches.value = [...watches.value, w];
+  if (!watches.value.some(x => watchKey(x) === key)) {
+    watches.value = [...watches.value, w];
+  }
+  // Mirror the origin click affordance: surface the panel that just
+  // gained content. Same tab switch even when the watch already
+  // existed, so a duplicate click still feels responsive (the user
+  // gets focus on the panel rather than a silent no-op).
+  rightTab.value = 'watch';
 }
 
-function watchKey(w) {
+function watchKey(w: Watch): string {
   if (w.kind === 'field') return `field:${w.objectId}:${(w.fieldPath || []).join('.')}`;
   return `instance:${w.objectId}`;
 }
 
-function removeWatch(idx) {
+function removeWatch(idx: number): void {
   watches.value = watches.value.filter((_, i) => i !== idx);
 }
 
-// Reset navigator + watches whenever the active request changes.
+// Origin target lives inside the provenance composable; the view just
+// wires the user click → tab switch + composable update. Subsequent
+// clicks just replace the target without further nav.
+function setOrigin(t: OriginTarget): void {
+  provenance.setTarget(t);
+  rightTab.value = 'origin';
+}
+
+function clearOrigin(): void {
+  provenance.clear();
+}
+
+// Reset navigator + watches + origin whenever the active request changes.
 watch(selectedRequestId, () => {
   watches.value = [];
+  provenance.clear();
   resetNavigator();
 });
 </script>
@@ -79,7 +118,10 @@ watch(selectedRequestId, () => {
 <template>
   <section class="session-view">
     <header class="sv-head">
-      <h1 class="session-title">{{ sessionId }}</h1>
+      <h1 class="session-title">
+        <span class="session-label">session</span>
+        <code>{{ sessionId }}</code>
+      </h1>
       <div class="req-pick">
         <label>Request</label>
         <Select v-model="selectedRequestId"
@@ -112,7 +154,8 @@ watch(selectedRequestId, () => {
           <FrameCard v-for="call in rootCalls"
                      :key="call.call_id"
                      :call="call"
-                     @pin="pinWatch" />
+                     @pin="pinWatch"
+                     @origin="setOrigin" />
         </ol>
 
         <p v-if="!loadingCalls && !calls.length && selectedRequestId != null" class="muted centered">
@@ -127,23 +170,36 @@ watch(selectedRequestId, () => {
                     @click="rightTab = 'mutations'">Mutations</button>
             <button :class="{ active: rightTab === 'watch' }"
                     @click="rightTab = 'watch'">Watches <span v-if="watches.length" class="tab-count">{{ watches.length }}</span></button>
+            <button :class="{ active: rightTab === 'origin' }"
+                    @click="rightTab = 'origin'">Origin <span v-if="provenance.target.value" class="tab-count">1</span></button>
+            <button :class="{ active: rightTab === 'search' }"
+                    @click="rightTab = 'search'">Search <span v-if="valueSearch.hits.value.length" class="tab-count">{{ valueSearch.hits.value.length }}</span></button>
           </nav>
           <div class="right-tab-body">
-            <!-- Both panels stay mounted (v-show, not v-if) so per-row /
-                 per-group expansion state survives tab switches. The
-                 outer v-if guards on having a request selected to avoid
-                 a flash of empty content during initial load. -->
+            <!-- Panels stay mounted (v-show) so per-row / per-group
+                 expansion state survives tab switches. Outer v-if
+                 guards on having a request selected to avoid a flash
+                 of empty content during initial load. -->
             <template v-if="selectedRequestId != null">
               <MutationsPanel v-show="rightTab === 'mutations'"
-                              :sessionId="sessionId"
-                              :requestId="selectedRequestId"
+                              :groups="mutationGroups"
+                              :summary="mutationsSummary"
+                              :loading="loadingMutations"
+                              :error="mutationsError"
                               @jump="goto" />
               <WatchPanel v-show="rightTab === 'watch'"
                           :watches="watches"
-                          :payloads="requestPayloads"
-                          :callOrder="callOrder"
+                          :payloads="parsedPayloads"
+                          :callMeta="callMeta"
                           @remove="removeWatch"
                           @jump="goto" />
+              <OriginPanel v-show="rightTab === 'origin'"
+                           :provenance="provenance"
+                           @jump="goto" />
+              <SearchPanel v-show="rightTab === 'search'"
+                           :search="valueSearch"
+                           :active="rightTab === 'search'"
+                           @jump="goto" />
             </template>
           </div>
         </div>
@@ -153,14 +209,35 @@ watch(selectedRequestId, () => {
 </template>
 
 <style scoped>
-.session-view { display: flex; flex-direction: column; height: calc(100vh - 60px); background: var(--bg-base); }
+.session-view { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg-base); }
 
 .sv-head {
   display: flex; align-items: center; gap: 1.5rem;
   padding: 0.5rem 1rem; border-bottom: 1px solid var(--border); flex-shrink: 0;
   background: var(--bg-surface);
 }
-.session-title { margin: 0; font-family: ui-monospace, monospace; font-size: 0.9rem; color: var(--text-secondary); }
+.session-title {
+  margin: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.session-title code {
+  font-family: ui-monospace, monospace;
+  color: var(--text-primary);
+  font-weight: 400;
+}
+.session-label {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
 .req-pick { display: flex; align-items: center; gap: 0.5rem; }
 .req-pick label { font-size: 0.85rem; color: var(--text-secondary); }
 .tree-btn {

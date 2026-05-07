@@ -1,25 +1,26 @@
-<script setup>
+<script setup lang="ts">
 // Top-level watch list. Pure orchestration — header, empty state, list
 // of WatchItem children. Per-watch collapse / per-row expansion / row
 // transition logic all live in WatchItem.
+//
+// `payloads` arrives already parsed from useRequestData.parsedPayloads;
+// no JSON.parse happens here.
 
-import { computed } from 'vue';
-import { tryParse } from '../util/format.js';
 import WatchItem from './WatchItem.vue';
+import type { CallMeta, JumpAddress, PayloadRow, Watch } from '../types';
 
-const props = defineProps({
-  watches: { type: Array, required: true },
-  payloads: { type: Array, required: true },
-  callOrder: { type: Map, default: () => new Map() }
+const props = withDefaults(defineProps<{
+  watches: Watch[];
+  payloads: PayloadRow[];
+  callMeta?: Map<string, CallMeta>;
+}>(), {
+  callMeta: () => new Map<string, CallMeta>()
 });
 
-const emit = defineEmits(['remove', 'jump']);
-
-// Parse once at the panel level. WatchItems share the same parsed
-// snapshots — re-parsing inside each item would be O(watches × payloads).
-const parsedPayloads = computed(() =>
-  props.payloads.map(p => ({ ...p, parsed: p.parsed !== undefined ? p.parsed : tryParse(p.payload_json) }))
-);
+const emit = defineEmits<{
+  (e: 'remove', idx: number): void;
+  (e: 'jump', addr: JumpAddress): void;
+}>();
 </script>
 
 <template>
@@ -41,8 +42,8 @@ const parsedPayloads = computed(() =>
     <WatchItem v-for="(w, i) in watches"
                :key="i"
                :watch="w"
-               :parsedPayloads="parsedPayloads"
-               :callOrder="callOrder"
+               :parsedPayloads="payloads"
+               :callMeta="callMeta"
                @remove="emit('remove', i)"
                @jump="(addr) => emit('jump', addr)" />
   </aside>

@@ -1,5 +1,6 @@
-<script setup>
+<script setup lang="ts">
 import { RouterLink, RouterView } from 'vue-router';
+import StatusBar from './components/StatusBar.vue';
 </script>
 
 <template>
@@ -13,5 +14,6 @@ import { RouterLink, RouterView } from 'vue-router';
     <main class="app-main">
       <RouterView />
     </main>
+    <StatusBar />
   </div>
 </template>

@@ -1,5 +1,6 @@
-package com.github.gabert.deepflow.codec;
+package com.github.gabert.deepflow.processor;
 
+import com.github.gabert.deepflow.codec.Hasher;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;

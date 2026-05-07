@@ -1,26 +1,22 @@
-<script setup>
-// Renders an array of diff entries from envelopeDiff.js#diffOwnState.
-// Each entry has { path, kind, before?, after? } where kind is one of
-// 'scalar' | 'idSwap' | 'added' | 'removed'. The before/after slots
-// are formatted via util/format.js#formatValue.
-//
+<script setup lang="ts">
+// Renders an array of diff entries from envelopeDiff#diffOwnState.
 // Used by both MutationsPanel (sample group diff + per-member diff)
 // and WatchPanel (instance changed-row expansion). Single source of
 // truth for diff render styles.
 
-import { formatPath } from '../util/envelopeDiff.js';
-import { formatValue } from '../util/format.js';
+import type { DiffEntry } from '../types';
+import { formatPath } from '../util/envelopeDiff';
+import { formatValue } from '../util/format';
 
-defineProps({
-  diffs: { type: Array, required: true },
+withDefaults(defineProps<{
+  diffs: DiffEntry[];
   // Optional message rendered when `diffs` is empty. Default fits the
   // "own_hash moved but no scalar/id-ref change at this level" case
   // (i.e. the change is in a nested envelope and surfaces on its own
   // row).
-  emptyMessage: {
-    type: String,
-    default: 'own_hash moved but no scalar / id-ref change found at this level.'
-  }
+  emptyMessage?: string;
+}>(), {
+  emptyMessage: 'own_hash moved but no scalar / id-ref change found at this level.'
 });
 </script>
 

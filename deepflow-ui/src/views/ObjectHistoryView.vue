@@ -1,19 +1,20 @@
-<script setup>
+<script setup lang="ts">
 import { onMounted, ref, watch } from 'vue';
 import DataTable from 'primevue/datatable';
 import Column from 'primevue/column';
-import { api } from '../api/client.js';
+import { api } from '../api/client';
+import type { ObjectHistoryRow } from '../types';
 
-const props = defineProps({ objectId: { type: String, required: true } });
+const props = defineProps<{ objectId: string }>();
 
-const rows = ref([]);
-const error = ref(null);
+const rows = ref<ObjectHistoryRow[]>([]);
+const error = ref<string | null>(null);
 
-async function load() {
+async function load(): Promise<void> {
   try {
     rows.value = await api.objectHistory(props.objectId);
   } catch (e) {
-    error.value = e.message;
+    error.value = (e as Error).message;
   }
 }
 onMounted(load);

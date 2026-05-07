@@ -1,4 +1,18 @@
 import { ref } from 'vue';
+import type { ComputedRef, Ref } from 'vue';
+import type { Highlight, JumpAddress } from '../types';
+
+export interface UseNavigator {
+  highlight: Ref<Highlight | null>;
+  navTick: Ref<number>;
+  expansionDefault: Ref<boolean>;
+  expansionOverrides: Ref<Map<string, boolean>>;
+  childrenExpandedOverrides: Ref<Map<string, boolean>>;
+  goto: (addr: JumpAddress) => void;
+  expandAll: () => void;
+  collapseAll: () => void;
+  reset: () => void;
+}
 
 // Owns the cross-pane navigator state.
 //
@@ -22,56 +36,63 @@ import { ref } from 'vue';
 //   - otherwise the default applies. expandAll/collapseAll flip the
 //     default and clear overrides — newly-mounted children inherit the
 //     last user intent, instead of always defaulting to "expanded".
-export function useNavigator(parentByCallId) {
-  const highlight = ref(null);
+export function useNavigator(
+  parentByCallId: ComputedRef<Map<string, string>>
+): UseNavigator {
+  const highlight = ref<Highlight | null>(null);
   const navTick = ref(0);
 
   const expansionDefault = ref(false);
-  const expansionOverrides = ref(new Map());
+  const expansionOverrides = ref<Map<string, boolean>>(new Map());
 
-  function goto({ callId, kind, path }) {
-    // 1. Expand every ancestor of the target so its FrameCard is mounted
-    //    by the time Vue settles. (Collapsed frames unmount their bodies,
-    //    so without this the target's PayloadViewer wouldn't exist.)
-    const next = new Map(expansionOverrides.value);
-    let cur = callId;
+  // Children-fold overrides default to "expanded" (true) when missing —
+  // only explicit collapses are stored. See CHILDREN_EXPANDED_OVERRIDES.
+  const childrenExpandedOverrides = ref<Map<string, boolean>>(new Map());
+
+  function goto(addr: JumpAddress): void {
+    // Expand every ancestor of the target so its FrameCard is mounted
+    // by the time Vue settles, AND force-open every ancestor's
+    // children-fold so the nested FrameCards render. (Collapsed frames
+    // unmount their bodies; collapsed children-folds unmount the child
+    // list — either path leaves the target unmounted otherwise.)
+    const nextExp = new Map(expansionOverrides.value);
+    const nextChildren = new Map(childrenExpandedOverrides.value);
+    let cur: string | undefined = addr.callId;
     while (cur != null) {
-      next.set(cur, true);
+      nextExp.set(cur, true);
+      nextChildren.set(cur, true);
       cur = parentByCallId.value.get(cur);
     }
-    expansionOverrides.value = next;
+    expansionOverrides.value = nextExp;
+    childrenExpandedOverrides.value = nextChildren;
 
-    // 2. Set the address. Vue's reactivity does the rest:
-    //    - The target PayloadViewer (matching callId + kind) sees its
-    //      local highlight flip non-null and expands the path's prefixes.
-    //    - The matching JsonTree node sees its own pathKey === highlight
-    //      and renders the flash class; its post-flush watcher scrolls
-    //      it into view.
-    //    - Any previously-matched node sees its match flip false and
-    //      drops the flash class automatically.
+    // Set the address. Vue's reactivity does the rest.
     highlight.value = {
-      callId,
-      kind,
-      pathKey: JSON.stringify(path || [])
+      callId: addr.callId,
+      kind: addr.kind,
+      pathKey: JSON.stringify(addr.path || [])
     };
     navTick.value++;
   }
 
-  function collapseAll() {
+  function collapseAll(): void {
     expansionDefault.value = false;
     expansionOverrides.value = new Map();
+    childrenExpandedOverrides.value = new Map();
   }
 
-  function expandAll() {
+  function expandAll(): void {
     expansionDefault.value = true;
     expansionOverrides.value = new Map();
+    childrenExpandedOverrides.value = new Map();
   }
 
   // Reset to a known state when the active request changes — caller
   // typically calls this from the watcher that loads new calls.
-  function reset() {
+  function reset(): void {
     highlight.value = null;
     expansionOverrides.value = new Map();
+    childrenExpandedOverrides.value = new Map();
     expansionDefault.value = false;
   }
 
@@ -80,6 +101,7 @@ export function useNavigator(parentByCallId) {
     navTick,
     expansionDefault,
     expansionOverrides,
+    childrenExpandedOverrides,
     goto,
     expandAll,
     collapseAll,
