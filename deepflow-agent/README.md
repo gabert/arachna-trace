@@ -100,8 +100,17 @@ Full agent documentation is in [docs/](docs/):
 - [Getting Started](docs/getting-started.md) -- build, attach, configure
 - [Configuration Reference](docs/configuration.md) -- all options
 - [Architecture](docs/architecture.md) -- agent data flow and modules
+- [Deployment Modes](docs/deployment-modes.md) -- local, embedded, distributed
 - [Trace Format](docs/spec/TAGS.md) -- rendered tag-line specification
 - [Wire-format spec](docs/spec/SPEC.md) -- the language-neutral protocol contract
+
+For contributing, see [CONTRIBUTING.md](CONTRIBUTING.md) — extension
+points for IDE plugins, embedded-DuckDB mode, and non-Java agents are
+described there.
+
+## License
+
+Apache License 2.0. See [LICENSE](../LICENSE) at the repository root.
 
 Features: [Request ID](docs/features/request-id.md) |
 [Truncation](docs/features/truncation.md) |

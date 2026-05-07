@@ -55,6 +55,11 @@ DeepFlow also changes the *shape* of a debugging session — see
 - **Full data capture.** Not just "method X was called" -- you see what it
   was called with, what it returned, and what blew up. Arguments, return
   values, and exceptions are serialized as JSON with type information.
+  Arguments are keyed by parameter name (`{ "isbn": "9780…", "year": 1937 }`)
+  when the target was compiled with `-parameters` *or* with debug info
+  (`-g`, the Maven / Gradle default); falls back to `arg0..argN` for
+  stripped jars. See
+  [Argument names](deepflow-agent/docs/features/argument-names.md).
 
 - **Object identity tracking.** Every object instance receives a stable unique
   ID. When the same `Order` passes through `validate`, `calculateTax`, and
@@ -139,6 +144,13 @@ Merkle hash through a deep object — in
 - **[deepflow-agent/docs/](deepflow-agent/docs/)** —
   [getting started](deepflow-agent/docs/getting-started.md),
   [configuration](deepflow-agent/docs/configuration.md),
-  [architecture](deepflow-agent/docs/architecture.md), features,
+  [architecture](deepflow-agent/docs/architecture.md),
+  [deployment modes](deepflow-agent/docs/deployment-modes.md), features,
   internals, SPI, and the
   [language-neutral wire-format spec](deepflow-agent/docs/spec/SPEC.md).
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE). Contributions welcome —
+see [CONTRIBUTING.md](deepflow-agent/CONTRIBUTING.md) for extension
+points and contribution guidelines.
