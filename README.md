@@ -30,6 +30,23 @@ docker-compose up
 Open <http://localhost:8080>. Full notes (services, troubleshooting,
 release process) in [`release/`](release/README.md).
 
+## Upgrading
+
+To pull a newer release into the same `deepflow/` directory:
+
+```bash
+docker-compose down -v
+curl -fsSLO https://raw.githubusercontent.com/gabert/deepflow/main/release/compose.yml
+docker-compose pull
+docker-compose up
+```
+
+`-v` wipes ClickHouse so the new schema initialises from scratch —
+fine for the demo, since the demo container regenerates traffic on
+boot. To keep existing session data across an upgrade, see
+[release/README.md → Upgrading](release/README.md#upgrading) for the
+schema-migration path.
+
 ## What we built this for
 
 Five use cases drove the design — same data captured for each, read for
