@@ -43,13 +43,34 @@ public class ClickHouseClient {
 
     /**
      * Run a SELECT and return rows as JSON objects. The query is appended with
-     * {@code FORMAT JSONEachRow} automatically.
+     * {@code FORMAT JSONEachRow} automatically. Use this overload only when
+     * the SQL has no user-supplied values.
      */
     public List<Map<String, Object>> query(String sql) throws IOException, InterruptedException {
+        return query(sql, Map.of());
+    }
+
+    /**
+     * Run a parameterized SELECT. Values are bound by ClickHouse via the
+     * {@code param_<name>=<value>} URL channel and referenced in the SQL as
+     * {@code {<name>:<Type>}}. ClickHouse parses the SQL once and substitutes
+     * the bound value at execution time, so values can never be interpreted as
+     * SQL syntax — this is the structural defence against SQL injection. All
+     * call sites that incorporate user input MUST use this overload.
+     */
+    public List<Map<String, Object>> query(String sql, Map<String, String> params)
+            throws IOException, InterruptedException {
         String body = sql + "\nFORMAT JSONEachRow";
+        StringBuilder uri = new StringBuilder("/?database=")
+                .append(URLEncoder.encode("deepflow", StandardCharsets.UTF_8));
+        for (Map.Entry<String, String> e : params.entrySet()) {
+            uri.append("&param_")
+                    .append(URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8))
+                    .append("=")
+                    .append(URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8));
+        }
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(baseUri.resolve("/?database=" + URLEncoder.encode(
-                        "deepflow", StandardCharsets.UTF_8)))
+                .uri(baseUri.resolve(uri.toString()))
                 .timeout(Duration.ofSeconds(15))
                 .header("Authorization", basicAuth)
                 .header("Content-Type", "text/plain; charset=UTF-8")
