@@ -22,6 +22,7 @@ public class AgentConfig {
     private final boolean expandThis;
     private final boolean serializeValues;
     private final boolean propagateRequestId;
+    private final boolean parameterNames;
     private final int maxValueSize;
     private final String destination;
     private final Set<String> emitTags;
@@ -39,6 +40,7 @@ public class AgentConfig {
         this.expandThis = Boolean.parseBoolean(configMap.getOrDefault("expand_this", "false"));
         this.serializeValues = Boolean.parseBoolean(configMap.getOrDefault("serialize_values", "true"));
         this.propagateRequestId = Boolean.parseBoolean(configMap.getOrDefault("propagate_request_id", "true"));
+        this.parameterNames = Boolean.parseBoolean(configMap.getOrDefault("parameter_names", "true"));
         this.maxValueSize = Integer.parseInt(configMap.getOrDefault("max_value_size", "0"));
         this.destination = configMap.getOrDefault("destination", "file");
         this.emitTags = ConfigLoader.parseEmitTags(configMap.get("emit_tags"), DEFAULT_EMIT_TAGS);
@@ -76,6 +78,18 @@ public class AgentConfig {
 
     public boolean isPropagateRequestId() {
         return propagateRequestId;
+    }
+
+    /**
+     * Whether AR/AX should be encoded as a name-keyed map (parameter
+     * names from {@code MethodParameters} or {@code LocalVariableTable})
+     * or as a positional array with {@code arg0..argN} keys. The latter
+     * keeps the {@link com.github.gabert.deepflow.agent.recording.ParameterNamesResolver}
+     * cache empty and skips reading any class bytes — useful when memory
+     * footprint is the dominant constraint. Default {@code true}.
+     */
+    public boolean isParameterNames() {
+        return parameterNames;
     }
 
     public int getMaxValueSize() {

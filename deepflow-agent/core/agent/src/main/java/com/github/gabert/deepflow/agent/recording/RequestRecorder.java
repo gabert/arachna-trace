@@ -10,6 +10,7 @@ import com.github.gabert.deepflow.recorder.record.RecordWriter;
 
 import java.io.IOException;
 import java.lang.reflect.Method;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -64,6 +65,10 @@ public class RequestRecorder {
         this.emitReturnRecord = config.shouldEmit("RT") || config.shouldEmit("RE");
         this.emitAx = config.shouldEmit("AX");
         this.emitSq = config.shouldEmit("SQ");
+        // Single decision point — the resolver itself short-circuits to
+        // positional integer keys without touching its cache when this
+        // flag is false. The recorder doesn't branch per-call.
+        ParameterNamesResolver.setEnabled(config.isParameterNames());
     }
 
     public RecordBuffer getRecordBuffer() {
@@ -120,7 +125,7 @@ public class RequestRecorder {
             if (serializeValues) {
                 Object selfForCapture = emitTi ? self : null;
                 Object[] argsForCapture = emitAr ? allArguments : null;
-                record = buildSerializedEntry(sessionId, signature, threadName, timestamp, callerLine,
+                record = buildSerializedEntry(method, sessionId, signature, threadName, timestamp, callerLine,
                         requestId, callId, parentCallId, sequenceRecord, selfForCapture, argsForCapture);
             } else {
                 byte[] startRecord = RecordWriter.logEntrySimple(sessionId, signature, threadName, timestamp,
@@ -172,7 +177,9 @@ public class RequestRecorder {
 
             byte[] record;
             if (serializeValues) {
-                byte[] exitArgsCbor = (emitAx && emitAr) ? valueEncoder.encode(allArguments) : null;
+                byte[] exitArgsCbor = (emitAx && emitAr && allArguments != null)
+                        ? valueEncoder.encode(namedArgs(method, allArguments))
+                        : null;
 
                 byte[] returnRecord;
                 if (!emitReturnRecord) {
@@ -204,7 +211,8 @@ public class RequestRecorder {
 
     // --- Private: entry record building ---
 
-    private byte[] buildSerializedEntry(String sessionId, String signature, String threadName,
+    private byte[] buildSerializedEntry(Method method,
+                                         String sessionId, String signature, String threadName,
                                          long timestamp, int callerLine,
                                          long requestId,
                                          UUID callId, UUID parentCallId,
@@ -224,10 +232,26 @@ public class RequestRecorder {
 
         byte[] argsRecord = null;
         if (allArguments != null) {
-            argsRecord = RecordWriter.arguments(valueEncoder.encode(allArguments));
+            argsRecord = RecordWriter.arguments(valueEncoder.encode(namedArgs(method, allArguments)));
         }
 
         return BinaryUtil.concat(startRecord, sequenceRecord, thisRecord, argsRecord);
+    }
+
+    /**
+     * Wraps an {@code Object[]} of arguments into a key-preserving
+     * {@link LinkedHashMap}. Keys come from {@link ParameterNamesResolver}
+     * — strings when real names are available, integers when not — and
+     * the recorder is agnostic to which: AR/AX is always a CBOR map
+     * downstream regardless of source. Order matches declaration order.
+     */
+    private static Map<Object, Object> namedArgs(Method method, Object[] allArguments) {
+        Object[] keys = ParameterNamesResolver.resolve(method);
+        Map<Object, Object> map = new LinkedHashMap<>(keys.length);
+        for (int i = 0; i < keys.length; i++) {
+            map.put(keys[i], i < allArguments.length ? allArguments[i] : null);
+        }
+        return map;
     }
 
     private static Map<String, Object> buildExceptionData(Throwable throwable) {
