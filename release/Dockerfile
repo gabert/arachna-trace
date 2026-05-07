@@ -28,8 +28,8 @@ RUN --mount=type=cache,target=/root/.m2/repository \
 # -------------------------------------------------------------------
 # Common JRE base for runtime stages
 # -------------------------------------------------------------------
-FROM eclipse-temurin:17-jre@sha256:07c1f0f0c3f3c714cea7a9250a8418ec329baa2cea1f77dcda2a7332ff937633 AS jre-base
-RUN groupadd -r deepflow && useradd -r -g deepflow deepflow
+FROM bellsoft/liberica-runtime-container:jre-17-musl@sha256:dc909359d7077eb7f98c6f0bdcd020399641a159db5dbf22de9735955efb3388 AS jre-base
+RUN addgroup -S deepflow && adduser -S -G deepflow deepflow
 WORKDIR /app
 USER deepflow
 
