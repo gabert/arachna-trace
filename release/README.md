@@ -9,7 +9,7 @@ the agent baked in).
 ```bash
 mkdir deepflow && cd deepflow
 curl -O https://raw.githubusercontent.com/gabert/deepflow/main/release/compose.yml
-docker compose up
+docker-compose up
 ```
 
 Open <http://localhost:8080>. The UI lands on a session populated by the
@@ -19,7 +19,7 @@ traces immediately.
 To shut everything down and reclaim the disk:
 
 ```bash
-docker compose down -v
+docker-compose down -v
 ```
 
 ## What's running
@@ -37,6 +37,39 @@ docker compose down -v
 
 Only `ui` exposes a host port (`8080:80`). The rest talk over the
 internal Docker network.
+
+## Upgrading
+
+To pull a newer release into the same `deepflow/` directory:
+
+```bash
+docker-compose down -v           # stop + wipe ClickHouse volume (clean slate)
+curl -fsSLO https://raw.githubusercontent.com/gabert/deepflow/main/release/compose.yml
+docker-compose pull              # pull new images from GHCR
+docker-compose up                # demo-traffic auto-fires; UI on :8080
+```
+
+`-v` is the simple path. ClickHouse runs schema-init only on a fresh
+data directory, so when a release adds columns or indexes the cleanest
+upgrade is to wipe and re-initialise. For a demo deployment this is
+fine — the demo container regenerates traffic on boot.
+
+To keep existing session data across an upgrade, apply the release's
+schema delta against the existing volume instead of wiping. For
+**v0.0.1 → v0.0.2** (adds the `payload_tokens` bloom-filter index for
+value-search):
+
+```bash
+docker-compose down              # keep the volume
+curl -fsSLO https://raw.githubusercontent.com/gabert/deepflow/main/release/compose.yml
+docker-compose pull
+docker-compose run --rm -T clickhouse \
+    clickhouse-client --user deepflow --password deepflow -d deepflow \
+    --query "ALTER TABLE payloads ADD COLUMN IF NOT EXISTS payload_tokens Array(String), ADD INDEX IF NOT EXISTS idx_payload_tokens payload_tokens TYPE bloom_filter(0.01) GRANULARITY 4"
+docker-compose up
+```
+
+Future releases will list any required schema deltas in their notes.
 
 ---
 
@@ -66,7 +99,7 @@ builder, GHCR auth, repo layout), then builds all six images for
 
 3. **First push of a new image name → flip the package to public.** GHCR
    creates new packages as private. Until they're public, anonymous
-   `docker pull` (i.e. `docker compose up` for any user without
+   `docker pull` (i.e. `docker-compose up` for any user without
    credentials) fails. Either:
 
    - Web UI: GitHub → your profile → Packages → click the package →
@@ -84,4 +117,4 @@ builder, GHCR auth, repo layout), then builds all six images for
 
 Update the version pinned in `release/compose.yml` (the `:vX.Y.Z`
 tags) and commit. That's the version users will pull on their next
-`docker compose pull && docker compose up`.
+`docker-compose pull && docker-compose up`.
