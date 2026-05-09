@@ -57,12 +57,16 @@ function toggle(): void {
          @keydown.enter.prevent="toggle"
          @keydown.space.prevent="toggle">
       <span class="cp-chevron" aria-hidden="true">{{ isCollapsed ? '▸' : '▾' }}</span>
-      <span class="cp-head-content">
-        <!-- Slot prop `collapsed` lets consumers render context-aware
-             header text (e.g. "show 3 more" ↔ "collapse") without
-             needing controlled mode just to read state. -->
+      <!-- Slot wrapper is a <div>, not a <span>, so consumers can
+           place block-level elements (e.g. WatchItem's <div> title
+           with embedded <code>) inside the header without the
+           browser's parse-time auto-close splitting the cp-head DOM.
+           Slot prop `collapsed` lets consumers render context-aware
+           header text (e.g. "show 3 more" ↔ "collapse") without
+           needing controlled mode just to read state. -->
+      <div class="cp-head-content">
         <slot name="header" :collapsed="isCollapsed" />
-      </span>
+      </div>
     </div>
     <div v-show="!isCollapsed" class="cp-body">
       <slot />
