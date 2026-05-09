@@ -164,7 +164,7 @@ function layerOf(signature: string | null | undefined): Layer {
       <button class="rec-row-btn"
               @click="toggle"
               :title="call.signature">
-        <span class="rec-disclosure">{{ expanded ? '▾' : '▸' }}</span>
+        <span class="rec-disclosure">{{ hasChildren ? (expanded ? '▾' : '▸') : '' }}</span>
         <span class="rec-time">{{ fmtTime(call.ts_in) }}</span>
         <span class="rec-dur">{{ call.duration_ms }} ms</span>
         <span class="layer-stripe" :class="'layer-' + layer"></span>
