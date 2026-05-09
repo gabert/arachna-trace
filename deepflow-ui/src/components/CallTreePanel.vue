@@ -198,7 +198,7 @@ const traceObjectId = computed(() => props.inspectedInstance?.objectId ?? null);
 </template>
 
 <style scoped>
-.ctp { height: 100%; }
+.ctp { height: 100%; overflow-y: auto; }
 .recording { list-style: none; padding: 0; margin: 0; }
 .muted { color: var(--text-muted); font-size: 0.85rem; }
 .centered { display: flex; justify-content: center; padding: 2rem; }

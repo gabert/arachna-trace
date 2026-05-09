@@ -263,31 +263,34 @@ watch(trace.inspectedInstance, (v) => {
 
     <Message v-if="error" severity="error" :closable="false">{{ error }}</Message>
 
-    <div class="workspace-row">
+    <div class="workspace-row" :class="{ 'has-tool-divider': toolStrip.activeTool.value != null }">
       <Splitter class="workspace" stateKey="deepflow-session-splitter-v2" stateStorage="local">
         <SplitterPanel :size="50" :minSize="25" class="left-pane">
-          <CallTreePanel ref="callTreeRef"
-                         :rootCalls="rootCalls"
-                         :callsLoading="loadingCalls"
-                         :hasNoCalls="!calls.length && selectedRequestId != null"
-                         :parentByCallId="parentByCallId"
-                         :exceptionCount="exceptionNav.exceptionCount.value"
-                         :exceptionCursor="exceptionNav.exceptionCursor.value"
-                         :inspectedInstance="trace.inspectedInstance.value"
-                         :inspectedShortClass="trace.inspectedShortClass.value"
-                         :inspectedCount="trace.inspectedCount.value"
-                         :traceCursor="trace.traceCursor.value"
-                         @pin="pinWatch"
-                         @origin="setOrigin"
-                         @goto-prev-exception="exceptionNav.gotoPrevException"
-                         @goto-next-exception="exceptionNav.gotoNextException"
-                         @goto-prev-appearance="trace.gotoPrevAppearance"
-                         @goto-next-appearance="trace.gotoNextAppearance"
-                         @clear-instance="trace.clearInspectedInstance" />
+          <div class="panel-window">
+            <CallTreePanel ref="callTreeRef"
+                           :rootCalls="rootCalls"
+                           :callsLoading="loadingCalls"
+                           :hasNoCalls="!calls.length && selectedRequestId != null"
+                           :parentByCallId="parentByCallId"
+                           :exceptionCount="exceptionNav.exceptionCount.value"
+                           :exceptionCursor="exceptionNav.exceptionCursor.value"
+                           :inspectedInstance="trace.inspectedInstance.value"
+                           :inspectedShortClass="trace.inspectedShortClass.value"
+                           :inspectedCount="trace.inspectedCount.value"
+                           :traceCursor="trace.traceCursor.value"
+                           @pin="pinWatch"
+                           @origin="setOrigin"
+                           @goto-prev-exception="exceptionNav.gotoPrevException"
+                           @goto-next-exception="exceptionNav.gotoNextException"
+                           @goto-prev-appearance="trace.gotoPrevAppearance"
+                           @goto-next-appearance="trace.gotoNextAppearance"
+                           @clear-instance="trace.clearInspectedInstance" />
+          </div>
         </SplitterPanel>
 
         <SplitterPanel :size="50" :minSize="20" class="inspection-pane">
-          <div class="inspection-area">
+          <div class="panel-window inspection-window">
+            <div class="inspection-area">
             <!-- Transient slot — at most one card. No drag handle, no
                  drag-drop class flags; lives above the pinned list and
                  gets replaced by the next nav. The 📌 button on its
@@ -331,21 +334,30 @@ watch(trace.inspectedInstance, (v) => {
               <p>Click <code>↗</code> on a call in the tree to open its TI / AR / AX / RE.</p>
               <p class="hint">A new card replaces the previous one as you browse. Click <code>📌</code> on its header to keep it; pinned cards stack below and are drag-reorderable.</p>
             </div>
+            </div>
           </div>
         </SplitterPanel>
       </Splitter>
 
-      <!-- Tool strip on the far right edge: always-visible icon column,
-           plus a content overlay (only when a tool is active). The
-           panels remain mounted via v-show so per-group / per-row
-           expansion state survives expand/collapse. -->
-      <aside class="tool-strip" :class="{ expanded: toolStrip.activeTool.value != null }">
+      <!-- Resize divider between inspection and tool windows. Same
+           visual + dash as the splitter gutter between tree and
+           inspection. Only rendered when a tool is active — when
+           tool window is collapsed (icons-only), the workspace-row's
+           default gap provides the visual separator instead. -->
+      <div v-if="toolStrip.activeTool.value != null"
+           class="tool-divider"
+           title="Drag to resize"
+           @mousedown.prevent="toolStrip.onResizeStart"></div>
+
+      <!-- Tool strip — third "window" in the workspace row. Always-
+           visible icon column on the right edge plus a content panel
+           that opens when a tool is active. Shares the .panel-window
+           rounded chrome with the call-tree and inspection panels so
+           the three read as a single layout. -->
+      <aside class="tool-strip panel-window" :class="{ expanded: toolStrip.activeTool.value != null }">
         <section v-if="toolStrip.activeTool.value != null"
                  class="tool-content"
                  :style="{ width: toolStrip.toolWidth.value + 'px' }">
-          <div class="tool-resize-handle"
-               @mousedown.prevent="toolStrip.onResizeStart"
-               title="Drag to resize"></div>
           <header class="tool-header">
             <span class="tool-title">{{ toolStrip.activeToolLabel.value }}</span>
             <button class="tool-close" @click="toolStrip.setActiveTool(null)" title="Collapse">×</button>
@@ -434,33 +446,106 @@ watch(trace.inspectedInstance, (v) => {
 .muted { color: var(--text-muted); font-size: 0.8rem; }
 .centered { display: flex; justify-content: center; padding: 2rem; }
 
-/* SessionDetailView's left pane gets a hair of top padding so the
-   first FrameCard isn't flush against the splitter gutter. SessionsView
-   doesn't need it because the DataTable header already has padding. */
-:deep(.workspace .left-pane) { padding: 0.25rem 0; }
-
-/* .recording, trace-banner, and centered/.muted now live inside
-   CallTreePanel (the entire left-pane chrome moved). */
-
-/* Workspace row: Splitter (tree | inspection) on the left, fixed-width
-   tool strip on the right edge. The Splitter fills the remaining width
-   so tool strip expand/collapse never resizes the splitter ratio. */
+/* Workspace row: three rounded "window" panels — call tree,
+   inspection, tools — separated by visible gaps. The Splitter handles
+   resize for the first two; the tool strip uses its own drag handle.
+   Padding around the row gives the windows a visible margin from the
+   viewport edge; gap between Splitter and tool-strip matches the
+   splitter gutter width so the spacing reads uniform. */
 .workspace-row {
   flex: 1;
   display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
   min-height: 0;
   overflow: hidden;
-}
-.workspace-row .workspace { flex: 1; min-width: 0; }
-
-/* Inspection pane — center column, currently a placeholder. Override
-   the global .workspace .right-pane overflow rule because we want the
-   inner area to scroll, not the SplitterPanel itself (Phase 2+ will
-   stack cards inside it). */
-:deep(.workspace .inspection-pane) {
-  overflow: hidden !important;
   background: var(--bg-base);
 }
+/* When the tool window is expanded the .tool-divider element provides
+   the visual separator (with dash + resize), so the row's flex gap
+   between Splitter and tool-strip would double the spacing — drop it. */
+.workspace-row.has-tool-divider { gap: 0; }
+
+/* Tool divider — sibling between Splitter and tool-strip; matches the
+   PrimeVue splitter gutter visual (transparent column, short dash in
+   the centre, accent on hover). Drives the same onResizeStart used by
+   the previous in-panel handle. */
+.tool-divider {
+  width: 0.5rem;
+  flex-shrink: 0;
+  position: relative;
+  cursor: col-resize;
+}
+.tool-divider::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 4px;
+  height: 24px;
+  background: var(--text-muted);
+  border-radius: 2px;
+}
+.tool-divider:hover::before,
+.tool-divider:active::before { background: var(--accent-blue); }
+.workspace-row .workspace {
+  flex: 1;
+  min-width: 0;
+}
+/* Splitter is just a flex slot for the two .panel-window children; it
+   must not draw any chrome of its own (no bg, no border, no rounded
+   corners) — otherwise the tree+inspection pair reads as a grouped
+   box and the third "window" (tools) looks orphaned. Needs :deep
+   because .workspace is the PrimeVue-rendered root, not in this
+   component's scope. */
+.workspace-row :deep(.workspace),
+.workspace-row :deep(.p-splitter),
+.workspace-row :deep(.p-splitter-panel) {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Each panel — tree, inspection, tools — wraps its content in a
+   .panel-window so the three areas read as separate rounded windows.
+   Visual chrome only; flex layout inside is up to each consumer
+   (tree/inspection use column, tool-strip overrides to row). */
+.panel-window {
+  height: 100%;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.panel-window > * { min-height: 0; }
+
+/* SplitterPanel padding/overflow overrides — the global app.css gave
+   them their own bg + scroll; with .panel-window inside, the panel-
+   window owns those concerns and the SplitterPanel becomes a
+   transparent flex slot. */
+:deep(.workspace .left-pane),
+:deep(.workspace .inspection-pane) {
+  overflow: hidden !important;
+  padding: 0;
+  background: transparent;
+}
+
+/* Splitter gutter — narrower so the spacing between tree and
+   inspection visually matches the workspace-row gap between Splitter
+   and tool-strip. Hover/active still flips to accent-blue from the
+   global rule. */
+:deep(.workspace .p-splitter-gutter) {
+  width: 0.5rem !important;
+  background: transparent !important;
+}
+
+.inspection-window { background: var(--bg-base); }
 .inspection-area {
   height: 100%;
   overflow-y: auto;
@@ -475,45 +560,33 @@ watch(trace.inspectedInstance, (v) => {
 .inspection-placeholder p { margin: 0.4rem 0; }
 .inspection-placeholder .hint { color: var(--text-muted); font-size: 0.85rem; }
 
-/* Tool strip — always-visible icon column on the far right; expands
-   leftward with a content panel when a tool is active. Width is the
-   sum of icon column + (optional) content panel; flex doesn't grow
-   the strip, the splitter eats the remainder. */
+/* Tool strip — third panel-window. Always-visible icon column on the
+   right edge; expands leftward with a content panel when a tool is
+   active. flex-shrink:0 + auto width — the strip's total width is
+   icons + optional content; the Splitter eats the remainder of the
+   row. .panel-window default flex-direction is column, override to
+   row here so icons + content sit side by side. */
 .tool-strip {
-  display: flex;
   flex-direction: row;
   flex-shrink: 0;
-  border-left: 1px solid var(--border);
-  background: var(--bg-surface);
 }
 .tool-strip .tool-content {
   /* Width is user-controlled via the drag handle; inline :style sets
-     it on the section element, persisted to localStorage. */
+     it on the section element, persisted to localStorage. Border on
+     the right separates content from the icon column inside the
+     panel-window chrome. */
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
-  background: var(--bg-base);
+  background: transparent;
   min-height: 0;
   position: relative;
 }
 
-/* Drag handle on the left edge of the tool-content panel. Wider hit
-   area (6px) than visible area (1px when idle, 3px on hover/drag) so
-   the user doesn't have to aim precisely. col-resize cursor signals
-   the gesture; the script handler manages width + persistence. */
-.tool-resize-handle {
-  position: absolute;
-  top: 0; left: 0; bottom: 0;
-  width: 6px;
-  margin-left: -3px;
-  cursor: col-resize;
-  background: transparent;
-  z-index: 2;
-}
-.tool-resize-handle:hover,
-.tool-resize-handle:active {
-  background: var(--accent-blue);
-}
+/* Old in-panel .tool-resize-handle replaced by .tool-divider — a
+   sibling element in the workspace row, between Splitter and tool-
+   strip, so the resize affordance lives on the boundary instead of
+   on the tool window's left edge. */
 .tool-header {
   display: flex;
   align-items: center;
@@ -550,7 +623,7 @@ watch(trace.inspectedInstance, (v) => {
   flex-shrink: 0;
   padding-top: 0.4rem;
   gap: 0.15rem;
-  background: var(--bg-surface);
+  background: transparent;
 }
 .tool-icon {
   position: relative;
