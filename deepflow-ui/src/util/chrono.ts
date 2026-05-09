@@ -6,7 +6,7 @@
 //
 // The model
 //
-//   Each call has two indices computed in useRequestData via DFS over
+//   Each call has two indices computed in useSessionData via DFS over
 //   the call tree:
 //     - pre  — DFS pre-order index, set when DFS enters the call.
 //              Equivalent to the chronological position of AR/TI events.

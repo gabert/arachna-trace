@@ -3,23 +3,63 @@
 // diff expansion state so the parent panel doesn't have to key Sets
 // by (watchIdx, rowIdx). Dropping the watch removes this entire item,
 // and with it all its local state — exactly what we want.
+//
+// Fetches its own object-payloads from the server (bloom-filter probed
+// to entries that mention the watched object_id). Self-contained: no
+// dependency on the global payload cache, so watches resolve session-
+// wide regardless of which calls happen to be open in the call tree.
 
-import { computed, inject, ref } from 'vue';
+import { computed, inject, ref, watch as vueWatch } from 'vue';
 import type { AppearanceRow } from '../util/appearances';
 import { appearancesFor } from '../util/appearances';
-import { fmtTime, shortClass, shortSig } from '../util/format';
+import { api } from '../api/client';
+import { fmtTime, shortClass, shortSig, tryParse } from '../util/format';
 import { HIGHLIGHT } from '../keys';
 import CollapsiblePanel from './CollapsiblePanel.vue';
 import DiffEntries from './DiffEntries.vue';
-import type { CallMeta, JumpAddress, Path, PayloadRow, Watch } from '../types';
+import type { CallMeta, JumpAddress, Path, PayloadNode, PayloadRow, Watch } from '../types';
 
 const props = withDefaults(defineProps<{
   watch: Watch;
-  parsedPayloads: PayloadRow[];
+  sessionId: string;
   callMeta?: Map<string, CallMeta>;
 }>(), {
   callMeta: () => new Map<string, CallMeta>()
 });
+
+// Server-fetched payloads for this watch. The server returns rows
+// already filtered to ones that mention watch.objectId; we parse
+// payload_json on receipt for the appearance walker.
+const fetchedPayloads = ref<PayloadRow[]>([]);
+const fetching = ref(false);
+const fetchError = ref<string | null>(null);
+
+vueWatch(
+  () => [props.sessionId, props.watch.objectId] as const,
+  async ([sid, oid]) => {
+    fetchedPayloads.value = [];
+    fetchError.value = null;
+    if (!sid || oid == null) return;
+    fetching.value = true;
+    try {
+      const rows = await api.objectPayloads(sid, oid);
+      // Stale-fetch guard: the watch could have changed or been
+      // removed while we were awaiting the response.
+      if (props.watch.objectId !== oid || props.sessionId !== sid) return;
+      fetchedPayloads.value = rows.map(r => ({
+        ...r,
+        parsed: r.parsed !== undefined
+          ? r.parsed
+          : (tryParse<PayloadNode>(r.payload_json) ?? undefined)
+      }));
+    } catch (e) {
+      fetchError.value = (e as Error).message;
+    } finally {
+      fetching.value = false;
+    }
+  },
+  { immediate: true }
+);
 
 const emit = defineEmits<{
   (e: 'remove'): void;
@@ -37,7 +77,7 @@ function toggleRowExpand(j: number): void {
 }
 
 const rows = computed<AppearanceRow[]>(() =>
-  appearancesFor(props.watch, props.parsedPayloads, props.callMeta));
+  appearancesFor(props.watch, fetchedPayloads.value, props.callMeta));
 
 const changedCount = computed(() => rows.value.filter(r => r.changed).length);
 

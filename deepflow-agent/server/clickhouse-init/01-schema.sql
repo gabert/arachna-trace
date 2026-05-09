@@ -168,11 +168,15 @@ CREATE TABLE IF NOT EXISTS deepflow.requests
     ended_at         SimpleAggregateFunction(max, DateTime64(3)),
     call_count       SimpleAggregateFunction(sum, UInt64),
     exception_count  SimpleAggregateFunction(sum, UInt64),
-    -- Only the root call carries the request's entrypoint signature
-    -- and originating thread. Every other call inserts an empty
-    -- string for these — empty sorts before any non-empty value,
-    -- so SimpleAggregateFunction(max) deterministically picks the
-    -- root's value across all calls in the request.
+    -- Per-request entrypoint signature and originating thread.
+    -- entry_signature uses max-with-empty-fallback so the root
+    -- (parent_call_id IS NULL) wins when present and the column
+    -- stays empty otherwise. thread_name picks max over ALL calls
+    -- in the request — when the root isn't instrumented (the agent
+    -- doesn't see Spring's own dispatch frame, for instance) any
+    -- in-request thread name still surfaces, instead of an empty
+    -- string. Multi-threaded requests pick alphabetically largest
+    -- deterministically.
     entry_signature  SimpleAggregateFunction(max, String),
     thread_name      SimpleAggregateFunction(max, String),
     retain           Bool DEFAULT false
@@ -195,7 +199,7 @@ SELECT
     toUInt64(count())                                 AS call_count,
     toUInt64(countIf(return_type = 'EXCEPTION'))      AS exception_count,
     max(if(parent_call_id IS NULL, signature,    '')) AS entry_signature,
-    max(if(parent_call_id IS NULL, thread_name, '')) AS thread_name
+    max(thread_name)                                  AS thread_name
 FROM deepflow.calls
 GROUP BY agent_run_id, session_id, request_id;
 

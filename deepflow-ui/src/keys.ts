@@ -14,13 +14,27 @@ import type { AppearanceKind, CallRow, Highlight, PayloadRow, TraceTarget } from
 // Loaded-data providers
 // ---------------------------------------------------------------------
 
-// Loaded payloads grouped by call_id. Each payload has its `parsed`
-// field filled in (one canonical parse per request, shared across
-// FrameCards / panels).
-// Provided by SessionDetailView; consumed by FrameCard, PayloadViewer,
-// MutationsPanel.
+// Loaded payloads grouped by call_id. Each entry is a small
+// per-call array; the map only contains call_ids whose payloads have
+// actually been fetched into the lazy cache, NOT every call in the
+// session. Consumers must therefore handle missing entries gracefully
+// (typically by calling acquire via SESSION_PAYLOADS first).
 export const PAYLOADS_BY_CALL_ID: InjectionKey<ComputedRef<Map<string, PayloadRow[]>>> =
   Symbol('payloadsByCallId');
+
+// Session-wide payload cache management. Components that need a
+// specific call's payloads (CallInspectionCard) call
+// `acquire(callId)` on mount and `release(callId)` on unmount; the
+// cache evicts entries when refcount drops to zero. `loadingCallIds`
+// reports which fetches are in flight so consumers can render a
+// loading state.
+export interface SessionPayloadsCtx {
+  loadingCallIds: ComputedRef<Set<string>>;
+  acquire: (callId: string) => Promise<PayloadRow[]>;
+  release: (callId: string) => void;
+}
+export const SESSION_PAYLOADS: InjectionKey<SessionPayloadsCtx> =
+  Symbol('sessionPayloads');
 
 // Parent → ordered children map. Roots live under the null key.
 export const CHILDREN_BY_PARENT: InjectionKey<ComputedRef<Map<string | null, CallRow[]>>> =

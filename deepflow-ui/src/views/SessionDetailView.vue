@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, provide, ref, toRef, watch } from 'vue';
-import Select from 'primevue/select';
 import Message from 'primevue/message';
 import Splitter from 'primevue/splitter';
 import SplitterPanel from 'primevue/splitterpanel';
@@ -10,7 +9,7 @@ import WatchPanel from '../components/WatchPanel.vue';
 import MutationsPanel from '../components/MutationsPanel.vue';
 import OriginPanel from '../components/OriginPanel.vue';
 import SearchPanel from '../components/SearchPanel.vue';
-import { useRequestData } from '../composables/useRequestData';
+import { useSessionData } from '../composables/useSessionData';
 import { useNavigator } from '../composables/useNavigator';
 import { useObjectChanges } from '../composables/useObjectChanges';
 import { useProvenance } from '../composables/useProvenance';
@@ -20,7 +19,7 @@ import { useInstanceTrace } from '../composables/useInstanceTrace';
 import { useExceptionNav } from '../composables/useExceptionNav';
 import { useToolStrip, type ToolId } from '../composables/useToolStrip';
 import {
-  PAYLOADS_BY_CALL_ID, CHILDREN_BY_PARENT,
+  PAYLOADS_BY_CALL_ID, SESSION_PAYLOADS, CHILDREN_BY_PARENT,
   EXPANSION_DEFAULT, EXPANSION_OVERRIDES,
   MUTATED_OBJECTS_BY_CALL_ID, ADDED_OBJECTS_BY_CALL_ID,
   HIGHLIGHT, NAV_TICK,
@@ -30,15 +29,33 @@ import type { CallRow, JumpAddress, OriginTarget, Watch } from '../types';
 
 const props = defineProps<{ sessionId: string }>();
 
-const selectedRequestId = ref<number | null>(null);
 const sessionIdRef = toRef(props, 'sessionId');
 
 const {
-  requests, calls, parsedPayloads,
-  loadingRequests, loadingCalls, error,
-  payloadsByCallId, childrenByParent, rootCalls, parentByCallId, callMeta,
-  callIdsByObjectId
-} = useRequestData(sessionIdRef, selectedRequestId);
+  requests, calls,
+  loadingCalls, error,
+  payloadsByCallId, loadingCallIds,
+  acquireCallPayloads, releaseCallPayloads,
+  childrenByParent, rootCallsByRequestId, parentByCallId, requestIdByCallId, callMeta
+} = useSessionData(sessionIdRef);
+
+// Flat list of currently-loaded payloads. Only contains entries for
+// call_ids whose payloads are in cache (driven by mounted cards), not
+// session-wide. Watch / origin panels degrade accordingly — the right
+// long-term fix is server-side endpoints for both.
+const parsedPayloads = computed(() => {
+  const out = [];
+  for (const arr of payloadsByCallId.value.values()) {
+    for (const p of arr) out.push(p);
+  }
+  return out;
+});
+
+// Derived "currently active request" — used by tools that scope per
+// request (mutations, origin, search). Follows the selected
+// inspection card; clicking a call from a different request changes
+// the scope. Null until the user opens a card.
+const selectedRequestId = ref<number | null>(null);
 
 const {
   highlight, navTick, expansionDefault, expansionOverrides,
@@ -52,9 +69,9 @@ const {
   summary: mutationsSummary,
   mutatedObjectsByCallId,
   addedObjectsByCallId
-} = useObjectChanges(sessionIdRef, selectedRequestId);
+} = useObjectChanges(sessionIdRef);
 
-const provenance = useProvenance(parsedPayloads, callMeta, sessionIdRef, selectedRequestId);
+const provenance = useProvenance(parsedPayloads, callMeta, sessionIdRef);
 const valueSearch = useValueSearch(sessionIdRef, selectedRequestId);
 
 // Right-pane card stack. Owns inspectionCallIds/collapsedCards/drag
@@ -118,28 +135,39 @@ function gotoAndSelect(addr: JumpAddress): void {
 }
 
 const trace = useInstanceTrace({
-  callIdsByObjectId,
-  mutatedObjectsByCallId,
+  sessionId: sessionIdRef,
   payloadsByCallId,
+  mutatedObjectsByCallId,
   callMeta,
   selectedCallId: stack.selectedCallId,
   gotoAndSelect,
-  highlightCallRow: (callId) => callTreeRef.value?.highlightCall(callId)
+  highlightCallRow: (callId) => callTreeRef.value?.highlightCall(callId),
+  acquireCallPayloads,
+  releaseCallPayloads
 });
 
 // Manual row-click handler (FrameCard's ↗ inspect chip). Shows the
 // call in the transient browsing slot and — when an instance is being
 // traced AND this call has the instance — auto-navigates the card's
 // PayloadViewer to the instance's path so the developer doesn't have
-// to hunt for it among TI / AR / AX / RE. The user pins (📌) when
-// they want the card kept across the next navigation.
-function selectCall(id: string): void {
+// to hunt for it among TI / AR / AX / RE. With lazy payload loading
+// the path lookup has to wait for the call's payloads to land in the
+// cache. The card itself acquires on mount, so our extra acquire
+// here only deduplicates the fetch and keeps the cache populated
+// across the await; we release once the card has had a chance to
+// take its own ref.
+async function selectCall(id: string): Promise<void> {
   stack.showTransient(id);
   const inst = trace.inspectedInstance.value;
   if (!inst) return;
   if (!trace.instanceAppearancesByCallId.value.has(id)) return;
-  const loc = trace.findInstanceLocation(id, inst.objectId);
-  if (loc) goto({ callId: id, kind: loc.kind, path: loc.path });
+  await acquireCallPayloads(id);
+  try {
+    const loc = trace.findInstanceLocation(id, inst.objectId);
+    if (loc) goto({ callId: id, kind: loc.kind, path: loc.path });
+  } finally {
+    releaseCallPayloads(id);
+  }
 }
 
 // Exception navigator for the fixed header in the call tree. Reuses
@@ -193,6 +221,11 @@ const toolBadges = computed<Record<ToolId, number>>(() => ({
 const toolStrip = useToolStrip({ badges: toolBadges });
 
 provide(PAYLOADS_BY_CALL_ID, payloadsByCallId);
+provide(SESSION_PAYLOADS, {
+  loadingCallIds,
+  acquire: acquireCallPayloads,
+  release: releaseCallPayloads
+});
 provide(CHILDREN_BY_PARENT, childrenByParent);
 provide(EXPANSION_DEFAULT, expansionDefault);
 provide(EXPANSION_OVERRIDES, expansionOverrides);
@@ -214,9 +247,32 @@ provide(EXCEPTION_NAV, {
   navigateTo: exceptionNav.gotoException
 });
 
-// Reset navigator + watches + origin + inspection whenever the active
-// request changes.
-watch(selectedRequestId, () => {
+// Update the derived selectedRequestId whenever the focused
+// inspection card changes. Drives the per-request tools.
+watch(stack.selectedCallId, (id) => {
+  if (!id) { selectedRequestId.value = null; return; }
+  selectedRequestId.value = requestIdByCallId.value.get(id) ?? null;
+});
+
+// Header buttons fan out to BOTH layers — call-level expansion
+// (via the navigator) AND request-level expansion (via the panel).
+// Without the request-level half, a "collapse all" only affects
+// FrameCards inside the one request that happened to be open.
+function expandEverything(): void {
+  expandAll();
+  callTreeRef.value?.expandAllRequests();
+}
+function collapseEverything(): void {
+  collapseAll();
+  callTreeRef.value?.collapseAllRequests();
+}
+
+// Reset navigator + watches + origin + inspection whenever the
+// session itself changes — old state belongs to the old data and
+// the call_ids don't survive the session swap. (Per-request resets
+// are gone: with the session-wide tree, the user navigates freely
+// across requests and state should follow them, not get clobbered.)
+watch(sessionIdRef, () => {
   watches.value = [];
   stack.reset();
   trace.clearInspectedInstance();
@@ -240,26 +296,8 @@ watch(trace.inspectedInstance, (v) => {
         <code>{{ sessionId }}</code>
       </h1>
       <div class="req-pick">
-        <label>Request</label>
-        <Select v-model="selectedRequestId"
-                :options="requests"
-                optionLabel="request_id"
-                optionValue="request_id"
-                :placeholder="loadingRequests ? 'Loading...' : 'Pick a request'"
-                :loading="loadingRequests">
-          <template #option="{ option }">
-            <span class="req-option" :class="{ 'has-exception': Number(option.exception_count) > 0 }">
-              <strong>#{{ option.request_id }}</strong>
-              <span class="muted">{{ option.thread_name }}</span>
-              <span class="muted">{{ option.call_count }} calls</span>
-              <span class="muted">{{ option.span_ms }} ms</span>
-              <span v-if="Number(option.exception_count) > 0" class="req-option-exc"
-                    :title="`${option.exception_count} exception${Number(option.exception_count) === 1 ? '' : 's'} in this request`">⚠</span>
-            </span>
-          </template>
-        </Select>
-        <button class="tree-btn" @click="expandAll" title="Expand every frame">expand all</button>
-        <button class="tree-btn" @click="collapseAll" title="Collapse every frame">collapse all</button>
+        <button class="tree-btn" @click="expandEverything" title="Expand every request and frame">expand all</button>
+        <button class="tree-btn" @click="collapseEverything" title="Collapse every request and frame">collapse all</button>
       </div>
     </header>
 
@@ -270,10 +308,12 @@ watch(trace.inspectedInstance, (v) => {
         <SplitterPanel :size="50" :minSize="25" class="left-pane">
           <div class="panel-window">
             <CallTreePanel ref="callTreeRef"
-                           :rootCalls="rootCalls"
+                           :requests="requests"
+                           :rootCallsByRequestId="rootCallsByRequestId"
                            :callsLoading="loadingCalls"
-                           :hasNoCalls="!calls.length && selectedRequestId != null"
+                           :hasNoCalls="!calls.length && !loadingCalls"
                            :parentByCallId="parentByCallId"
+                           :requestIdByCallId="requestIdByCallId"
                            :exceptionCount="exceptionNav.exceptionCount.value"
                            :exceptionCursor="exceptionNav.exceptionCursor.value"
                            :inspectedInstance="trace.inspectedInstance.value"
@@ -333,7 +373,7 @@ watch(trace.inspectedInstance, (v) => {
                                 @dragend="stack.onCardDragEnd" />
 
             <div v-if="!transientCard && !pinnedCalls.length" class="inspection-placeholder">
-              <p>Click <code>↗</code> on a call in the tree to open its TI / AR / AX / RE.</p>
+              <p>Click <span class="inline-inspect-chip" aria-hidden="true">↗</span> on a call in the tree to open its TI / AR / AX / RE.</p>
               <p class="hint">A new card replaces the previous one as you browse. Click <code>📌</code> on its header to keep it; pinned cards stack below and are drag-reorderable.</p>
             </div>
             </div>
@@ -365,28 +405,30 @@ watch(trace.inspectedInstance, (v) => {
             <button class="tool-close" @click="toolStrip.setActiveTool(null)" title="Collapse">×</button>
           </header>
           <div class="tool-body">
-            <template v-if="selectedRequestId != null">
-              <MutationsPanel v-show="toolStrip.activeTool.value === 'mutations'"
-                              :groups="mutationGroups"
-                              :summary="mutationsSummary"
-                              :loading="loadingMutations"
-                              :error="mutationsError"
-                              @jump="gotoAndSelect" />
-              <WatchPanel v-show="toolStrip.activeTool.value === 'watch'"
-                          :watches="watches"
-                          :payloads="parsedPayloads"
-                          :callMeta="callMeta"
-                          @remove="removeWatch"
-                          @jump="gotoAndSelect" />
-              <OriginPanel v-show="toolStrip.activeTool.value === 'origin'"
-                           :provenance="provenance"
-                           @jump="gotoAndSelect" />
-              <SearchPanel v-show="toolStrip.activeTool.value === 'search'"
-                           :search="valueSearch"
-                           :active="toolStrip.activeTool.value === 'search'"
-                           @jump="gotoAndSelect" />
-            </template>
-            <p v-else class="tool-empty">Pick a request to start.</p>
+            <!-- Tools all operate session-wide now: mutations and search
+                 hit indexed CH endpoints with no request_id; origin
+                 follows values across requests. They render meaningful
+                 content from the moment the session loads, not just
+                 once a card is opened. -->
+            <MutationsPanel v-show="toolStrip.activeTool.value === 'mutations'"
+                            :groups="mutationGroups"
+                            :summary="mutationsSummary"
+                            :loading="loadingMutations"
+                            :error="mutationsError"
+                            @jump="gotoAndSelect" />
+            <WatchPanel v-show="toolStrip.activeTool.value === 'watch'"
+                        :watches="watches"
+                        :sessionId="sessionId"
+                        :callMeta="callMeta"
+                        @remove="removeWatch"
+                        @jump="gotoAndSelect" />
+            <OriginPanel v-show="toolStrip.activeTool.value === 'origin'"
+                         :provenance="provenance"
+                         @jump="gotoAndSelect" />
+            <SearchPanel v-show="toolStrip.activeTool.value === 'search'"
+                         :search="valueSearch"
+                         :active="toolStrip.activeTool.value === 'search'"
+                         @jump="gotoAndSelect" />
           </div>
         </section>
 
@@ -444,17 +486,6 @@ watch(trace.inspectedInstance, (v) => {
   font-size: 0.75rem; padding: 0.3rem 0.55rem; border-radius: 4px; cursor: pointer;
 }
 .tree-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-.req-option { display: inline-flex; gap: 0.6rem; align-items: baseline; }
-/* Request-picker option for requests that contain at least one
-   exception frame — red tint matching FrameCard's .rec-row.exception
-   so the signal reads consistently with the call tree. */
-.req-option.has-exception {
-  background: rgba(248, 113, 113, 0.10);
-  margin: -0.25rem -0.5rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-}
-.req-option-exc { color: var(--accent-red); font-size: 0.85rem; }
 .muted { color: var(--text-muted); font-size: 0.8rem; }
 .centered { display: flex; justify-content: center; padding: 2rem; }
 
@@ -571,6 +602,24 @@ watch(trace.inspectedInstance, (v) => {
 }
 .inspection-placeholder p { margin: 0.4rem 0; }
 .inspection-placeholder .hint { color: var(--text-muted); font-size: 0.85rem; }
+
+/* Inline ↗ chip in the placeholder copy — visually identical to
+   FrameCard's .rec-inspect-btn so the placeholder reads "click the
+   thing that looks exactly like THIS". Static span (not a button)
+   because it's inert prose, but the rendering matches the real
+   affordance. */
+.inline-inspect-chip {
+  display: inline-block;
+  background: rgba(96, 165, 250, 0.18);
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  color: #93c5fd;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.1rem 0.5rem;
+  border-radius: 3px;
+  vertical-align: middle;
+}
 
 /* Tool strip — third panel-window. Always-visible icon column on the
    right edge; expands leftward with a content panel when a tool is

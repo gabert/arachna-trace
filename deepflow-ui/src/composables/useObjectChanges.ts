@@ -32,8 +32,7 @@ export interface UseObjectChanges {
 const EMPTY_SUMMARY: MutationsSummary = { total_mutations: 0, total_groups: 0 };
 
 export function useObjectChanges(
-  sessionId: Ref<string>,
-  requestId: Ref<number | null>
+  sessionId: Ref<string>
 ): UseObjectChanges {
   const loading = ref(false);
   const error = ref<string | null>(null);
@@ -44,7 +43,7 @@ export function useObjectChanges(
   const perCall = ref<Array<{ call_id: string; mutated: number[]; added: number[] }>>([]);
 
   async function load(): Promise<void> {
-    if (sessionId.value == null || requestId.value == null) {
+    if (!sessionId.value) {
       groups.value = [];
       summary.value = { ...EMPTY_SUMMARY };
       perCall.value = [];
@@ -53,7 +52,10 @@ export function useObjectChanges(
     loading.value = true;
     error.value = null;
     try {
-      const result = await api.analysisMutations(sessionId.value, requestId.value);
+      // Session-wide mutations — no request_id filter, so the panel
+      // surfaces every mutation in the session in one place. Tools
+      // operate at session scope by default.
+      const result = await api.analysisMutations(sessionId.value, null);
       groups.value = result.groups || [];
       summary.value = result.summary || { ...EMPTY_SUMMARY };
       perCall.value = result.perCall || [];
@@ -67,7 +69,7 @@ export function useObjectChanges(
     }
   }
 
-  watch(() => [sessionId.value, requestId.value], load, { immediate: true });
+  watch(sessionId, load, { immediate: true });
 
   const mutatedObjectsByCallId: ComputedRef<Map<string, Set<number>>> = computed(() => {
     const m = new Map<string, Set<number>>();

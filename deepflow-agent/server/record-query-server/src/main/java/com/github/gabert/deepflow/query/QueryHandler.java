@@ -89,7 +89,9 @@ public class QueryHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         } catch (IllegalArgumentException e) {
             sendError(ctx, req, HttpResponseStatus.BAD_REQUEST, e.getMessage());
         } catch (Exception e) {
-            sendError(ctx, req, HttpResponseStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+            e.printStackTrace();
+            String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            sendError(ctx, req, HttpResponseStatus.INTERNAL_SERVER_ERROR, msg);
         }
     }
 
@@ -101,7 +103,7 @@ public class QueryHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             return sessions.listSessions();
         }
         String[] parts = path.split("/");
-        // /api/sessions/{id}/{threads|calltree|requests|size}
+        // /api/sessions/{id}/{threads|calltree|requests|size|object-trace}
         if (parts.length == 5 && parts[1].equals("api") && parts[2].equals("sessions")) {
             String sessionId = parts[3];
             switch (parts[4]) {
@@ -109,6 +111,8 @@ public class QueryHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                 case "calltree": return sessions.callTree(sessionId, params);
                 case "requests": return sessions.listRequests(sessionId);
                 case "size": return sessions.sessionSize(sessionId);
+                case "object-trace": return sessions.objectTrace(sessionId, params);
+                case "object-payloads": return sessions.objectPayloads(sessionId, params);
                 default: return null;
             }
         }

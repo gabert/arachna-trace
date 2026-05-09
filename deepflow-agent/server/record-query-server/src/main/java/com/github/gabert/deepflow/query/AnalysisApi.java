@@ -45,7 +45,16 @@ class AnalysisApi {
      */
     Map<String, Object> mutations(Map<String, List<String>> params) throws Exception {
         String sessionId = Params.required(params, "session_id");
-        long requestId = Long.parseLong(Params.required(params, "request_id"));
+        // request_id is optional now: omit it for session-wide mutation
+        // detection. Tools fan out across the whole session by default;
+        // the caller can still scope per-request when needed.
+        String requestIdStr = Params.singleParam(params, "request_id");
+        Long requestId = (requestIdStr == null || requestIdStr.isBlank())
+                ? null
+                : Long.parseLong(requestIdStr);
+        String requestFilter = (requestId == null)
+                ? ""
+                : " AND request_id = {request_id:UInt64}";
 
         String sql = """
                 SELECT
@@ -69,23 +78,23 @@ class AnalysisApi {
                             object_ids, own_hashes, payload_json
                      FROM payloads
                      WHERE session_id = {session_id:String}
-                       AND request_id = {request_id:UInt64}
+                       %s
                        AND kind = 'AR') ar
                 INNER JOIN
                     (SELECT call_id, object_ids, own_hashes, payload_json
                      FROM payloads
                      WHERE session_id = {session_id:String}
-                       AND request_id = {request_id:UInt64}
+                       %s
                        AND kind = 'AX') ax
                 ON ar.call_id = ax.call_id
                 WHERE length(mutated_ids) > 0 OR length(added_ids) > 0
                 ORDER BY ar.ts_in
-                """;
+                """.formatted(requestFilter, requestFilter);
 
-        List<Map<String, Object>> sqlRows = ch.query(sql, Map.of(
-                "session_id", sessionId,
-                "request_id", String.valueOf(requestId)
-        ));
+        Map<String, String> bind = new LinkedHashMap<>();
+        bind.put("session_id", sessionId);
+        if (requestId != null) bind.put("request_id", String.valueOf(requestId));
+        List<Map<String, Object>> sqlRows = ch.query(sql, bind);
 
         // Group by (call_id, signature, class, changed-path-set). Three
         // BookEntity rows that all changed `isbn` collapse to one group
@@ -168,12 +177,13 @@ class AnalysisApi {
             perCall.add(entry);
         }
 
-        Map<String, Object> summary = Map.of(
-                "total_mutations", totalMutations,
-                "total_groups", groups.size(),
-                "session_id", sessionId,
-                "request_id", requestId
-        );
+        // Map.of refuses null values; fall back to a LinkedHashMap so
+        // the summary can carry a null request_id (session-wide query).
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("total_mutations", totalMutations);
+        summary.put("total_groups", groups.size());
+        summary.put("session_id", sessionId);
+        summary.put("request_id", requestId);
         return Map.of("summary", summary, "groups", groups, "perCall", perCall);
     }
 

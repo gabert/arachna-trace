@@ -46,14 +46,26 @@ export const api = {
   },
   callPayloads: (callId: string): Promise<PayloadRow[]> =>
     request(`/calls/${encodeURIComponent(callId)}/payloads`),
+  // Returns the call_ids in this session whose payloads contain the
+  // given object_id. Server-side bloom-filter probe; powers the
+  // instance-trace inverted index without downloading every payload
+  // of the session.
+  objectTrace: (sessionId: string, objectId: number): Promise<{ call_id: string }[]> =>
+    request(`/sessions/${encodeURIComponent(sessionId)}/object-trace?object_id=${encodeURIComponent(String(objectId))}`),
+  // Same bloom-filter scope but returns the actual payload data, so
+  // session-wide tools (Watch appearance rows, Origin next-mutation)
+  // can walk the envelope snapshots without forcing every session
+  // payload into the client cache.
+  objectPayloads: (sessionId: string, objectId: number): Promise<PayloadRow[]> =>
+    request(`/sessions/${encodeURIComponent(sessionId)}/object-payloads?object_id=${encodeURIComponent(String(objectId))}`),
   requestPayloads: (sessionId: string, requestId: number | string): Promise<PayloadRow[]> =>
     request(`/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(String(requestId))}/payloads`),
   objectHistory: (objectId: string | number): Promise<ObjectHistoryRow[]> =>
     request(`/objects/${encodeURIComponent(String(objectId))}/history`),
-  analysisMutations: (sessionId: string, requestId: number | string): Promise<MutationsResponse> => {
+  analysisMutations: (sessionId: string, requestId: number | string | null = null): Promise<MutationsResponse> => {
     const qs = new URLSearchParams();
     qs.set('session_id', sessionId);
-    qs.set('request_id', String(requestId));
+    if (requestId != null) qs.set('request_id', String(requestId));
     return request(`/analysis/mutations?${qs}`);
   },
   valueSearch: (

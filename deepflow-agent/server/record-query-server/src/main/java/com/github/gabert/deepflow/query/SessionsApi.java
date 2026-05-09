@@ -27,20 +27,84 @@ class SessionsApi {
                 """);
     }
 
+    /**
+     * List the requests in a session for the UI's "session overview"
+     * pane. Reads from the {@code requests_view} materialized rollup
+     * (call_count / exception_count / time range / thread / signature
+     * already aggregated per request) instead of grouping the raw
+     * calls table on every page-load — see the schema's rationale
+     * comment on the rollup table.
+     *
+     * <p>Field names kept aligned with what the UI's
+     * {@code RequestRow} type expects: {@code first_call},
+     * {@code last_call}, {@code span_ms}.</p>
+     */
     List<Map<String, Object>> listRequests(String sessionId) throws Exception {
         return ch.query("""
                 SELECT request_id,
-                       any(thread_name) AS thread_name,
-                       count() AS call_count,
-                       countIf(is_exception) AS exception_count,
-                       min(ts_in) AS first_call,
-                       max(ts_out) AS last_call,
-                       dateDiff('millisecond', min(ts_in), max(ts_out)) AS span_ms
-                FROM calls
+                       thread_name,
+                       call_count,
+                       exception_count,
+                       started_at  AS first_call,
+                       ended_at    AS last_call,
+                       duration_ms AS span_ms
+                FROM requests_view
                 WHERE session_id = {session_id:String}
-                GROUP BY request_id
-                ORDER BY first_call
+                ORDER BY started_at
                 """, Map.of("session_id", sessionId));
+    }
+
+    /**
+     * For a given (session, object_id), return the distinct call_ids
+     * whose payloads mention that object id. Powers the instance-trace
+     * inverted index in the UI without requiring the client to download
+     * every payload of the session — the bloom-filter index on
+     * payloads.object_ids makes this an indexed scan.
+     *
+     * <p>Path: {@code GET /api/sessions/{id}/object-trace?object_id=N}
+     * <br>Response: {@code [{ "call_id": "..." }, ...]}</p>
+     */
+    List<Map<String, Object>> objectTrace(String sessionId, Map<String, List<String>> params) throws Exception {
+        long objectId = Long.parseLong(Params.required(params, "object_id"));
+        return ch.query("""
+                SELECT DISTINCT call_id
+                FROM payloads
+                WHERE session_id = {session_id:String}
+                  AND has(object_ids, {object_id:Int64})
+                """, Map.of(
+                    "session_id", sessionId,
+                    "object_id", String.valueOf(objectId)
+                ));
+    }
+
+    /**
+     * Session-wide payloads that mention a given object_id, with their
+     * full payload_json. Used by tools that need to walk the actual
+     * envelope snapshots (Watch panel's appearance rows, Origin
+     * panel's next-mutation lookup) without forcing every session
+     * payload into the client cache. Bloom-filter indexed; bounded
+     * to entries that actually mention the object.
+     *
+     * <p>Path: {@code GET /api/sessions/{id}/object-payloads?object_id=N}
+     * <br>Response: same shape as {@link #requestPayloads}, with
+     * {@code call_id, kind, payload_json, payload_size, root_hash,
+     * object_ids, ts_in, signature, seq, request_id} sorted causally
+     * by {@code (seq, kind, ts_in)}.</p>
+     */
+    List<Map<String, Object>> objectPayloads(String sessionId, Map<String, List<String>> params) throws Exception {
+        long objectId = Long.parseLong(Params.required(params, "object_id"));
+        return ch.query("""
+                SELECT call_id, kind, payload_json, payload_size, root_hash,
+                       object_ids, ts_in, signature, seq, request_id
+                FROM payloads
+                WHERE session_id = {session_id:String}
+                  AND has(object_ids, {object_id:Int64})
+                ORDER BY seq, kind, ts_in
+                LIMIT 5000
+                """, Map.of(
+                    "session_id", sessionId,
+                    "object_id", String.valueOf(objectId)
+                ));
     }
 
     List<Map<String, Object>> listThreads(String sessionId) throws Exception {

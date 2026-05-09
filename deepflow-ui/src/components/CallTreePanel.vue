@@ -47,21 +47,23 @@
 // Highlight is the search-cursor pointer; selection is the opened
 // document. Don't conflate them.
 
-import { computed, inject, provide, ref } from 'vue';
+import { computed, inject, provide, ref, watch } from 'vue';
 import ProgressSpinner from 'primevue/progressspinner';
-import FrameCard from './FrameCard.vue';
+import RequestNode from './RequestNode.vue';
 import NavOverlay from './NavOverlay.vue';
 import { CALL_HIGHLIGHT, EXPANSION_OVERRIDES } from '../keys';
-import type { CallRow, OriginTarget, TraceTarget, Watch } from '../types';
+import type { CallRow, OriginTarget, RequestRow, TraceTarget, Watch } from '../types';
 
 const props = defineProps<{
-  rootCalls: CallRow[];
+  // Session-wide tree shape
+  requests: RequestRow[];
+  rootCallsByRequestId: Map<number, CallRow[]>;
   callsLoading: boolean;
   hasNoCalls: boolean;
-  // Child → parent map for the loaded request, used by highlightCall
-  // to walk ancestors and auto-expand them when the cycle target sits
-  // inside collapsed frames.
+  // Child → parent map and per-call request id, used by highlightCall
+  // to walk ancestors + auto-expand the containing request node.
   parentByCallId: Map<string, string>;
+  requestIdByCallId: Map<string, number>;
   // Exception-nav state (always rendered). count=0 → green "no
   // exceptions in trace"; count>0 → red "<N> exceptions in trace"
   // with ↑/↓ enabled.
@@ -103,6 +105,36 @@ provide(CALL_HIGHLIGHT, {
 // flips collapsed parents open in one reactive batch.
 const expansionOverrides = inject(EXPANSION_OVERRIDES, ref(new Map<string, boolean>()));
 
+// Request-level expansion state. Default: only the latest request
+// (last in the list — server orders ASC by first_call) is expanded;
+// older requests render as collapsed headers in the tree. Lazy-mount
+// keeps the cost of "show me the whole session" bounded by what the
+// developer has actually opened.
+const expandedRequests = ref<Set<number>>(new Set());
+watch(() => props.requests, (reqs) => {
+  if (!reqs.length) { expandedRequests.value = new Set(); return; }
+  const latest = Number(reqs[reqs.length - 1].request_id);
+  expandedRequests.value = new Set([latest]);
+}, { immediate: true });
+
+function toggleRequest(rid: number): void {
+  const next = new Set(expandedRequests.value);
+  if (next.has(rid)) next.delete(rid); else next.add(rid);
+  expandedRequests.value = next;
+}
+
+// Bulk request-level expansion. Wired to the session view's
+// "expand all" / "collapse all" buttons so a single click affects
+// both the call-level FrameCards (via the navigator) AND every
+// request node in the tree, not just whichever request happened to
+// be open at the time.
+function expandAllRequests(): void {
+  expandedRequests.value = new Set(props.requests.map(r => Number(r.request_id)));
+}
+function collapseAllRequests(): void {
+  expandedRequests.value = new Set();
+}
+
 // highlightCall — see file header for the full API contract.
 // Steps applied here, in order:
 //   (a) walk parentByCallId upward, force every ancestor expanded so
@@ -121,6 +153,15 @@ function highlightCall(callId: string | null): void {
       cursor = props.parentByCallId.get(cursor);
     }
     expansionOverrides.value = next;
+    // Also expand the request node that contains this call. With the
+    // session-wide tree, the target may live inside a collapsed
+    // request — walk up + expand the request makes the row reachable.
+    const reqId = props.requestIdByCallId.get(callId);
+    if (reqId !== undefined && !expandedRequests.value.has(reqId)) {
+      const reqs = new Set(expandedRequests.value);
+      reqs.add(reqId);
+      expandedRequests.value = reqs;
+    }
   }
   highlightedCallId.value = callId;
   highlightTick.value++;
@@ -131,7 +172,7 @@ function clearHighlight(): void {
   highlightedCallId.value = null;
 }
 
-defineExpose({ highlightCall, clearHighlight });
+defineExpose({ highlightCall, clearHighlight, expandAllRequests, collapseAllRequests });
 
 // Trace banner shows the inspected instance's class name + object id;
 // keep the short-class / id formatting where it's used (template).
@@ -183,16 +224,19 @@ const traceObjectId = computed(() => props.inspectedInstance?.objectId ?? null);
       <ProgressSpinner style="width:2rem;height:2rem" />
     </div>
 
-    <ol v-else class="recording" :start="1">
-      <FrameCard v-for="call in rootCalls"
-                 :key="call.call_id"
-                 :call="call"
-                 @pin="(p) => emit('pin', p)"
-                 @origin="(t) => emit('origin', t)" />
+    <ol v-else class="recording">
+      <RequestNode v-for="req in requests"
+                   :key="req.request_id"
+                   :request="req"
+                   :rootCalls="rootCallsByRequestId.get(Number(req.request_id)) || []"
+                   :expanded="expandedRequests.has(Number(req.request_id))"
+                   @toggle="toggleRequest(Number(req.request_id))"
+                   @pin="(p) => emit('pin', p)"
+                   @origin="(t) => emit('origin', t)" />
     </ol>
 
     <p v-if="hasNoCalls && !callsLoading" class="muted centered">
-      no calls in this request
+      no calls in this session
     </p>
   </div>
 </template>

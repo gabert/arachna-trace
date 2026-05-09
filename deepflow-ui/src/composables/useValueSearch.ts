@@ -46,7 +46,11 @@ export function useValueSearch(
   requestId: Ref<number | null>
 ): UseValueSearch {
   const query = ref('');
-  const scope = ref<SearchScope>('request');
+  // Default to session scope: with the session-wide call tree, the
+  // forensic mode is "find this value anywhere in the session", not
+  // "in the one request I'm currently looking at". User can still
+  // pick "this request" to narrow.
+  const scope = ref<SearchScope>('session');
   const hits = ref<ValueSearchHit[]>([]);
   const loading = ref(false);
   const error = ref<string | null>(null);

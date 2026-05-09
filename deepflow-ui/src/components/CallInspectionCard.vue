@@ -13,11 +13,12 @@
 // Body is wrapped in CollapsiblePanel's v-show so the PayloadViewer's
 // per-tree expansion state survives folding the card away.
 
-import { computed, inject, ref, watch } from 'vue';
+import { computed, inject, onBeforeUnmount, ref, watch } from 'vue';
 import CollapsiblePanel from './CollapsiblePanel.vue';
 import PayloadViewer from './PayloadViewer.vue';
+import ProgressSpinner from 'primevue/progressspinner';
 import { fmtTime, shortSig } from '../util/format';
-import { PAYLOADS_BY_CALL_ID } from '../keys';
+import { PAYLOADS_BY_CALL_ID, SESSION_PAYLOADS } from '../keys';
 import type { CallRow, OriginTarget, PayloadKind, PayloadRow, TraceTarget, Watch } from '../types';
 
 const props = withDefaults(defineProps<{
@@ -60,6 +61,31 @@ function onHandleDragStart(e: DragEvent): void {
 
 const payloadsByCallId = inject(PAYLOADS_BY_CALL_ID, computed(() => new Map<string, PayloadRow[]>()));
 const payloads = computed<PayloadRow[]>(() => payloadsByCallId.value.get(props.call.call_id) || []);
+
+// Lazy payload acquisition. The card holds one ref on its call's
+// payloads while mounted; the cache evicts the entry when the last
+// holder releases. acquire() returns immediately if the call's data
+// is already cached; otherwise it kicks off a fetch and the loading
+// state is reflected via SESSION_PAYLOADS.loadingCallIds.
+const sessionPayloads = inject(SESSION_PAYLOADS, undefined);
+const isLoading = computed(() =>
+  sessionPayloads?.loadingCallIds.value.has(props.call.call_id) ?? false);
+
+let acquired: string | null = null;
+function acquireFor(callId: string): void {
+  if (acquired === callId) return;
+  if (acquired) sessionPayloads?.release(acquired);
+  acquired = callId;
+  sessionPayloads?.acquire(callId).catch(() => { /* surfaced via empty payloads list */ });
+}
+// Acquire on mount and on call_id change. Release on unmount.
+watch(() => props.call.call_id, (id) => acquireFor(id), { immediate: true });
+onBeforeUnmount(() => {
+  if (acquired) {
+    sessionPayloads?.release(acquired);
+    acquired = null;
+  }
+});
 
 // Render in the order the values flow through the call: receiver
 // instance, arguments at entry, arguments at exit, return.
@@ -127,7 +153,11 @@ watch(() => props.call.call_id, () => {
     </template>
 
     <div class="cic-body">
-      <div v-if="!ordered.length" class="cic-empty">No payloads recorded for this call.</div>
+      <div v-if="isLoading && !ordered.length" class="cic-loading">
+        <ProgressSpinner style="width:1.25rem;height:1.25rem" />
+        <span>Loading payloads…</span>
+      </div>
+      <div v-else-if="!ordered.length" class="cic-empty">No payloads recorded for this call.</div>
       <CollapsiblePanel v-for="p in ordered" :key="p.kind"
                         class="cic-section"
                         :collapsed="isSectionCollapsed(p.kind)"
@@ -282,4 +312,13 @@ watch(() => props.call.call_id, () => {
 }
 
 .cic-empty { padding: 1rem 0.75rem; color: var(--text-muted); text-align: center; font-size: 0.85rem; }
+.cic-loading {
+  padding: 1rem 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
 </style>

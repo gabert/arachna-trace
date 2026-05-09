@@ -1,49 +1,51 @@
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import type { ComputedRef, Ref } from 'vue';
 import { findPathToObjectId } from '../util/envelope';
+import { api } from '../api/client';
 import type {
   AppearanceKind, CallMeta, JumpAddress, Path, PayloadKind, PayloadRow, TraceTarget
 } from '../types';
 
 export interface UseInstanceTraceArgs {
-  // Inputs
-  callIdsByObjectId: ComputedRef<Map<number, Set<string>>>;
-  mutatedObjectsByCallId: ComputedRef<Map<string, Set<number>>>;
+  // Session id used by the object-trace endpoint to scope the search.
+  sessionId: Ref<string>;
+  // Read-only views of the lazy payload cache. findInstanceLocation
+  // walks payloads of a single call, so the call's payloads need to
+  // be in cache by the time the lookup runs (the navigator routes
+  // ensure that via acquireCallPayloads + nextTick).
   payloadsByCallId: ComputedRef<Map<string, PayloadRow[]>>;
+  mutatedObjectsByCallId: ComputedRef<Map<string, Set<number>>>;
   callMeta: ComputedRef<Map<string, CallMeta>>;
   // Live read of the currently-open inspection card; drives traceCursor.
   selectedCallId: Ref<string | null>;
-  // Side-effect callbacks. Both fire on a goto: the JSON-tree highlight
-  // (gotoAndSelect, opens / focuses the inspection card) and the call-
-  // tree row flash (highlightCall on the CallTreePanel ref).
+  // Navigator side-effects.
   gotoAndSelect: (addr: JumpAddress) => void;
   highlightCallRow: (callId: string) => void;
+  // Payload cache acquire/release, used by gotoAppearanceForCall to
+  // ensure the target call's payloads are loaded before reading the
+  // path. The navigator holds a ref across the navigation; the card
+  // that mounts as a result of gotoAndSelect acquires its own ref,
+  // so the cache entry survives the trailing release.
+  acquireCallPayloads: (callId: string) => Promise<PayloadRow[]>;
+  releaseCallPayloads: (callId: string) => void;
 }
 
 export interface UseInstanceTrace {
   inspectedInstance: Ref<TraceTarget | null>;
   setInspectedInstance: (t: TraceTarget) => void;
   clearInspectedInstance: () => void;
-  // Per-call appearance kind for the inspected instance — direct only
-  // (no subtree rollup; the trace banner's ↑/↓ navigation handles
-  // "find next call that touches this").
   instanceAppearancesByCallId: ComputedRef<Map<string, AppearanceKind>>;
-  // Chronologically-ordered call ids (DFS pre-order), drives ↑/↓.
   orderedAppearanceCallIds: ComputedRef<string[]>;
   inspectedCount: ComputedRef<number>;
-  // Cursor derived from selectedCallId — no separate state to keep in
-  // sync. Manual row clicks update the counter naturally.
   traceCursor: ComputedRef<number>;
-  // Short class name (last segment) for the trace banner label.
   inspectedShortClass: ComputedRef<string>;
-  // Random-access nav: jumps to a specific appearance, used by both
-  // ↑/↓ stepping and the bubble click on a FrameCard row.
-  gotoAppearanceForCall: (callId: string) => void;
-  gotoNextAppearance: () => void;
-  gotoPrevAppearance: () => void;
-  // Find where the instance lives in a given call's payloads. Exposed
-  // because the row-click handler in SessionDetailView needs it for
-  // the auto-navigate-on-inspect path.
+  gotoAppearanceForCall: (callId: string) => Promise<void>;
+  gotoNextAppearance: () => Promise<void>;
+  gotoPrevAppearance: () => Promise<void>;
+  // Synchronous best-effort lookup — returns null if the call's
+  // payloads aren't currently in cache. Caller is responsible for
+  // ensuring load before relying on the result (or accepting null
+  // as "navigate without a specific path").
   findInstanceLocation: (callId: string, objectId: number) => { kind: PayloadKind; path: Path } | null;
 }
 
@@ -51,11 +53,14 @@ const PAYLOAD_KIND_ORDER: PayloadKind[] = ['TI', 'AR', 'AX', 'RE'];
 
 export function useInstanceTrace(args: UseInstanceTraceArgs): UseInstanceTrace {
   const {
-    callIdsByObjectId, mutatedObjectsByCallId, payloadsByCallId,
-    callMeta, selectedCallId, gotoAndSelect, highlightCallRow
+    sessionId, payloadsByCallId, mutatedObjectsByCallId,
+    callMeta, selectedCallId,
+    gotoAndSelect, highlightCallRow,
+    acquireCallPayloads, releaseCallPayloads
   } = args;
 
   const inspectedInstance = ref<TraceTarget | null>(null);
+  const appearedCallIds = ref<Set<string>>(new Set());
 
   function setInspectedInstance(t: TraceTarget): void {
     if (inspectedInstance.value?.objectId === t.objectId) {
@@ -66,17 +71,30 @@ export function useInstanceTrace(args: UseInstanceTraceArgs): UseInstanceTrace {
   }
   function clearInspectedInstance(): void { inspectedInstance.value = null; }
 
-  // Look up the pre-built inverted index for this object_id, then
-  // overlay 'mutated' on top where applicable (mutation set is
-  // per-call, small).
+  // Server-side object trace — replaces the local payload-walk index.
+  // Fires once per (session, object_id) change. The bloom-filter probe
+  // on payloads.object_ids makes the query indexed; we never need the
+  // payloads themselves for the appearance map.
+  watch([sessionId, inspectedInstance], async ([sid, inst]) => {
+    appearedCallIds.value = new Set();
+    if (!inst || !sid) return;
+    try {
+      const rows = await api.objectTrace(sid, inst.objectId);
+      // Guard against a stale response landing after the user changed
+      // the trace target.
+      if (inspectedInstance.value?.objectId !== inst.objectId) return;
+      appearedCallIds.value = new Set(rows.map(r => r.call_id));
+    } catch {
+      // Leave the set empty; the trace banner will read 0 appearances
+      // and the bubbles won't render. The call tree still works.
+    }
+  }, { immediate: true });
+
   const instanceAppearancesByCallId = computed<Map<string, AppearanceKind>>(() => {
     const out = new Map<string, AppearanceKind>();
     const inst = inspectedInstance.value;
     if (!inst) return out;
-    const callIds = callIdsByObjectId.value.get(inst.objectId);
-    if (callIds) {
-      for (const callId of callIds) out.set(callId, 'appears');
-    }
+    for (const callId of appearedCallIds.value) out.set(callId, 'appears');
     for (const [callId, ids] of mutatedObjectsByCallId.value) {
       if (ids.has(inst.objectId)) out.set(callId, 'mutated');
     }
@@ -115,27 +133,40 @@ export function useInstanceTrace(args: UseInstanceTraceArgs): UseInstanceTrace {
     return null;
   }
 
-  function gotoAppearanceForCall(callId: string): void {
+  // Async navigation. Acquires the target call's payloads BEFORE
+  // resolving the path (so findInstanceLocation can read them), then
+  // opens the card and waits for it to mount + acquire its own ref.
+  // Final release here keeps refcount > 0 because the card is now
+  // holding the entry — no spurious eviction → refetch.
+  async function gotoAppearanceForCall(callId: string): Promise<void> {
     const inst = inspectedInstance.value;
     if (!inst) return;
-    const loc = findInstanceLocation(callId, inst.objectId);
-    gotoAndSelect({
-      callId,
-      kind: loc?.kind || 'AR',
-      path: loc?.path || []
-    });
-    highlightCallRow(callId);
+    await acquireCallPayloads(callId);
+    try {
+      const loc = findInstanceLocation(callId, inst.objectId);
+      gotoAndSelect({
+        callId,
+        kind: loc?.kind || 'AR',
+        path: loc?.path || []
+      });
+      highlightCallRow(callId);
+      // Yield a frame so the inspection card mounts and acquires its
+      // own ref before we drop ours.
+      await nextTick();
+    } finally {
+      releaseCallPayloads(callId);
+    }
   }
 
-  function gotoAppearanceAt(index: number): void {
+  async function gotoAppearanceAt(index: number): Promise<void> {
     const ids = orderedAppearanceCallIds.value;
     if (!ids.length) return;
     const wrapped = ((index % ids.length) + ids.length) % ids.length;
-    gotoAppearanceForCall(ids[wrapped]);
+    await gotoAppearanceForCall(ids[wrapped]);
   }
 
-  function gotoNextAppearance(): void { gotoAppearanceAt(traceCursor.value + 1); }
-  function gotoPrevAppearance(): void { gotoAppearanceAt(traceCursor.value - 1); }
+  async function gotoNextAppearance(): Promise<void> { await gotoAppearanceAt(traceCursor.value + 1); }
+  async function gotoPrevAppearance(): Promise<void> { await gotoAppearanceAt(traceCursor.value - 1); }
 
   return {
     inspectedInstance,

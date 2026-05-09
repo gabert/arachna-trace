@@ -1,21 +1,17 @@
 <script setup lang="ts">
 // Top-level watch list. Pure orchestration — header, empty state, list
-// of WatchItem children. Per-watch collapse / per-row expansion / row
-// transition logic all live in WatchItem.
-//
-// `payloads` arrives already parsed from useRequestData.parsedPayloads;
-// no JSON.parse happens here.
+// of WatchItem children. Per-watch fetch / collapse / per-row
+// expansion / row transition logic all live in WatchItem; the panel
+// just passes sessionId + callMeta through.
 
 import WatchItem from './WatchItem.vue';
-import type { CallMeta, JumpAddress, PayloadRow, Watch } from '../types';
+import type { CallMeta, JumpAddress, Watch } from '../types';
 
-const props = withDefaults(defineProps<{
+defineProps<{
   watches: Watch[];
-  payloads: PayloadRow[];
+  sessionId: string;
   callMeta?: Map<string, CallMeta>;
-}>(), {
-  callMeta: () => new Map<string, CallMeta>()
-});
+}>();
 
 const emit = defineEmits<{
   (e: 'remove', idx: number): void;
@@ -27,7 +23,7 @@ const emit = defineEmits<{
   <aside class="watch-panel">
     <header class="wp-head">
       <h3>Watches</h3>
-      <small v-if="payloads.length">{{ payloads.length }} payloads in request</small>
+      <small v-if="watches.length">{{ watches.length }} watch{{ watches.length === 1 ? '' : 'es' }}</small>
     </header>
 
     <p v-if="!watches.length" class="wp-empty">
@@ -42,7 +38,7 @@ const emit = defineEmits<{
     <WatchItem v-for="(w, i) in watches"
                :key="i"
                :watch="w"
-               :parsedPayloads="payloads"
+               :sessionId="sessionId"
                :callMeta="callMeta"
                @remove="emit('remove', i)"
                @jump="(addr) => emit('jump', addr)" />

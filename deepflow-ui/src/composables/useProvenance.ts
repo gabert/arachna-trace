@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import type { EnclosingEnvelope } from '../util/envelope';
 import { enclosingEnvelopeFromPath, findByObjectId, findPathToObjectId, resolvePath } from '../util/envelope';
 import { chronoIndex, eventComparator, isExitKind } from '../util/chrono';
+import { tryParse } from '../util/format';
 import type {
   CallMeta,
   Confidence,
@@ -13,6 +14,7 @@ import type {
   OriginTarget,
   Path,
   PayloadKind,
+  PayloadNode,
   PayloadRow,
   ValueSearchHit
 } from '../types';
@@ -54,8 +56,7 @@ const MED_LOW_OCCURRENCE_LIMIT = 15;
 export function useProvenance(
   parsedPayloads: ComputedRef<PayloadRow[]>,
   callMeta: ComputedRef<Map<string, CallMeta>>,
-  sessionId: Ref<string>,
-  requestId: Ref<number | null>
+  sessionId: Ref<string>
 ): UseProvenance {
   const target = ref<OriginTarget | null>(null);
   const loading = ref(false);
@@ -100,12 +101,27 @@ export function useProvenance(
     loading.value = true;
     error.value = null;
     try {
-      const hits = await api.valueSearch(
-        sessionId.value,
-        requestId.value,
-        canonical
-      );
-      chain.value = buildChain(t, hits, payloadsInChronoOrder.value, callMeta.value);
+      // Always session-wide: origin should follow a value across
+      // requests (the whole point of the cross-request forensic mode).
+      const hits = await api.valueSearch(sessionId.value, null, canonical);
+      // Steps 1-5 of the chain (source / propagation / current) are
+      // built purely from hits + callMeta — no local payloads needed.
+      // Step 6 (next mutation) needs envelope-aware walking of payloads
+      // that mention the enclosing envelope's object_id; we fetch
+      // those bloom-filtered, on demand. The CURRENT click site's
+      // payload comes from the local cache (the inspection card the
+      // user clicked is open and has acquired).
+      const partial = buildChainCore(t, hits, callMeta.value);
+      let nextMutation: OriginMutation | null = null;
+      if (partial.current) {
+        const env = locateEnclosingEnvelopeFromCache(t, partial.current, payloadsInChronoOrder.value);
+        if (env) {
+          const objectPayloads = await api.objectPayloads(sessionId.value, env.envelopeId);
+          if (target.value !== t) return; // stale fetch
+          nextMutation = findNextMutationOver(t, partial.current, env, objectPayloads, callMeta.value);
+        }
+      }
+      chain.value = { ...partial, nextMutation };
     } catch (e) {
       error.value = (e as Error).message;
       chain.value = null;
@@ -129,10 +145,12 @@ export function useProvenance(
 
 // --- pure builders over server hits + client-side data ----------
 
-function buildChain(
+// Pure chain assembly — works from server hits + callMeta, no local
+// payloads needed. The next-mutation step is split out into the
+// async path because it needs envelope-aware payload walking.
+function buildChainCore(
   target: OriginTarget,
   hits: ValueSearchHit[],
-  payloadsInChronoOrder: PayloadRow[],
   callMeta: Map<string, CallMeta>
 ): OriginChain {
   if (!hits.length) {
@@ -145,10 +163,7 @@ function buildChain(
   const currentIndex = rows.findIndex(r => r.isCurrent);
   const current = currentIndex >= 0 ? rows[currentIndex] : null;
   const propagation = extractPropagation(rows, currentIndex);
-  const nextMutation = current
-    ? findNextMutation(target, current, payloadsInChronoOrder, callMeta)
-    : null;
-  return { source, sourceKind, propagation, current, nextMutation };
+  return { source, sourceKind, propagation, current, nextMutation: null };
 }
 
 // Maps the server's flat hit list into chronologically-sorted
@@ -194,34 +209,10 @@ function extractPropagation(rows: OriginAppearance[], currentIndex: number): Ori
   return out;
 }
 
-// Locate the deepest enclosing envelope on the user-clicked path, then
-// walk later payloads (already sorted) for the same envelope id at the
-// same field-path. The first observation where the field's value
-// differs from target.value is the next mutation. Stays client-side —
-// uses the parsed payloads already loaded for the call tree, no
-// round-trip per click.
-function findNextMutation(
-  target: OriginTarget,
-  current: OriginAppearance,
-  payloadsInChronoOrder: PayloadRow[],
-  callMeta: Map<string, CallMeta>
-): OriginMutation | null {
-  const env = locateEnclosingEnvelope(target, current, payloadsInChronoOrder);
-  if (!env) return null;
-
-  const currentChrono = chronoIndex(current.callId, current.kind, callMeta);
-  for (const p of payloadsInChronoOrder) {
-    const c = chronoIndex(p.call_id, p.kind, callMeta);
-    if (c <= currentChrono) continue;
-    const observation = observeFieldValue(p, env);
-    if (observation === undefined) continue;
-    if (observation === target.value) continue;
-    return buildMutation(p, env, observation, callMeta);
-  }
-  return null;
-}
-
-function locateEnclosingEnvelope(
+// Locate the enclosing envelope from the user-clicked path. Reads the
+// CURRENT click site's payload from the local cache (the inspection
+// card the user clicked is open and has acquired its payloads).
+function locateEnclosingEnvelopeFromCache(
   target: OriginTarget,
   current: OriginAppearance,
   payloadsInChronoOrder: PayloadRow[]
@@ -232,10 +223,35 @@ function locateEnclosingEnvelope(
   return enclosingEnvelopeFromPath(currentPayload.parsed, target.path);
 }
 
-function observeFieldValue(p: PayloadRow, env: EnclosingEnvelope): unknown {
-  const envInPayload = findByObjectId(p.parsed, env.envelopeId);
-  if (!envInPayload) return undefined;
-  return resolvePath(envInPayload, env.fieldPath);
+// Walk SERVER-RETURNED object payloads (already filtered to ones that
+// mention the envelope's object_id) chronologically AFTER the current
+// click and find the first observation where the field value diverges
+// from target.value. The server returns payload_json as a string; we
+// parse on the fly here, no client cache pollution.
+function findNextMutationOver(
+  target: OriginTarget,
+  current: OriginAppearance,
+  env: EnclosingEnvelope,
+  objectPayloads: PayloadRow[],
+  callMeta: Map<string, CallMeta>
+): OriginMutation | null {
+  const sorted = objectPayloads.slice().sort((a, b) =>
+    chronoIndex(a.call_id, a.kind, callMeta) - chronoIndex(b.call_id, b.kind, callMeta));
+  const currentChrono = chronoIndex(current.callId, current.kind, callMeta);
+  for (const p of sorted) {
+    const c = chronoIndex(p.call_id, p.kind, callMeta);
+    if (c <= currentChrono) continue;
+    const parsed = p.parsed !== undefined ? p.parsed : (tryParse<PayloadNode>(p.payload_json) ?? undefined);
+    if (parsed === undefined) continue;
+    const envInPayload = findByObjectId(parsed, env.envelopeId);
+    if (!envInPayload) continue;
+    const observation = resolvePath(envInPayload, env.fieldPath);
+    if (observation === undefined) continue;
+    if (observation === target.value) continue;
+    const enriched: PayloadRow = { ...p, parsed };
+    return buildMutation(enriched, env, observation, callMeta);
+  }
+  return null;
 }
 
 function buildMutation(
