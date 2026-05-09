@@ -32,6 +32,10 @@ export interface UseExceptionNav {
   exceptionCursor: ComputedRef<number>;
   gotoNextException: () => void;
   gotoPrevException: () => void;
+  // Random-access nav: jumps to the given call regardless of cursor
+  // position. Used by FrameCard's per-row exception bubble (the red →
+  // chip that mirrors the trace bubble pattern).
+  gotoException: (callId: string) => void;
 }
 
 export function useExceptionNav(args: UseExceptionNavArgs): UseExceptionNav {
@@ -53,13 +57,16 @@ export function useExceptionNav(args: UseExceptionNavArgs): UseExceptionNav {
     return exceptionCallIds.value.indexOf(id);
   });
 
+  function gotoException(callId: string): void {
+    selectCall(callId);
+    highlightCallRow(callId);
+  }
+
   function gotoExceptionAt(index: number): void {
     const ids = exceptionCallIds.value;
     if (!ids.length) return;
     const wrapped = ((index % ids.length) + ids.length) % ids.length;
-    const callId = ids[wrapped];
-    selectCall(callId);
-    highlightCallRow(callId);
+    gotoException(ids[wrapped]);
   }
 
   function gotoNextException(): void { gotoExceptionAt(exceptionCursor.value + 1); }
@@ -71,5 +78,6 @@ export function useExceptionNav(args: UseExceptionNavArgs): UseExceptionNav {
     exceptionCursor,
     gotoNextException,
     gotoPrevException,
+    gotoException,
   };
 }

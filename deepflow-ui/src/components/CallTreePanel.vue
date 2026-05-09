@@ -153,12 +153,13 @@ const traceObjectId = computed(() => props.inspectedInstance?.objectId ?? null);
                   :count="exceptionCount"
                   :cursor="exceptionCursor"
                   itemSingular="exception"
+                  summaryInLabel
                   prevTitle="Previous exception"
                   nextTitle="Next exception"
                   @prev="emit('goto-prev-exception')"
                   @next="emit('goto-next-exception')">
         <span class="ov-icon">⚠</span>
-        <span>exceptions</span>
+        <span>{{ exceptionCount }} exception{{ exceptionCount === 1 ? '' : 's' }} recorded in the trace.</span>
       </NavOverlay>
 
       <NavOverlay v-if="inspectedInstance"

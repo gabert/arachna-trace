@@ -5,7 +5,7 @@ import { fmtTime, shortSig } from '../util/format';
 import {
   CHILDREN_BY_PARENT,
   EXPANSION_DEFAULT, EXPANSION_OVERRIDES,
-  CALL_SELECTION, INSTANCE_TRACE, CALL_HIGHLIGHT
+  CALL_SELECTION, INSTANCE_TRACE, EXCEPTION_NAV, CALL_HIGHLIGHT
 } from '../keys';
 import { useScrollIntoViewOnHighlight } from '../composables/useScrollIntoViewOnHighlight';
 import type { AppearanceKind, CallRow, OriginTarget, TraceTarget, Watch } from '../types';
@@ -69,6 +69,20 @@ function onBubbleClick(): void {
   trace.navigateTo(props.call.call_id);
 }
 
+// Random-access exception bubble — the red → chip on every exception
+// row. Same affordance shape as the trace bubble; clicks navigate via
+// the EXCEPTION_NAV ctx (selectCall + highlight). The bubble column is
+// reserved on every row when at least one exception exists in the
+// request, so layout doesn't shift between exception and non-exception
+// rows.
+const exceptionNav = inject(EXCEPTION_NAV, {
+  active: computed(() => false),
+  navigateTo: (_id: string) => {}
+});
+function onExceptionBubbleClick(): void {
+  exceptionNav.navigateTo(props.call.call_id);
+}
+
 // Programmatic highlight from CallTreePanel.highlightCall(). Distinct
 // from `selected` (persistent, blue, tracks the open inspection card)
 // — this is the search-cursor pointer set by the parent after trace
@@ -128,12 +142,25 @@ function layerOf(signature: string | null | undefined): Layer {
            it lives outside .rec-row-btn (nested <button> is invalid
            HTML); when no row matches the trace, an empty span
            reserves the same width to keep alignment stable. -->
+      <!-- Bubble columns. Each (exception, trace) reserves its own
+           column whenever EITHER nav is active, so the trace bubble
+           always sits in column 1 regardless of whether exception nav
+           happens to be active. Without this the blue trace bubble
+           shifts left when no exception bubbles are around. -->
+      <button v-if="exceptionNav.active.value && call.is_exception"
+              class="rec-bubble exception"
+              title="Click to focus this exception"
+              @click.stop="onExceptionBubbleClick">→</button>
+      <span v-else-if="exceptionNav.active.value || tracingActive"
+            class="rec-bubble empty" aria-hidden="true">→</span>
+
       <button v-if="tracingActive && bubbleKind"
               class="rec-bubble"
               :class="bubbleKind"
               :title="bubbleTitle"
               @click.stop="onBubbleClick">→</button>
-      <span v-else-if="tracingActive" class="rec-bubble empty" aria-hidden="true"></span>
+      <span v-else-if="exceptionNav.active.value || tracingActive"
+            class="rec-bubble empty" aria-hidden="true">→</span>
       <button class="rec-row-btn"
               @click="toggle"
               :title="call.signature">
@@ -279,8 +306,20 @@ function layerOf(signature: string | null | undefined): Layer {
   background: rgba(251, 191, 36, 0.55);
   color: #fef3c7;
 }
+.rec-bubble.exception {
+  background: rgba(248, 113, 113, 0.32);
+  border-color: rgba(248, 113, 113, 0.65);
+  color: #fca5a5;
+}
+.rec-bubble.exception:hover {
+  background: rgba(248, 113, 113, 0.55);
+  color: #fecaca;
+}
 .rec-bubble.empty {
-  /* Same-width invisible placeholder so non-appearance rows align. */
+  /* Invisible placeholder. Must contain the same → glyph as the
+     visible bubbles — visibility: hidden preserves the layout box,
+     but a content-empty span still has a zero-width content area, so
+     padding alone won't match the visible bubble's width. */
   visibility: hidden;
   cursor: default;
   background: transparent;

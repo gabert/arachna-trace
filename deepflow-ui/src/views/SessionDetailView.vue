@@ -24,7 +24,7 @@ import {
   EXPANSION_DEFAULT, EXPANSION_OVERRIDES,
   MUTATED_OBJECTS_BY_CALL_ID, ADDED_OBJECTS_BY_CALL_ID,
   HIGHLIGHT, NAV_TICK,
-  CALL_SELECTION, INSTANCE_TRACE
+  CALL_SELECTION, INSTANCE_TRACE, EXCEPTION_NAV
 } from '../keys';
 import type { CallRow, JumpAddress, OriginTarget, Watch } from '../types';
 
@@ -208,6 +208,10 @@ provide(INSTANCE_TRACE, {
   instance: trace.inspectedInstance,
   appearances: trace.instanceAppearancesByCallId,
   navigateTo: trace.gotoAppearanceForCall
+});
+provide(EXCEPTION_NAV, {
+  active: computed(() => exceptionNav.exceptionCount.value > 0),
+  navigateTo: exceptionNav.gotoException
 });
 
 // Reset navigator + watches + origin + inspection whenever the active

@@ -18,11 +18,14 @@
 defineProps<{
   variant: 'exception' | 'trace';
   count: number;
-  // -1 when no item is currently focused. The label flips between
-  // "<cursor+1> of <count>" (focused) and "<count> <itemSingular>(s)"
-  // (unfocused / overall).
+  // -1 when no item is currently focused. The count area shows
+  // "<cursor+1> of <count>" while focused; when not focused it falls
+  // back to "<count> <itemSingular>(s)" — UNLESS summaryInLabel is
+  // true, in which case the caller's label slot already states the
+  // total and the fallback would be redundant.
   cursor: number;
   itemSingular: string;
+  summaryInLabel?: boolean;
   showClear?: boolean;
   prevTitle?: string;
   nextTitle?: string;
@@ -41,7 +44,7 @@ const emit = defineEmits<{
     <span class="nav-label"><slot /></span>
     <span class="nav-count">
       <template v-if="cursor >= 0 && count > 0">{{ cursor + 1 }} of {{ count }}</template>
-      <template v-else>{{ count }} {{ itemSingular }}{{ count === 1 ? '' : 's' }}</template>
+      <template v-else-if="!summaryInLabel">{{ count }} {{ itemSingular }}{{ count === 1 ? '' : 's' }}</template>
     </span>
     <button class="nav-btn"
             :disabled="!count"
@@ -55,6 +58,10 @@ const emit = defineEmits<{
             class="nav-clear"
             :title="clearTitle"
             @click="emit('clear')">×</button>
+    <!-- Same-width invisible placeholder when there's no clear button,
+         so the ↑↓ pair lines up across overlay variants regardless of
+         whether the variant has a × or not. -->
+    <span v-else class="nav-clear empty" aria-hidden="true">×</span>
   </div>
 </template>
 
@@ -115,4 +122,8 @@ const emit = defineEmits<{
   border-radius: 3px;
 }
 .nav-clear:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.08); }
+.nav-clear.empty {
+  visibility: hidden;
+  cursor: default;
+}
 </style>

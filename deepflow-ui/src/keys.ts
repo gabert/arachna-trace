@@ -124,6 +124,24 @@ export const INSTANCE_TRACE: InjectionKey<InstanceTraceCtx> =
   Symbol('instanceTrace');
 
 // ---------------------------------------------------------------------
+// Exception nav — random-access counterpart to the cycle ↑/↓ in the
+// header overlay. FrameCard renders a red → bubble on every row that
+// is itself an exception, when at least one exception exists in the
+// loaded request; clicking it calls `navigateTo(callId)` which selects
+// + highlights, mirroring the trace bubble pattern.
+// `active` reserves the bubble column on every row so the layout
+// doesn't shift between exception and non-exception rows.
+// ---------------------------------------------------------------------
+
+export interface ExceptionNavCtx {
+  active: ComputedRef<boolean>;
+  navigateTo: (callId: string) => void;
+}
+
+export const EXCEPTION_NAV: InjectionKey<ExceptionNavCtx> =
+  Symbol('exceptionNav');
+
+// ---------------------------------------------------------------------
 // Call-tree row highlight — bundle of "you are here" id + a tick
 // counter so re-highlighting the same row still re-fires consumers'
 // scroll-into-view watchers. Owned by CallTreePanel; the panel also
