@@ -83,6 +83,21 @@ services:
       retries: 30
 
   # --- Traffic generator (one-shot: hits the demo so the UI is non-empty) ---
+  #
+  # Each iteration drives the full forensic story:
+  #   1. POST /api/library/demo-scenario — main scenario, succeeds, but
+  #      silently mutates JPA entities (the look-innocent-mutation bug).
+  #   2. GET  /api/authors/1/summary    — innocent-looking call, throws
+  #      ArrayIndexOutOfBoundsException because Step 1 corrupted the
+  #      ISBNs upstream. Caught by the @ControllerAdvice handler →
+  #      HTTP 500 (the curl is intentionally non-fatal so the loop
+  #      continues).
+  #
+  # Both calls share a cookie jar so they land in the same Spring HTTP
+  # session — the UI's session view then shows two requests, one green
+  # ("no exceptions") and one red ("3 exceptions in trace") — the cross-
+  # request "request 2 broke because of request 1" story the new tooling
+  # is built around.
   demo-traffic:
     image: curlimages/curl:8.10.1
     depends_on:
@@ -94,9 +109,17 @@ services:
       - -c
       - |
         set -e
+        COOKIE_JAR=/tmp/jar
         for i in 1 2 3; do
-          echo ">>> demo scenario run $$i"
-          curl -sf -X POST http://demo-spring-boot:8080/api/library/demo-scenario || true
+          echo ">>> demo run $$i — demo-scenario (succeeds, mutates state)"
+          curl -sf -b "$$COOKIE_JAR" -c "$$COOKIE_JAR" \
+              -X POST http://demo-spring-boot:8080/api/library/demo-scenario \
+              -o /dev/null || true
+          echo ">>> demo run $$i — author summary (throws, caught by handler)"
+          curl -s -b "$$COOKIE_JAR" -c "$$COOKIE_JAR" \
+              http://demo-spring-boot:8080/api/authors/1/summary \
+              -o /dev/null -w "    HTTP %{http_code}\n" || true
+          rm -f "$$COOKIE_JAR"
           sleep 1
         done
         echo ">>> demo traffic done"

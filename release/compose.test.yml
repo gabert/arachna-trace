@@ -1,0 +1,30 @@
+# Test override for release/compose.yml — points every service at the
+# locally-built v0.0.3 images instead of the v0.0.2 published in GHCR.
+# Used to validate a release before pushing tags up.
+#
+# Usage:
+#   ./release/release.sh v0.0.3 --no-push --yes      # build images locally
+#   docker compose -p deepflow-smoke -f release/compose.yml -f release/compose.test.yml down -v
+#   docker compose -p deepflow-test  -f release/compose.yml -f release/compose.test.yml up -d
+#   open http://localhost:8080
+#
+# When the test passes:
+#   - bump compose.yml's image tags to the new version
+#   - rerun release.sh without --no-push to push to GHCR
+#
+# When the test fails: drop the file (no impact on the published stack)
+# and iterate.
+
+services:
+  clickhouse:
+    image: ghcr.io/gabert/deepflow-clickhouse:v0.0.3
+  collector:
+    image: ghcr.io/gabert/deepflow-collector:v0.0.3
+  processor:
+    image: ghcr.io/gabert/deepflow-processor:v0.0.3
+  query:
+    image: ghcr.io/gabert/deepflow-query:v0.0.3
+  ui:
+    image: ghcr.io/gabert/deepflow-ui:v0.0.3
+  demo-spring-boot:
+    image: ghcr.io/gabert/deepflow-demo-spring-boot:v0.0.3
