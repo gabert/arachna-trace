@@ -46,12 +46,24 @@ export const api = {
   },
   callPayloads: (callId: string): Promise<PayloadRow[]> =>
     request(`/calls/${encodeURIComponent(callId)}/payloads`),
-  // Returns the call_ids in this session whose payloads contain the
-  // given object_id. Server-side bloom-filter probe; powers the
-  // instance-trace inverted index without downloading every payload
-  // of the session.
-  objectTrace: (sessionId: string, objectId: number): Promise<{ call_id: string }[]> =>
+  // Returns (call_id, request_id) pairs in this session whose payloads
+  // contain the given object_id. Server-side bloom-filter probe; the
+  // request_id is included so the lazy call-tree loader knows which
+  // request to fetch when the user navigates to an appearance.
+  objectTrace: (sessionId: string, objectId: number): Promise<{ call_id: string; request_id: number | string }[]> =>
     request(`/sessions/${encodeURIComponent(sessionId)}/object-trace?object_id=${encodeURIComponent(String(objectId))}`),
+  // Ordered list of every call in the session that ended with an
+  // exception. Replaces the client-side iteration over the full
+  // session calls list — once calls are loaded lazily per request,
+  // exception nav can't walk a global array.
+  exceptionCalls: (sessionId: string): Promise<{
+    call_id: string;
+    request_id: number | string;
+    signature: string;
+    ts_in: string;
+    thread_name: string;
+  }[]> =>
+    request(`/sessions/${encodeURIComponent(sessionId)}/exception-calls`),
   // Same bloom-filter scope but returns the actual payload data, so
   // session-wide tools (Watch appearance rows, Origin next-mutation)
   // can walk the envelope snapshots without forcing every session

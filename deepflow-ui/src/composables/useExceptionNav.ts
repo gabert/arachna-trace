@@ -1,83 +1,121 @@
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { ComputedRef, Ref } from 'vue';
-import type { CallMeta, CallRow } from '../types';
+import { api } from '../api/client';
 
-// Exception navigator for the call-tree fixed header. Mirrors
-// useInstanceTrace's shape so the two header bars can share the same
-// label/count/↑↓ template pattern.
+// Exception navigator for the call-tree fixed header.
 //
-// "Exception" = any call whose RT is EXCEPTION (i.e. is_exception is
-// truthy on the row). The nav doesn't differentiate throw site from
-// propagation frame — every exception frame is a stop on the walk.
-// Order is DFS pre-order via callMeta.pre, matching how the call tree
-// is rendered.
+// Fetches the session's exception list from the server (one row per
+// call where return_type=EXCEPTION, server-ordered by request +
+// chrono). Local computation across calls.value would miss exceptions
+// in unloaded requests now that the call tree loads lazily per
+// request — the server is the only source of truth.
+//
+// Random-access nav: clicking ↑/↓ or the per-row exception bubble
+// triggers the navigator-passed selectCall + highlightCallRow. The
+// caller is responsible for ensuring the target's request is loaded
+// before the highlight resolves; for cycle nav we await
+// ensureRequestLoaded ourselves so a call in a not-yet-loaded request
+// still lands cleanly.
+
+export interface ExceptionEntry {
+  call_id: string;
+  request_id: number;
+  signature: string;
+  ts_in: string;
+  thread_name: string;
+}
 
 export interface UseExceptionNavArgs {
-  calls: Ref<CallRow[]>;
-  callMeta: ComputedRef<Map<string, CallMeta>>;
-  // Live read of the selected inspection card; drives the cursor so
-  // clicking an exception row directly keeps the counter in sync, and
-  // clicking a non-exception row resets it (cursor = -1 → next ↓
-  // restarts at the first exception).
+  sessionId: Ref<string>;
   selectedCallId: Ref<string | null>;
-  // Side-effects for ↑/↓ stepping. Same pair the instance-trace uses:
-  // open the call in the inspection pane and flash its row in the tree.
-  selectCall: (callId: string) => void;
+  // Async wrappers — selectCall opens the inspection card,
+  // highlightCallRow flashes the row in the tree. Both are
+  // navigator-side concerns, lifted in.
+  selectCall: (callId: string) => void | Promise<void>;
   highlightCallRow: (callId: string) => void;
+  // Loader so we can guarantee the target's request is in the cache
+  // before highlighting (otherwise the row isn't rendered yet).
+  ensureRequestLoaded: (requestId: number) => Promise<unknown>;
 }
 
 export interface UseExceptionNav {
-  exceptionCallIds: ComputedRef<string[]>;
+  exceptions: Ref<ExceptionEntry[]>;
   exceptionCount: ComputedRef<number>;
   exceptionCursor: ComputedRef<number>;
-  gotoNextException: () => void;
-  gotoPrevException: () => void;
-  // Random-access nav: jumps to the given call regardless of cursor
-  // position. Used by FrameCard's per-row exception bubble (the red →
-  // chip that mirrors the trace bubble pattern).
-  gotoException: (callId: string) => void;
+  loading: Ref<boolean>;
+  error: Ref<string | null>;
+  gotoNextException: () => Promise<void>;
+  gotoPrevException: () => Promise<void>;
+  gotoException: (callId: string) => Promise<void>;
 }
 
 export function useExceptionNav(args: UseExceptionNavArgs): UseExceptionNav {
-  const { calls, callMeta, selectedCallId, selectCall, highlightCallRow } = args;
+  const { sessionId, selectedCallId, selectCall, highlightCallRow, ensureRequestLoaded } = args;
 
-  const exceptionCallIds = computed<string[]>(() => {
-    const meta = callMeta.value;
-    return calls.value
-      .filter(c => Boolean(c.is_exception))
-      .map(c => c.call_id)
-      .sort((a, b) => (meta.get(a)?.pre ?? 0) - (meta.get(b)?.pre ?? 0));
-  });
+  const exceptions = ref<ExceptionEntry[]>([]);
+  const loading = ref(false);
+  const error = ref<string | null>(null);
 
-  const exceptionCount = computed(() => exceptionCallIds.value.length);
+  watch(sessionId, async (sid) => {
+    exceptions.value = [];
+    error.value = null;
+    if (!sid) return;
+    loading.value = true;
+    try {
+      const rows = await api.exceptionCalls(sid);
+      // Stale-fetch guard.
+      if (sessionId.value !== sid) return;
+      exceptions.value = rows.map(r => ({
+        call_id: r.call_id,
+        request_id: Number(r.request_id),
+        signature: r.signature,
+        ts_in: r.ts_in,
+        thread_name: r.thread_name
+      }));
+    } catch (e) {
+      error.value = (e as Error).message;
+    } finally {
+      loading.value = false;
+    }
+  }, { immediate: true });
+
+  const exceptionCount = computed(() => exceptions.value.length);
 
   const exceptionCursor = computed<number>(() => {
     const id = selectedCallId.value;
     if (!id) return -1;
-    return exceptionCallIds.value.indexOf(id);
+    return exceptions.value.findIndex(e => e.call_id === id);
   });
 
-  function gotoException(callId: string): void {
-    selectCall(callId);
+  async function gotoException(callId: string): Promise<void> {
+    const entry = exceptions.value.find(e => e.call_id === callId);
+    if (!entry) return;
+    // Ensure the row is rendered before highlighting; the highlight
+    // walks parentByCallId to expand ancestors and that walk needs
+    // the call to exist in the loaded set.
+    await ensureRequestLoaded(entry.request_id);
+    await selectCall(callId);
     highlightCallRow(callId);
   }
 
-  function gotoExceptionAt(index: number): void {
-    const ids = exceptionCallIds.value;
-    if (!ids.length) return;
-    const wrapped = ((index % ids.length) + ids.length) % ids.length;
-    gotoException(ids[wrapped]);
+  async function gotoExceptionAt(index: number): Promise<void> {
+    const list = exceptions.value;
+    if (!list.length) return;
+    const wrapped = ((index % list.length) + list.length) % list.length;
+    await gotoException(list[wrapped].call_id);
   }
 
-  function gotoNextException(): void { gotoExceptionAt(exceptionCursor.value + 1); }
-  function gotoPrevException(): void { gotoExceptionAt(exceptionCursor.value - 1); }
+  async function gotoNextException(): Promise<void> { await gotoExceptionAt(exceptionCursor.value + 1); }
+  async function gotoPrevException(): Promise<void> { await gotoExceptionAt(exceptionCursor.value - 1); }
 
   return {
-    exceptionCallIds,
+    exceptions,
     exceptionCount,
     exceptionCursor,
+    loading,
+    error,
     gotoNextException,
     gotoPrevException,
-    gotoException,
+    gotoException
   };
 }

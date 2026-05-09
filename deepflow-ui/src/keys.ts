@@ -36,6 +36,24 @@ export interface SessionPayloadsCtx {
 export const SESSION_PAYLOADS: InjectionKey<SessionPayloadsCtx> =
   Symbol('sessionPayloads');
 
+// Lazy per-request call-tree loader. Consumers (RequestNode on
+// expand, navigation paths that target a call in a not-yet-loaded
+// request) call `loadRequestCalls(rid)` and await; concurrent loads
+// dedupe via in-flight map. `loadingRequestIds` and `isLoaded` let
+// consumers render loading state and skip already-cached requests.
+export interface SessionTreeLoaderCtx {
+  loadingRequestIds: Ref<Set<number>>;
+  isLoaded: (requestId: number) => boolean;
+  load: (requestId: number) => Promise<unknown>;
+  // Bulk variant — returns when all listed ids are loaded; a panel
+  // (WatchItem appearances, OriginPanel chain) typically fetches data
+  // referencing N requests and needs them all in cache before
+  // computing chrono-sorted output.
+  loadAll: (requestIds: Iterable<number>) => Promise<void>;
+}
+export const SESSION_TREE_LOADER: InjectionKey<SessionTreeLoaderCtx> =
+  Symbol('sessionTreeLoader');
+
 // Parent → ordered children map. Roots live under the null key.
 export const CHILDREN_BY_PARENT: InjectionKey<ComputedRef<Map<string | null, CallRow[]>>> =
   Symbol('childrenByParent');

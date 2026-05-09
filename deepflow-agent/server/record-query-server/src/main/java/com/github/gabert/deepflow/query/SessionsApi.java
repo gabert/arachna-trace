@@ -55,19 +55,19 @@ class SessionsApi {
     }
 
     /**
-     * For a given (session, object_id), return the distinct call_ids
-     * whose payloads mention that object id. Powers the instance-trace
-     * inverted index in the UI without requiring the client to download
-     * every payload of the session — the bloom-filter index on
-     * payloads.object_ids makes this an indexed scan.
+     * For a given (session, object_id), return the distinct (call_id,
+     * request_id) pairs whose payloads mention that object id. Powers
+     * the instance-trace inverted index in the UI: the call_id selects
+     * the row to highlight, the request_id tells the lazy loader which
+     * request's call tree to fetch first if not already cached.
      *
      * <p>Path: {@code GET /api/sessions/{id}/object-trace?object_id=N}
-     * <br>Response: {@code [{ "call_id": "..." }, ...]}</p>
+     * <br>Response: {@code [{ "call_id": "...", "request_id": N }]}</p>
      */
     List<Map<String, Object>> objectTrace(String sessionId, Map<String, List<String>> params) throws Exception {
         long objectId = Long.parseLong(Params.required(params, "object_id"));
         return ch.query("""
-                SELECT DISTINCT call_id
+                SELECT DISTINCT call_id, request_id
                 FROM payloads
                 WHERE session_id = {session_id:String}
                   AND has(object_ids, {object_id:Int64})
@@ -75,6 +75,34 @@ class SessionsApi {
                     "session_id", sessionId,
                     "object_id", String.valueOf(objectId)
                 ));
+    }
+
+    /**
+     * Ordered list of every call in the session that ended with an
+     * exception. The agent flags each call's {@code return_type}; this
+     * endpoint surfaces the exception-bearing rows with enough metadata
+     * for the UI's exception nav to cycle through them and lazy-load
+     * the containing request when the user steps into one.
+     *
+     * <p>Walks {@code calls} table directly because the rollup only
+     * carries per-request counts, not per-call ids. Indexed by the
+     * primary key on session_id; materialized {@code is_exception}
+     * column is the filter predicate.</p>
+     *
+     * <p>Path: {@code GET /api/sessions/{id}/exception-calls}
+     * <br>Response: {@code [{ call_id, request_id, signature, ts_in,
+     * thread_name }]} sorted by {@code (request_id, seq, ts_in)} —
+     * matches DFS pre-order within a request and chronological across
+     * requests.</p>
+     */
+    List<Map<String, Object>> exceptionCalls(String sessionId) throws Exception {
+        return ch.query("""
+                SELECT call_id, request_id, signature, ts_in, thread_name
+                FROM calls
+                WHERE session_id = {session_id:String}
+                  AND is_exception
+                ORDER BY request_id, seq, ts_in
+                """, Map.of("session_id", sessionId));
     }
 
     /**

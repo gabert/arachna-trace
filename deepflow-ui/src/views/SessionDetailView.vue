@@ -19,7 +19,8 @@ import { useInstanceTrace } from '../composables/useInstanceTrace';
 import { useExceptionNav } from '../composables/useExceptionNav';
 import { useToolStrip, type ToolId } from '../composables/useToolStrip';
 import {
-  PAYLOADS_BY_CALL_ID, SESSION_PAYLOADS, CHILDREN_BY_PARENT,
+  PAYLOADS_BY_CALL_ID, SESSION_PAYLOADS, SESSION_TREE_LOADER,
+  CHILDREN_BY_PARENT,
   EXPANSION_DEFAULT, EXPANSION_OVERRIDES,
   MUTATED_OBJECTS_BY_CALL_ID, ADDED_OBJECTS_BY_CALL_ID,
   HIGHLIGHT, NAV_TICK,
@@ -33,9 +34,10 @@ const sessionIdRef = toRef(props, 'sessionId');
 
 const {
   requests, calls,
-  loadingCalls, error,
+  loadingRequests, error,
   payloadsByCallId, loadingCallIds,
   acquireCallPayloads, releaseCallPayloads,
+  loadingRequestIds, isRequestLoaded, loadRequestCalls, ensureRequestsLoaded,
   childrenByParent, rootCallsByRequestId, parentByCallId, requestIdByCallId, callMeta
 } = useSessionData(sessionIdRef);
 
@@ -71,7 +73,7 @@ const {
   addedObjectsByCallId
 } = useObjectChanges(sessionIdRef);
 
-const provenance = useProvenance(parsedPayloads, callMeta, sessionIdRef);
+const provenance = useProvenance(parsedPayloads, callMeta, sessionIdRef, ensureRequestsLoaded);
 const valueSearch = useValueSearch(sessionIdRef, selectedRequestId);
 
 // Right-pane card stack. Owns inspectionCallIds/collapsedCards/drag
@@ -129,7 +131,16 @@ const callTreeRef = ref<InstanceType<typeof CallTreePanel> | null>(null);
 // rather than piling cards onto the right pane. The user pins
 // (📌 button on the transient card's header) to promote a card out of
 // the slot when they want to keep it.
-function gotoAndSelect(addr: JumpAddress): void {
+// Cross-pane jump. Async because the target call may live in a
+// not-yet-loaded request — we ensure-load before opening the card so
+// callsById can resolve the row. JumpAddress optionally carries the
+// requestId; we fall back to requestIdByCallId for already-loaded
+// calls (no load needed).
+async function gotoAndSelect(addr: JumpAddress): Promise<void> {
+  const rid = addr.requestId ?? requestIdByCallId.value.get(addr.callId);
+  if (rid !== undefined && !isRequestLoaded(rid)) {
+    await loadRequestCalls(rid);
+  }
   stack.showTransient(addr.callId);
   goto(addr);
 }
@@ -143,7 +154,8 @@ const trace = useInstanceTrace({
   gotoAndSelect,
   highlightCallRow: (callId) => callTreeRef.value?.highlightCall(callId),
   acquireCallPayloads,
-  releaseCallPayloads
+  releaseCallPayloads,
+  ensureRequestLoaded: loadRequestCalls
 });
 
 // Manual row-click handler (FrameCard's ↗ inspect chip). Shows the
@@ -170,17 +182,17 @@ async function selectCall(id: string): Promise<void> {
   }
 }
 
-// Exception navigator for the fixed header in the call tree. Reuses
-// selectCall (so the inspection card opens the same way a row click
-// would) and the call-tree row-flash. Cursor is derived from the
-// stack's selectedCallId, so request-change resets fall through for
-// free.
+// Exception navigator. Backed by the server's exception-calls
+// endpoint (the call list isn't a session-wide local array anymore;
+// calls load lazily per request). Each exception entry carries its
+// request_id so cycle nav loads the target's request before
+// highlighting.
 const exceptionNav = useExceptionNav({
-  calls,
-  callMeta,
+  sessionId: sessionIdRef,
   selectedCallId: stack.selectedCallId,
   selectCall,
-  highlightCallRow: (callId) => callTreeRef.value?.highlightCall(callId)
+  highlightCallRow: (callId) => callTreeRef.value?.highlightCall(callId),
+  ensureRequestLoaded: loadRequestCalls
 });
 
 // Watch model. Local to this view because it scopes to one
@@ -225,6 +237,12 @@ provide(SESSION_PAYLOADS, {
   loadingCallIds,
   acquire: acquireCallPayloads,
   release: releaseCallPayloads
+});
+provide(SESSION_TREE_LOADER, {
+  loadingRequestIds,
+  isLoaded: isRequestLoaded,
+  load: loadRequestCalls,
+  loadAll: ensureRequestsLoaded
 });
 provide(CHILDREN_BY_PARENT, childrenByParent);
 provide(EXPANSION_DEFAULT, expansionDefault);
@@ -310,8 +328,8 @@ watch(trace.inspectedInstance, (v) => {
             <CallTreePanel ref="callTreeRef"
                            :requests="requests"
                            :rootCallsByRequestId="rootCallsByRequestId"
-                           :callsLoading="loadingCalls"
-                           :hasNoCalls="!calls.length && !loadingCalls"
+                           :requestsLoading="loadingRequests"
+                           :hasNoRequests="!requests.length && !loadingRequests"
                            :parentByCallId="parentByCallId"
                            :requestIdByCallId="requestIdByCallId"
                            :exceptionCount="exceptionNav.exceptionCount.value"

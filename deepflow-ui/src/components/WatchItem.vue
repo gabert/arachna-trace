@@ -14,7 +14,7 @@ import type { AppearanceRow } from '../util/appearances';
 import { appearancesFor } from '../util/appearances';
 import { api } from '../api/client';
 import { fmtTime, shortClass, shortSig, tryParse } from '../util/format';
-import { HIGHLIGHT } from '../keys';
+import { HIGHLIGHT, SESSION_TREE_LOADER } from '../keys';
 import CollapsiblePanel from './CollapsiblePanel.vue';
 import DiffEntries from './DiffEntries.vue';
 import type { CallMeta, JumpAddress, Path, PayloadNode, PayloadRow, Watch } from '../types';
@@ -34,6 +34,8 @@ const fetchedPayloads = ref<PayloadRow[]>([]);
 const fetching = ref(false);
 const fetchError = ref<string | null>(null);
 
+const treeLoader = inject(SESSION_TREE_LOADER, undefined);
+
 vueWatch(
   () => [props.sessionId, props.watch.objectId] as const,
   async ([sid, oid]) => {
@@ -46,6 +48,18 @@ vueWatch(
       // Stale-fetch guard: the watch could have changed or been
       // removed while we were awaiting the response.
       if (props.watch.objectId !== oid || props.sessionId !== sid) return;
+      // Pre-load every request the appearances touch so the appearance
+      // walker's chrono ordering (via callMeta from the parent) covers
+      // every row. Without this, calls in not-yet-loaded requests sort
+      // last and the table reads wrong.
+      if (treeLoader) {
+        const reqIds = new Set<number>();
+        for (const r of rows) {
+          if (r.request_id != null) reqIds.add(Number(r.request_id));
+        }
+        await treeLoader.loadAll(reqIds);
+        if (props.watch.objectId !== oid || props.sessionId !== sid) return;
+      }
       fetchedPayloads.value = rows.map(r => ({
         ...r,
         parsed: r.parsed !== undefined
@@ -99,11 +113,16 @@ function isCurrent(r: AppearanceRow): boolean {
 }
 
 function onRowClick(r: AppearanceRow): void {
+  // Look up request_id from the row's source payload — fetchedPayloads
+  // are server-returned object-payloads which carry request_id per row.
+  // Without it, the navigator may not know which request to load.
+  const src = fetchedPayloads.value.find(p => p.call_id === r.callId && p.kind === r.kind);
   emit('jump', {
     callId: r.callId,
     kind: r.kind,
     objectId: props.watch.objectId,
-    path: pathFor(r)
+    path: pathFor(r),
+    requestId: src?.request_id != null ? Number(src.request_id) : undefined
   });
 }
 </script>
@@ -117,15 +136,23 @@ function onRowClick(r: AppearanceRow): void {
         <code v-if="watch.kind === 'field'" class="watch-field">.{{ (watch.fieldPath || []).join('.') }}</code>
       </div>
       <span class="watch-meta">
-        {{ rows.length }} appearances
-        · <span class="changes">{{ changedCount }}
-          {{ watch.kind === 'instance' ? 'own-state transitions' : 'value transitions' }}
-        </span>
+        <template v-if="fetching">loading…</template>
+        <template v-else-if="fetchError" class="wi-err" :title="fetchError">load failed</template>
+        <template v-else>
+          {{ rows.length }} appearances
+          · <span class="changes">{{ changedCount }}
+            {{ watch.kind === 'instance' ? 'own-state transitions' : 'value transitions' }}
+          </span>
+        </template>
       </span>
       <button class="watch-rm" @click.stop="emit('remove')" title="Remove watch">×</button>
     </template>
 
-    <table class="watch-results">
+    <p v-if="fetchError" class="wi-err-body" :title="fetchError">
+      Couldn't load this watch's appearances: {{ fetchError }}
+    </p>
+
+    <table v-if="!fetchError" class="watch-results">
       <colgroup>
         <col class="c-time"><col class="c-kind"><col class="c-sig">
         <col :class="watch.kind === 'instance' ? 'c-hash' : 'c-value'">
@@ -229,6 +256,16 @@ function onRowClick(r: AppearanceRow): void {
   overflow: visible;
 }
 .m-own { color: #fbbf24; font-weight: 700; display: inline-block; }
+
+.wi-err-body {
+  color: #fca5a5;
+  background: rgba(248, 113, 113, 0.10);
+  border: 1px dashed rgba(248, 113, 113, 0.45);
+  border-radius: 3px;
+  padding: 0.4rem 0.6rem;
+  margin: 0.2rem 0 0.5rem;
+  font-size: 0.78rem;
+}
 
 .diff-toggle {
   background: transparent; border: 0; padding: 0;

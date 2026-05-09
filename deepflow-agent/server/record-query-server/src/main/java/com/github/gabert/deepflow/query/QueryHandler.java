@@ -113,6 +113,7 @@ public class QueryHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                 case "size": return sessions.sessionSize(sessionId);
                 case "object-trace": return sessions.objectTrace(sessionId, params);
                 case "object-payloads": return sessions.objectPayloads(sessionId, params);
+                case "exception-calls": return sessions.exceptionCalls(sessionId);
                 default: return null;
             }
         }

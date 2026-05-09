@@ -4,105 +4,147 @@ import { api } from '../api/client';
 import { tryParse } from '../util/format';
 import type { CallMeta, CallRow, PayloadNode, PayloadRow, RequestRow } from '../types';
 
-// Session-scoped data layer. Replaces the old request-scoped
-// useRequestData — the call tree now spans the entire session and
-// individual payloads are lazy-loaded on demand instead of fetched
-// upfront per request.
+// Session-scoped data layer.
 //
-// The payload cache is reference-counted: a consumer (typically a
-// mounted CallInspectionCard) calls acquireCallPayloads(callId) on
-// mount and releaseCallPayloads(callId) on unmount. When the refcount
-// drops to zero the entry is evicted from the cache. Cache size is
-// therefore bounded by what is currently rendered — closing a card
-// drops its payloads.
+// Loads the session's REQUEST inventory eagerly (cheap, from the
+// requests rollup). Loads each REQUEST's call tree LAZILY on demand —
+// triggered when the user expands a RequestNode, navigates into a
+// call from a different request, etc. Payloads are loaded per-call
+// with a refcount-managed cache (see acquire/release).
 //
-// Cross-cutting features that need session-wide payload knowledge
-// (instance trace, value search, provenance, mutations) go through
-// dedicated server endpoints rather than walking the local cache,
-// since the cache is a moving subset of the truth.
+// Why lazy per-request: a session with thousands of requests times
+// thousands of calls is megabytes of call-row JSON. Eager loading
+// stalls the UI and pins the data in memory even when the user only
+// looks at one request. Lazy load scales the on-screen footprint to
+// what the developer is actually inspecting.
+//
+// What lives session-wide vs per-request:
+//   - requests inventory (rollup): session-wide
+//   - calls tree:                  loaded per-request, cached
+//   - payloads:                    loaded per-call, refcount-cached
+//   - exception nav, instance trace, value search, mutations:
+//     server-side queries (not derived from local calls)
 
 export interface UseSessionData {
   // Server data
   requests: Ref<RequestRow[]>;
-  calls: Ref<CallRow[]>;
   loadingRequests: Ref<boolean>;
-  loadingCalls: Ref<boolean>;
   error: Ref<string | null>;
 
-  // Tree shape — derived from `calls`, session-wide
+  // Lazy per-request call cache.
+  loadedRequestIds: ComputedRef<Set<number>>;
+  loadingRequestIds: Ref<Set<number>>;
+  isRequestLoaded: (requestId: number) => boolean;
+  // Promise-returning loader. Concurrent calls dedupe via in-flight
+  // map. Idempotent: once loaded, future calls resolve immediately.
+  loadRequestCalls: (requestId: number) => Promise<CallRow[]>;
+  // Bulk loader — useful when a panel needs multiple requests' call
+  // trees (e.g. Origin building a chain across requests). Returns
+  // when all requested ids are loaded.
+  ensureRequestsLoaded: (requestIds: Iterable<number>) => Promise<void>;
+
+  // Flat union of every loaded request's calls. Recomputes when the
+  // cache changes; cheap O(N) where N is loaded calls.
+  calls: ComputedRef<CallRow[]>;
+
+  // Tree shape — derived from the loaded calls union.
   childrenByParent: ComputedRef<Map<string | null, CallRow[]>>;
   rootCallsByRequestId: ComputedRef<Map<number, CallRow[]>>;
   parentByCallId: ComputedRef<Map<string, string>>;
-  // Reverse lookup so highlightCall's auto-expand walk knows which
-  // request node to expand for a target call.
   requestIdByCallId: ComputedRef<Map<string, number>>;
+  // pre/post counters assigned in chronological-by-request order so
+  // cross-request chrono is monotonic. Only contains entries for
+  // currently-loaded requests; the chronoIndex helper falls back to
+  // MAX_SAFE_INTEGER for absent entries (sort-last behavior).
   callMeta: ComputedRef<Map<string, CallMeta>>;
 
   // Lazy payload cache — see acquire/release for ownership rules.
-  // payloadsByCallId is the live view of what's currently cached; it
-  // shrinks as cards close.
   payloadsByCallId: ComputedRef<Map<string, PayloadRow[]>>;
-  // Set of call_ids whose payloads are currently being fetched. Used
-  // by CallInspectionCard to render a loading state.
   loadingCallIds: ComputedRef<Set<string>>;
-
-  // Refcount-managed acquire/release. Returns the loaded payloads
-  // (resolves once the fetch completes; cached resolves immediately).
-  // Concurrent acquires of the same callId share one in-flight fetch.
   acquireCallPayloads: (callId: string) => Promise<PayloadRow[]>;
   releaseCallPayloads: (callId: string) => void;
 }
 
 export function useSessionData(sessionId: Ref<string>): UseSessionData {
   const requests = ref<RequestRow[]>([]);
-  const calls = ref<CallRow[]>([]);
   const loadingRequests = ref(false);
-  const loadingCalls = ref(false);
   const error = ref<string | null>(null);
 
-  // payload cache, keyed by call_id. Reactive so consumers see new
-  // entries land and old entries vanish.
-  const payloadCache = ref<Map<string, PayloadRow[]>>(new Map());
+  // Per-request call-tree cache. Reactive Map so derived state
+  // recomputes when a request loads.
+  const requestCallsCache = ref<Map<number, CallRow[]>>(new Map());
+  // Reactive set so RequestNode can render a spinner while its calls
+  // are in flight.
+  const loadingRequestIds = ref<Set<number>>(new Set());
+  // In-flight promises (non-reactive bookkeeping).
+  const inFlightRequests = new Map<number, Promise<CallRow[]>>();
 
-  // Refcounts and in-flight promises live outside the reactive layer —
-  // they're internal bookkeeping, not state to render.
+  // Payload cache — same model as before the lazy refactor.
+  const payloadCache = ref<Map<string, PayloadRow[]>>(new Map());
   const refCounts = new Map<string, number>();
   const inFlight = new Map<string, Promise<PayloadRow[]>>();
-  // Reactive copy of in-flight ids so consumers can render a loading
-  // state without subscribing to a Map outside the reactive layer.
   const inFlightIds = ref<Set<string>>(new Set());
 
-  async function loadSession(): Promise<void> {
+  async function loadRequestsList(): Promise<void> {
     loadingRequests.value = true;
-    loadingCalls.value = true;
     error.value = null;
     try {
-      const [reqs, allCalls] = await Promise.all([
-        api.listRequests(sessionId.value),
-        api.callTree(sessionId.value, {})
-      ]);
-      requests.value = reqs;
-      calls.value = allCalls;
+      requests.value = await api.listRequests(sessionId.value);
     } catch (e) {
       error.value = (e as Error).message;
     } finally {
       loadingRequests.value = false;
-      loadingCalls.value = false;
     }
   }
 
-  // On session change, drop the entire cache + bookkeeping. Old call_ids
-  // don't exist in the new session anyway; releasing the cleanly is
-  // simpler than tracking "is this id still in scope".
-  watch(sessionId, () => {
-    payloadCache.value = new Map();
-    refCounts.clear();
-    inFlight.clear();
-    inFlightIds.value = new Set();
-    loadSession();
-  }, { immediate: true });
+  function loadRequestCalls(requestId: number): Promise<CallRow[]> {
+    const cached = requestCallsCache.value.get(requestId);
+    if (cached) return Promise.resolve(cached);
+    const inFlightP = inFlightRequests.get(requestId);
+    if (inFlightP) return inFlightP;
 
-  function startFetch(callId: string): Promise<PayloadRow[]> {
+    const next = new Set(loadingRequestIds.value);
+    next.add(requestId);
+    loadingRequestIds.value = next;
+
+    const sid = sessionId.value;
+    const p = api.callTree(sid, { requestId })
+      .then(rows => {
+        // Stale-fetch guard: the user may have switched sessions
+        // while we were awaiting the response.
+        if (sid !== sessionId.value) return [];
+        const cache = new Map(requestCallsCache.value);
+        cache.set(requestId, rows);
+        requestCallsCache.value = cache;
+        return rows;
+      })
+      .finally(() => {
+        inFlightRequests.delete(requestId);
+        const next2 = new Set(loadingRequestIds.value);
+        next2.delete(requestId);
+        loadingRequestIds.value = next2;
+      });
+    inFlightRequests.set(requestId, p);
+    return p;
+  }
+
+  function ensureRequestsLoaded(requestIds: Iterable<number>): Promise<void> {
+    const promises: Promise<unknown>[] = [];
+    for (const rid of requestIds) {
+      if (!requestCallsCache.value.has(rid)) {
+        promises.push(loadRequestCalls(rid));
+      }
+    }
+    return Promise.all(promises).then(() => undefined);
+  }
+
+  function isRequestLoaded(requestId: number): boolean {
+    return requestCallsCache.value.has(requestId);
+  }
+
+  // ---- payload cache ----
+
+  function startPayloadFetch(callId: string): Promise<PayloadRow[]> {
     if (inFlight.has(callId)) return inFlight.get(callId)!;
     const next = new Set(inFlightIds.value);
     next.add(callId);
@@ -111,13 +153,15 @@ export function useSessionData(sessionId: Ref<string>): UseSessionData {
       .then(rows => {
         const parsed: PayloadRow[] = rows.map(r => ({
           ...r,
+          // The /api/calls/{id}/payloads endpoint doesn't echo call_id
+          // back in each row; stamp it in so flat consumers can rely
+          // on row.call_id being populated, just like rows from
+          // requestPayloads / objectPayloads.
+          call_id: callId,
           parsed: r.parsed !== undefined
             ? r.parsed
             : (tryParse<PayloadNode>(r.payload_json) ?? undefined)
         }));
-        // Only commit to cache if there's still at least one consumer.
-        // A release that races the fetch to zero would otherwise leak
-        // a stale entry past its eviction point.
         if ((refCounts.get(callId) || 0) > 0) {
           const cache = new Map(payloadCache.value);
           cache.set(callId, parsed);
@@ -139,7 +183,7 @@ export function useSessionData(sessionId: Ref<string>): UseSessionData {
     refCounts.set(callId, (refCounts.get(callId) || 0) + 1);
     const cached = payloadCache.value.get(callId);
     if (cached) return Promise.resolve(cached);
-    return startFetch(callId);
+    return startPayloadFetch(callId);
   }
 
   function releaseCallPayloads(callId: string): void {
@@ -156,7 +200,31 @@ export function useSessionData(sessionId: Ref<string>): UseSessionData {
     }
   }
 
-  // ----- derived state -----
+  // ---- session-change reset ----
+
+  watch(sessionId, () => {
+    requestCallsCache.value = new Map();
+    loadingRequestIds.value = new Set();
+    inFlightRequests.clear();
+    payloadCache.value = new Map();
+    refCounts.clear();
+    inFlight.clear();
+    inFlightIds.value = new Set();
+    loadRequestsList();
+  }, { immediate: true });
+
+  // ---- derived state ----
+
+  const loadedRequestIds: ComputedRef<Set<number>> = computed(() =>
+    new Set(requestCallsCache.value.keys()));
+
+  const calls: ComputedRef<CallRow[]> = computed(() => {
+    const out: CallRow[] = [];
+    for (const arr of requestCallsCache.value.values()) {
+      for (const c of arr) out.push(c);
+    }
+    return out;
+  });
 
   const payloadsByCallId: ComputedRef<Map<string, PayloadRow[]>> = computed(() =>
     payloadCache.value);
@@ -165,6 +233,10 @@ export function useSessionData(sessionId: Ref<string>): UseSessionData {
     inFlightIds.value);
 
   const childrenByParent: ComputedRef<Map<string | null, CallRow[]>> = computed(() => {
+    // Build per-request-aware children: a parent_call_id from a
+    // not-yet-loaded request would be unknown to us, so treat as root.
+    // Parent-child links are always within the same request, so we
+    // never miss real parents this way.
     const known = new Set(calls.value.map(c => c.call_id));
     const m = new Map<string | null, CallRow[]>();
     for (const c of calls.value) {
@@ -203,29 +275,50 @@ export function useSessionData(sessionId: Ref<string>): UseSessionData {
     return m;
   });
 
+  // pre/post counters with global monotonic order across loaded
+  // requests. Iterate `requests` (server-ordered ASC by first_call)
+  // so cross-request chrono follows wall-clock; per-request DFS
+  // gives correct entry/exit ordering within the tree.
   const callMeta: ComputedRef<Map<string, CallMeta>> = computed(() => {
     const m = new Map<string, CallMeta>();
     let counter = 0;
-    const dfs = (callId: string, ts_in: string, ts_out: string): void => {
-      const pre = counter++;
-      const children = childrenByParent.value.get(callId) || [];
-      for (const child of children) {
-        dfs(child.call_id, child.ts_in, child.ts_out);
+    for (const r of requests.value) {
+      const rid = Number(r.request_id);
+      const requestCalls = requestCallsCache.value.get(rid);
+      if (!requestCalls || requestCalls.length === 0) continue;
+      // per-request children index
+      const known = new Set(requestCalls.map(c => c.call_id));
+      const cbp = new Map<string | null, CallRow[]>();
+      for (const c of requestCalls) {
+        const parent = c.parent_call_id && known.has(c.parent_call_id) ? c.parent_call_id : null;
+        if (!cbp.has(parent)) cbp.set(parent, []);
+        cbp.get(parent)!.push(c);
       }
-      const post = counter++;
-      m.set(callId, { ts_in, ts_out, pre, post });
-    };
-    const roots = childrenByParent.value.get(null) || [];
-    for (const root of roots) dfs(root.call_id, root.ts_in, root.ts_out);
+      const dfs = (callId: string, ts_in: string, ts_out: string): void => {
+        const pre = counter++;
+        const children = cbp.get(callId) || [];
+        for (const child of children) {
+          dfs(child.call_id, child.ts_in, child.ts_out);
+        }
+        const post = counter++;
+        m.set(callId, { ts_in, ts_out, pre, post });
+      };
+      const roots = cbp.get(null) || [];
+      for (const root of roots) dfs(root.call_id, root.ts_in, root.ts_out);
+    }
     return m;
   });
 
   return {
     requests,
-    calls,
     loadingRequests,
-    loadingCalls,
     error,
+    loadedRequestIds,
+    loadingRequestIds,
+    isRequestLoaded,
+    loadRequestCalls,
+    ensureRequestsLoaded,
+    calls,
     childrenByParent,
     rootCallsByRequestId,
     parentByCallId,

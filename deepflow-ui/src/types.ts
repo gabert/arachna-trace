@@ -107,6 +107,13 @@ export interface JumpAddress {
   kind: PayloadKind;
   objectId?: number;
   path: Path;
+  // Optional carry-through so the navigator can load the target's
+  // call tree before highlighting (calls are loaded lazily per
+  // request). Emitters that have it (search hits, watch rows,
+  // origin appearances — anything sourced from a server response
+  // that includes request_id) should include it; navigator falls
+  // back to a callsById lookup when absent.
+  requestId?: number;
 }
 
 // ---------------------------------------------------------------------
@@ -285,6 +292,10 @@ export interface PayloadRow {
   ts_in: string;
   signature: string;
   seq?: number;
+  // Optional — populated by endpoints that return rows from multiple
+  // calls (requestPayloads, objectPayloads). Not echoed by
+  // /api/calls/{id}/payloads, which is single-call by URL.
+  request_id?: number | string;
   parsed?: PayloadNode;
 }
 

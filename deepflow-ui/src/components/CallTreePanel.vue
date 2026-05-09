@@ -58,8 +58,11 @@ const props = defineProps<{
   // Session-wide tree shape
   requests: RequestRow[];
   rootCallsByRequestId: Map<number, CallRow[]>;
-  callsLoading: boolean;
-  hasNoCalls: boolean;
+  // True while the request inventory is loading; per-request call
+  // trees load lazily and surface their own spinners inside each
+  // RequestNode.
+  requestsLoading: boolean;
+  hasNoRequests: boolean;
   // Child → parent map and per-call request id, used by highlightCall
   // to walk ancestors + auto-expand the containing request node.
   parentByCallId: Map<string, string>;
@@ -220,7 +223,7 @@ const traceObjectId = computed(() => props.inspectedInstance?.objectId ?? null);
       </NavOverlay>
     </header>
 
-    <div v-if="callsLoading" class="centered">
+    <div v-if="requestsLoading" class="centered">
       <ProgressSpinner style="width:2rem;height:2rem" />
     </div>
 
@@ -235,8 +238,8 @@ const traceObjectId = computed(() => props.inspectedInstance?.objectId ?? null);
                    @origin="(t) => emit('origin', t)" />
     </ol>
 
-    <p v-if="hasNoCalls && !callsLoading" class="muted centered">
-      no calls in this session
+    <p v-if="hasNoRequests && !requestsLoading" class="muted centered">
+      no requests in this session
     </p>
   </div>
 </template>

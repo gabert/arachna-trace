@@ -28,6 +28,10 @@ export interface UseInstanceTraceArgs {
   // so the cache entry survives the trailing release.
   acquireCallPayloads: (callId: string) => Promise<PayloadRow[]>;
   releaseCallPayloads: (callId: string) => void;
+  // Loader for lazy per-request call trees. Called before navigating
+  // to an appearance so the target row is rendered (and parentByCallId
+  // ancestor walk for highlightCall sees the call's row).
+  ensureRequestLoaded: (requestId: number) => Promise<unknown>;
 }
 
 export interface UseInstanceTrace {
@@ -56,10 +60,15 @@ export function useInstanceTrace(args: UseInstanceTraceArgs): UseInstanceTrace {
     sessionId, payloadsByCallId, mutatedObjectsByCallId,
     callMeta, selectedCallId,
     gotoAndSelect, highlightCallRow,
-    acquireCallPayloads, releaseCallPayloads
+    acquireCallPayloads, releaseCallPayloads,
+    ensureRequestLoaded
   } = args;
 
   const inspectedInstance = ref<TraceTarget | null>(null);
+  // call_id → request_id, populated alongside the appearance set.
+  // Lets gotoAppearanceForCall load the target's request before
+  // navigating without a separate lookup.
+  const appearanceRequestByCallId = ref<Map<string, number>>(new Map());
   const appearedCallIds = ref<Set<string>>(new Set());
 
   function setInspectedInstance(t: TraceTarget): void {
@@ -77,6 +86,7 @@ export function useInstanceTrace(args: UseInstanceTraceArgs): UseInstanceTrace {
   // payloads themselves for the appearance map.
   watch([sessionId, inspectedInstance], async ([sid, inst]) => {
     appearedCallIds.value = new Set();
+    appearanceRequestByCallId.value = new Map();
     if (!inst || !sid) return;
     try {
       const rows = await api.objectTrace(sid, inst.objectId);
@@ -84,6 +94,9 @@ export function useInstanceTrace(args: UseInstanceTraceArgs): UseInstanceTrace {
       // the trace target.
       if (inspectedInstance.value?.objectId !== inst.objectId) return;
       appearedCallIds.value = new Set(rows.map(r => r.call_id));
+      const m = new Map<string, number>();
+      for (const r of rows) m.set(r.call_id, Number(r.request_id));
+      appearanceRequestByCallId.value = m;
     } catch {
       // Leave the set empty; the trace banner will read 0 appearances
       // and the bubbles won't render. The call tree still works.
@@ -133,14 +146,21 @@ export function useInstanceTrace(args: UseInstanceTraceArgs): UseInstanceTrace {
     return null;
   }
 
-  // Async navigation. Acquires the target call's payloads BEFORE
-  // resolving the path (so findInstanceLocation can read them), then
-  // opens the card and waits for it to mount + acquire its own ref.
-  // Final release here keeps refcount > 0 because the card is now
-  // holding the entry — no spurious eviction → refetch.
+  // Async navigation. Three things in order:
+  //   1. ensure the target's request is loaded — otherwise the call
+  //      tree row isn't rendered and highlightCall's ancestor walk
+  //      misses the target;
+  //   2. acquire the call's payloads so findInstanceLocation can
+  //      resolve the path;
+  //   3. open the card + highlight + wait one tick so the mounted
+  //      card acquires its own ref before we drop ours.
   async function gotoAppearanceForCall(callId: string): Promise<void> {
     const inst = inspectedInstance.value;
     if (!inst) return;
+    const rid = appearanceRequestByCallId.value.get(callId);
+    if (rid !== undefined) {
+      await ensureRequestLoaded(rid);
+    }
     await acquireCallPayloads(callId);
     try {
       const loc = findInstanceLocation(callId, inst.objectId);
@@ -150,8 +170,6 @@ export function useInstanceTrace(args: UseInstanceTraceArgs): UseInstanceTrace {
         path: loc?.path || []
       });
       highlightCallRow(callId);
-      // Yield a frame so the inspection card mounts and acquires its
-      // own ref before we drop ours.
       await nextTick();
     } finally {
       releaseCallPayloads(callId);

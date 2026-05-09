@@ -35,7 +35,12 @@ watch(() => props.active, async (visible) => {
 });
 
 function jumpHit(h: ValueSearchHit): void {
-  emit('jump', { callId: h.call_id, kind: h.kind, path: h.path });
+  emit('jump', {
+    callId: h.call_id,
+    kind: h.kind,
+    path: h.path,
+    requestId: h.request_id != null ? Number(h.request_id) : undefined
+  });
 }
 
 const resultsLabel = computed(() => {

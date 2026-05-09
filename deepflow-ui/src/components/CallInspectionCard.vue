@@ -16,6 +16,7 @@
 import { computed, inject, onBeforeUnmount, ref, watch } from 'vue';
 import CollapsiblePanel from './CollapsiblePanel.vue';
 import PayloadViewer from './PayloadViewer.vue';
+import ExceptionChip from './ExceptionChip.vue';
 import ProgressSpinner from 'primevue/progressspinner';
 import { fmtTime, shortSig } from '../util/format';
 import { PAYLOADS_BY_CALL_ID, SESSION_PAYLOADS } from '../keys';
@@ -141,9 +142,7 @@ watch(() => props.call.call_id, () => {
       <div class="cic-meta">
         <span class="cic-time">{{ fmtTime(call.ts_in) }}</span>
         <span class="cic-dur">{{ call.duration_ms }} ms</span>
-        <span v-if="call.return_type === 'EXCEPTION'"
-              class="re-exception-chip"
-              title="Call ended with a thrown exception (RE payload is the throwable)">⚠ exception</span>
+        <ExceptionChip v-if="call.return_type === 'EXCEPTION'" />
         <span v-else
               class="cic-ret" :class="(call.return_type || 'VOID').toLowerCase()">{{ call.return_type }}</span>
         <button class="cic-close-btn"
@@ -164,9 +163,7 @@ watch(() => props.call.call_id, () => {
                         @update:collapsed="(v) => setSectionCollapsed(p.kind, v)">
         <template #header>
           <span class="kind" :class="p.kind">{{ p.kind }}</span>
-          <span v-if="p.kind === 'RE' && call.return_type === 'EXCEPTION'"
-                class="re-exception-chip"
-                title="This RE payload is the thrown exception, not a return value">⚠ exception</span>
+          <ExceptionChip v-if="p.kind === 'RE' && call.return_type === 'EXCEPTION'" />
           <span class="cic-section-meta">{{ p.payload_size }} B</span>
         </template>
         <PayloadViewer :data="p.parsed"
@@ -293,23 +290,11 @@ watch(() => props.call.call_id, () => {
 .cic-section :deep(.cp-body) { padding: 0.2rem 0 0 1.4ch; }
 .cic-section-meta { color: var(--text-muted); font-size: 0.75rem; }
 
-/* Exception indicator next to the RE section header — matches the
-   NavOverlay variant=exception treatment (light-red bg, dominant red
-   border, rounded) so the in-card cue and the call-tree overlay read
-   as the same signal. Static chip — not interactive. */
-.re-exception-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  background: rgba(248, 113, 113, 0.16);
-  border: 2px solid var(--accent-red);
-  color: #fca5a5;
-  font-size: 0.7rem;
-  font-weight: 600;
-  padding: 0.05rem 0.5rem;
-  border-radius: 8px;
-  line-height: 1.3;
-}
+/* The "exception" red chip used in two spots in this card (header
+   when return_type is EXCEPTION, RE section header to flag that the
+   payload is the throwable) is now a shared <ExceptionChip>. Same
+   visual lives in RequestNode and is the inspiration for the
+   NavOverlay variant=exception. One source, one look. */
 
 .cic-empty { padding: 1rem 0.75rem; color: var(--text-muted); text-align: center; font-size: 0.85rem; }
 .cic-loading {

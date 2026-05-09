@@ -11,9 +11,12 @@
 // unmounts its FrameCards; the cards' own onBeforeUnmount releases
 // any payload cache they were holding.
 
-import { computed } from 'vue';
+import { computed, inject, ref, watch } from 'vue';
 import FrameCard from './FrameCard.vue';
+import ExceptionChip from './ExceptionChip.vue';
+import ProgressSpinner from 'primevue/progressspinner';
 import { fmtTime } from '../util/format';
+import { SESSION_TREE_LOADER } from '../keys';
 import type { CallRow, OriginTarget, RequestRow, Watch } from '../types';
 
 const props = defineProps<{
@@ -21,6 +24,26 @@ const props = defineProps<{
   rootCalls: CallRow[];
   expanded: boolean;
 }>();
+
+// Lazy-load this request's calls when the node is first expanded.
+// Re-collapsing keeps the cached calls (so re-expanding doesn't refetch).
+// Eviction strategy for unloaded requests is the data layer's concern.
+const treeLoader = inject(SESSION_TREE_LOADER, undefined);
+const isLoading = computed(() => {
+  const rid = Number(props.request.request_id);
+  return treeLoader?.loadingRequestIds.value.has(rid) ?? false;
+});
+const isLoaded = computed(() => {
+  const rid = Number(props.request.request_id);
+  return treeLoader?.isLoaded(rid) ?? false;
+});
+watch(() => props.expanded, (now) => {
+  if (!now) return;
+  const rid = Number(props.request.request_id);
+  if (treeLoader && !treeLoader.isLoaded(rid)) {
+    treeLoader.load(rid).catch(() => { /* surfaced via isLoading false + empty rootCalls */ });
+  }
+}, { immediate: true });
 
 const emit = defineEmits<{
   (e: 'toggle'): void;
@@ -41,19 +64,22 @@ const spanMs = computed(() => Number(props.request.span_ms) || 0);
       <strong class="rn-id">#{{ request.request_id }}</strong>
       <span class="rn-thread">{{ request.thread_name }}</span>
       <span class="rn-time">{{ fmtTime(request.first_call) }}</span>
-      <span v-if="exceptionCount > 0" class="rn-exc-chip"
-            :title="`${exceptionCount} exception${exceptionCount === 1 ? '' : 's'} in this request`">
-        ⚠ {{ exceptionCount }} exception{{ exceptionCount === 1 ? '' : 's' }}
-      </span>
+      <ExceptionChip v-if="exceptionCount > 0" :count="exceptionCount" />
       <span class="rn-meta">
         <span class="rn-stat">{{ callCount }} {{ callCount === 1 ? 'call' : 'calls' }}</span>
         <span class="rn-stat">{{ spanMs }} ms</span>
       </span>
     </button>
 
-    <!-- Lazy: FrameCards mount only while this node is open. Collapsing
-         unmounts the entire request subtree and releases its caches. -->
-    <ol v-if="expanded" class="rn-body">
+    <!-- Lazy: FrameCards mount only while this node is open AND its
+         calls have arrived from the server. Collapsing unmounts the
+         entire request subtree (FrameCards then release their payload
+         refs). -->
+    <div v-if="expanded && isLoading && !isLoaded" class="rn-loading">
+      <ProgressSpinner style="width:1.25rem;height:1.25rem" />
+      <span>Loading call tree…</span>
+    </div>
+    <ol v-else-if="expanded" class="rn-body">
       <FrameCard v-for="call in rootCalls"
                  :key="call.call_id"
                  :call="call"
@@ -130,24 +156,6 @@ const spanMs = computed(() => Number(props.request.span_ms) || 0);
   color: var(--text-secondary);
 }
 
-/* Exception chip — same red rounded-pill as the call-tree NavOverlay
-   exception variant + the right-pane card chips, so the signal reads
-   the same throughout the UI. */
-.rn-exc-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  background: rgba(248, 113, 113, 0.16);
-  border: 2px solid var(--accent-red);
-  color: #fca5a5;
-  font-size: 0.7rem;
-  font-weight: 600;
-  padding: 0.05rem 0.5rem;
-  border-radius: 8px;
-  flex-shrink: 0;
-  font-family: system-ui, sans-serif;
-}
-
 /* Request rows whose calls contain at least one exception get the
    same light-red row tint as exception FrameCards — bounded to the
    header, no bleed into the expanded body / call-tree gutter. */
@@ -160,5 +168,15 @@ const spanMs = computed(() => Number(props.request.span_ms) || 0);
   list-style: none;
   padding: 0;
   margin: 0;
+}
+
+.rn-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 1rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
 }
 </style>

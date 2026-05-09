@@ -56,7 +56,14 @@ const MED_LOW_OCCURRENCE_LIMIT = 15;
 export function useProvenance(
   parsedPayloads: ComputedRef<PayloadRow[]>,
   callMeta: ComputedRef<Map<string, CallMeta>>,
-  sessionId: Ref<string>
+  sessionId: Ref<string>,
+  // Lazy per-request call-tree loader. Hits returned by valueSearch
+  // can reference calls whose request hasn't been loaded into the
+  // local cache yet; without their callMeta entries the chain rows
+  // sort to the end (chronoIndex returns MAX_SAFE_INTEGER for unknown
+  // calls). We pre-load every request the hits touch so the chain
+  // assembly is correct.
+  ensureRequestsLoaded: (requestIds: Iterable<number>) => Promise<void>
 ): UseProvenance {
   const target = ref<OriginTarget | null>(null);
   const loading = ref(false);
@@ -104,6 +111,16 @@ export function useProvenance(
       // Always session-wide: origin should follow a value across
       // requests (the whole point of the cross-request forensic mode).
       const hits = await api.valueSearch(sessionId.value, null, canonical);
+      // Hits can reference calls in any request — load each touched
+      // request's call tree before chain assembly so callMeta covers
+      // every hit's call_id (chronoIndex returns MAX_SAFE_INTEGER for
+      // unknown calls otherwise, jumbling the chrono sort).
+      const reqIds = new Set<number>();
+      for (const h of hits) {
+        if (h.request_id != null) reqIds.add(Number(h.request_id));
+      }
+      await ensureRequestsLoaded(reqIds);
+      if (target.value !== t) return; // stale fetch
       // Steps 1-5 of the chain (source / propagation / current) are
       // built purely from hits + callMeta — no local payloads needed.
       // Step 6 (next mutation) needs envelope-aware walking of payloads
