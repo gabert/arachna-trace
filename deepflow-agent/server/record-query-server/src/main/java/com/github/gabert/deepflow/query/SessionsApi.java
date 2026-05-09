@@ -32,6 +32,7 @@ class SessionsApi {
                 SELECT request_id,
                        any(thread_name) AS thread_name,
                        count() AS call_count,
+                       countIf(is_exception) AS exception_count,
                        min(ts_in) AS first_call,
                        max(ts_out) AS last_call,
                        dateDiff('millisecond', min(ts_in), max(ts_out)) AS span_ms

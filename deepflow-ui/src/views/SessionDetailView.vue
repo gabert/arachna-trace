@@ -248,11 +248,13 @@ watch(trace.inspectedInstance, (v) => {
                 :placeholder="loadingRequests ? 'Loading...' : 'Pick a request'"
                 :loading="loadingRequests">
           <template #option="{ option }">
-            <span class="req-option">
+            <span class="req-option" :class="{ 'has-exception': Number(option.exception_count) > 0 }">
               <strong>#{{ option.request_id }}</strong>
               <span class="muted">{{ option.thread_name }}</span>
               <span class="muted">{{ option.call_count }} calls</span>
               <span class="muted">{{ option.span_ms }} ms</span>
+              <span v-if="Number(option.exception_count) > 0" class="req-option-exc"
+                    :title="`${option.exception_count} exception${Number(option.exception_count) === 1 ? '' : 's'} in this request`">⚠</span>
             </span>
           </template>
         </Select>
@@ -443,6 +445,16 @@ watch(trace.inspectedInstance, (v) => {
 }
 .tree-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 .req-option { display: inline-flex; gap: 0.6rem; align-items: baseline; }
+/* Request-picker option for requests that contain at least one
+   exception frame — red tint matching FrameCard's .rec-row.exception
+   so the signal reads consistently with the call tree. */
+.req-option.has-exception {
+  background: rgba(248, 113, 113, 0.10);
+  margin: -0.25rem -0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+}
+.req-option-exc { color: var(--accent-red); font-size: 0.85rem; }
 .muted { color: var(--text-muted); font-size: 0.8rem; }
 .centered { display: flex; justify-content: center; padding: 2rem; }
 

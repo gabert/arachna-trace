@@ -228,6 +228,7 @@ export interface RequestRow {
   request_id: number;
   thread_name: string;
   call_count: number;
+  exception_count: number;
   first_call: string;
   last_call: string;
   span_ms: number;

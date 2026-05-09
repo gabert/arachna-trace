@@ -20,6 +20,12 @@ services:
     ports:
       - "8099:8099"
 
+  # Override the v0.0.2 query image with a locally-built one so
+  # in-development server changes are visible without re-pushing GHCR.
+  # Build: docker build -f release/Dockerfile --target query -t deepflow-query:dev .
+  query:
+    image: deepflow-query:dev
+
   demo-spring-boot:
     profiles: ["disabled"]
 

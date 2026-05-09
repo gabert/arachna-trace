@@ -165,6 +165,8 @@ function open(row: SessionRow | null): void {
             <tbody>
               <tr v-for="r in previewRequests"
                   :key="r.request_id"
+                  :class="{ 'has-exception': Number(r.exception_count) > 0 }"
+                  :title="Number(r.exception_count) > 0 ? `${r.exception_count} exception${Number(r.exception_count) === 1 ? '' : 's'} in this request` : undefined"
                   @dblclick="open(selected)">
                 <td class="mono"><strong>#{{ r.request_id }}</strong></td>
                 <td class="mono">{{ r.thread_name }}</td>
@@ -236,6 +238,11 @@ function open(row: SessionRow | null): void {
   outline: 1px solid var(--accent-blue);
   outline-offset: -1px;
 }
+/* Requests that contain at least one exception frame — same red tint
+   as FrameCard's .rec-row.exception, so the signal reads consistently
+   between the request list and the call tree. */
+.data-table tbody tr.has-exception { background: rgba(248, 113, 113, 0.10); }
+.data-table tbody tr.has-exception:hover { background: rgba(248, 113, 113, 0.18); }
 .data-table tbody td {
   padding: 0.4rem 0.6rem;
   vertical-align: baseline;
