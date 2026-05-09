@@ -97,7 +97,7 @@ class SessionsApi {
     List<Map<String, Object>> requestPayloads(String sessionId, String requestId) throws Exception {
         long rid = Long.parseLong(requestId);
         return ch.query("""
-                SELECT call_id, kind, payload_json, root_hash, ts_in, signature, seq
+                SELECT call_id, kind, payload_json, payload_size, root_hash, object_ids, ts_in, signature, seq
                 FROM payloads
                 WHERE session_id = {session_id:String} AND request_id = {request_id:UInt64}
                 ORDER BY seq, kind, ts_in

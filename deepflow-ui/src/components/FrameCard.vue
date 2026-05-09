@@ -1,36 +1,58 @@
 <script setup lang="ts">
 import { computed, inject, ref } from 'vue';
-import PayloadViewer from './PayloadViewer.vue';
 import FrameChildrenGroup from './FrameChildrenGroup.vue';
 import { fmtTime, shortSig } from '../util/format';
 import {
-  PAYLOADS_BY_CALL_ID, CHILDREN_BY_PARENT,
+  CHILDREN_BY_PARENT,
   EXPANSION_DEFAULT, EXPANSION_OVERRIDES,
-  MUTATED_OBJECTS_BY_CALL_ID, ADDED_OBJECTS_BY_CALL_ID
+  SELECT_CALL, SELECTED_CALL_ID,
+  INSPECTED_INSTANCE, SUBTREE_APPEARANCES_BY_CALL_ID
 } from '../keys';
-import type { CallRow, OriginTarget, PayloadRow, Watch } from '../types';
+import type { AppearanceKind, CallRow, OriginTarget, TraceTarget, Watch } from '../types';
 
 const props = defineProps<{ call: CallRow }>();
 
+// Pin / origin events still bubble up — they originate from PayloadViewer
+// instances that now live inside the inspection cards on the right
+// (CallInspectionCard); the call tree itself only emits these
+// indirectly through the FrameChildrenGroup chain when the inspection
+// card on a nested call delegates back. Keeping the emits in the
+// signature avoids breaking the prop-drill chain.
 const emit = defineEmits<{
   (e: 'pin', payload: Watch): void;
   (e: 'origin', target: OriginTarget): void;
 }>();
 
-const payloadsByCallId   = inject(PAYLOADS_BY_CALL_ID, computed(() => new Map<string, PayloadRow[]>()));
 const childrenByParent   = inject(CHILDREN_BY_PARENT, computed(() => new Map<string | null, CallRow[]>()));
 const expansionDefault   = inject(EXPANSION_DEFAULT, ref(false));
 const expansionOverrides = inject(EXPANSION_OVERRIDES, ref(new Map<string, boolean>()));
-const mutatedObjectsByCallId = inject(MUTATED_OBJECTS_BY_CALL_ID, computed(() => new Map<string, Set<number>>()));
-const addedObjectsByCallId   = inject(ADDED_OBJECTS_BY_CALL_ID,   computed(() => new Map<string, Set<number>>()));
 
-const mutatedCount = computed(() => {
-  const ids = mutatedObjectsByCallId.value.get(props.call.call_id);
-  return ids ? ids.size : 0;
-});
-const addedCount = computed(() => {
-  const ids = addedObjectsByCallId.value.get(props.call.call_id);
-  return ids ? ids.size : 0;
+// Click splits two ways: the disclosure button toggles expand/collapse,
+// the rest of the row sets this call as the inspection target. They
+// must not conflict — selecting a row should never accidentally
+// collapse it.
+const selectCall = inject(SELECT_CALL, (_id: string) => {});
+const selectedCallId = inject(SELECTED_CALL_ID, ref<string | null>(null));
+const isSelected = computed(() => selectedCallId.value === props.call.call_id);
+function select(): void { selectCall(props.call.call_id); }
+
+// Bubble mark for the inspected instance. The "subtree" map already
+// rolls a descendant's mark up to this row, so a collapsed parent
+// shows an indicator when something below it touches the instance.
+const inspectedInstance = inject(INSPECTED_INSTANCE, ref<TraceTarget | null>(null));
+const subtreeAppearancesByCallId = inject(SUBTREE_APPEARANCES_BY_CALL_ID,
+  computed(() => new Map<string, AppearanceKind>()));
+const tracingActive = computed(() => inspectedInstance.value != null);
+const bubbleKind = computed<AppearanceKind | null>(() =>
+  subtreeAppearancesByCallId.value.get(props.call.call_id) || null);
+const bubbleTitle = computed(() => {
+  if (!inspectedInstance.value) return '';
+  const inst = inspectedInstance.value;
+  const cls = String(inst.className).split('.').pop() || inst.className;
+  if (bubbleKind.value === 'mutated') {
+    return `${cls} #${inst.objectId} — own_hash changes inside this subtree (this call or a descendant mutates the instance)`;
+  }
+  return `${cls} #${inst.objectId} — appears inside this subtree`;
 });
 
 const expanded = computed<boolean>({
@@ -47,7 +69,6 @@ const expanded = computed<boolean>({
 
 function toggle(): void { expanded.value = !expanded.value; }
 
-const payloads = computed<PayloadRow[]>(() => payloadsByCallId.value.get(props.call.call_id) || []);
 const children = computed<CallRow[]>(() => childrenByParent.value.get(props.call.call_id) || []);
 const hasChildren = computed(() => children.value.length > 0);
 
@@ -63,121 +84,120 @@ function layerOf(signature: string | null | undefined): Layer {
   return 'other';
 }
 
-const entryPayloads = computed(() => payloads.value.filter(p => p.kind === 'AR' || p.kind === 'TI'));
-
-// AX is rendered as its own block right after the entry block — i.e.
-// AR and AX sit next to each other so the before/after pair is
-// visually adjacent without children pushing them apart. Only
-// rendered when this call has a mutation or an added envelope; the
-// no-mutation case would just duplicate AR. (Search-result rows
-// targeting AX of a non-mutated call are filtered out at the
-// search layer instead — see useValueSearch.)
-const axPayload = computed<PayloadRow | null>(() => {
-  if (mutatedCount.value === 0 && addedCount.value === 0) return null;
-  return payloads.value.find(p => p.kind === 'AX') || null;
-});
-
-// Exit block now carries only RE — AX moved up to sit beside AR.
-const exitPayloads = computed(() => payloads.value.filter(p => p.kind === 'RE'));
+// Compact glyph for the return-type chip on the row. Tooltip carries
+// the full word for readers who don't recognise the symbol.
+const RETURN_GLYPH: Record<string, string> = {
+  VOID:      '⊘',
+  VALUE:     '↵',
+  EXCEPTION: '⚠'
+};
+const returnGlyph = computed(() => RETURN_GLYPH[props.call.return_type] || '·');
 </script>
 
 <template>
   <li class="rec-row"
-      :class="['layer-' + layer, { open: expanded, exception: call.is_exception, leaf: !hasChildren }]">
-    <button class="rec-head" @click="toggle"
-            :title="call.signature">
-      <span class="rec-disclosure">{{ expanded ? '▾' : '▸' }}</span>
-      <span class="rec-time">{{ fmtTime(call.ts_in) }}</span>
-      <span class="rec-dur">{{ call.duration_ms }} ms</span>
-      <span class="layer-stripe" :class="'layer-' + layer"></span>
-      <span class="rec-sig">{{ shortSig(call.signature) }}</span>
-      <span class="rec-ret" :class="(call.return_type || 'VOID').toLowerCase()">{{ call.return_type }}</span>
-    </button>
+      :class="['layer-' + layer, { open: expanded, exception: call.is_exception, leaf: !hasChildren, selected: isSelected }]">
+    <div class="rec-head">
+      <button class="rec-disclosure-btn"
+              @click.stop="toggle"
+              :title="expanded ? 'Collapse' : 'Expand'">
+        <span class="rec-disclosure">{{ expanded ? '▾' : '▸' }}</span>
+      </button>
+      <span v-if="tracingActive"
+            class="rec-bubble"
+            :class="bubbleKind || 'empty'"
+            :title="bubbleTitle"></span>
+      <button class="rec-select-btn"
+              @click="select"
+              :title="call.signature">
+        <span class="rec-time">{{ fmtTime(call.ts_in) }}</span>
+        <span class="rec-dur">{{ call.duration_ms }} ms</span>
+        <span class="layer-stripe" :class="'layer-' + layer"></span>
+        <span class="rec-sig">{{ shortSig(call.signature) }}</span>
+        <span v-if="hasChildren"
+              class="rec-childcount"
+              :title="children.length + ' nested call' + (children.length === 1 ? '' : 's')">
+          {{ children.length }}↳
+        </span>
+        <span class="rec-ret"
+              :class="(call.return_type || 'VOID').toLowerCase()"
+              :title="call.return_type">{{ returnGlyph }}</span>
+      </button>
+    </div>
 
-    <div v-if="expanded" class="rec-body">
-      <div v-if="entryPayloads.length" class="payload-block payload-block-entry">
-        <div v-for="p in entryPayloads" :key="p.kind" class="payload">
-          <div class="payload-head">
-            <span class="kind" :class="p.kind">{{ p.kind }}</span>
-            <span v-if="p.kind === 'AR' && mutatedCount > 0" class="mutation-badge"
-                  :title="mutatedCount + ' envelope(s) here are mutated by this call (own_hash differs between AR and AX). Look for the highlighted envelope below.'">
-              ⚠ {{ mutatedCount }} mutation site{{ mutatedCount === 1 ? '' : 's' }}
-            </span>
-            <span v-if="p.kind === 'AR' && addedCount > 0" class="added-badge"
-                  :title="addedCount + ' envelope(s) appear in AX but not in AR — this call introduces them. Expand AX below to inspect.'">
-              + {{ addedCount }} new in AX
-            </span>
-            <span class="muted" title="Merkle root hash of the rendered payload tree. Differs from the previous payload whenever ANY envelope's content changed anywhere in the subtree — useful as a cheap 'did anything change at all' signal. Per-envelope precision is shown by the in-tree mutation mark, not by this.">{{ p.payload_size }} B · deep {{ String(p.root_hash).slice(0, 8) }}…</span>
-          </div>
-          <PayloadViewer :data="p.parsed"
-                         :callId="call.call_id"
-                         :kind="p.kind"
-                         @pin="(payload) => emit('pin', payload)"
-                         @origin="(t) => emit('origin', t)" />
-        </div>
-      </div>
-
-      <div v-if="axPayload" class="payload-block payload-block-ax">
-        <div class="payload">
-          <div class="payload-head">
-            <span class="kind" :class="axPayload.kind">{{ axPayload.kind }}</span>
-            <span v-if="mutatedCount > 0" class="mutation-badge"
-                  :title="mutatedCount + ' envelope(s) own_hash changed between AR and AX. Look for the highlighted envelope inside.'">
-              ⚠ {{ mutatedCount }} mutation{{ mutatedCount === 1 ? '' : 's' }}
-            </span>
-            <span v-if="addedCount > 0" class="added-badge"
-                  :title="addedCount + ' envelope(s) appear in AX but not in AR — newly introduced during the call.'">
-              + {{ addedCount }} new
-            </span>
-            <span class="muted" title="Merkle root hash of the rendered payload tree. Differs from AR whenever ANY envelope's content changed anywhere in the subtree.">{{ axPayload.payload_size }} B · deep {{ String(axPayload.root_hash).slice(0, 8) }}…</span>
-          </div>
-          <PayloadViewer :data="axPayload.parsed"
-                         :callId="call.call_id"
-                         :kind="axPayload.kind"
-                         @pin="(payload) => emit('pin', payload)"
-                         @origin="(t) => emit('origin', t)" />
-        </div>
-      </div>
-
-      <FrameChildrenGroup v-if="hasChildren"
-                          :callId="call.call_id"
+    <!-- Body now carries only the nested call structure. TI / AR / AX
+         / RE inspection moved to CallInspectionCard on the right. -->
+    <div v-if="expanded && hasChildren" class="rec-body">
+      <FrameChildrenGroup :callId="call.call_id"
                           :children="children"
                           @pin="(p) => emit('pin', p)"
                           @origin="(t) => emit('origin', t)" />
-
-      <div v-if="exitPayloads.length" class="payload-block payload-block-exit">
-        <div v-for="p in exitPayloads" :key="p.kind" class="payload">
-          <div class="payload-head">
-            <span class="kind" :class="p.kind">{{ p.kind }}</span>
-            <span class="muted" title="Merkle root hash of the rendered payload tree. Differs from AR whenever ANY envelope's content changed anywhere in the subtree.">{{ p.payload_size }} B · deep {{ String(p.root_hash).slice(0, 8) }}…</span>
-          </div>
-          <PayloadViewer :data="p.parsed"
-                         :callId="call.call_id"
-                         :kind="p.kind"
-                         @pin="(payload) => emit('pin', payload)"
-                         @origin="(t) => emit('origin', t)" />
-        </div>
-      </div>
     </div>
   </li>
 </template>
 
 <style scoped>
 .rec-row { border-top: 1px solid var(--border); list-style: none; }
-.rec-row.exception { background: rgba(248, 113, 113, 0.04); }
+/* Exception rows pop with a stronger red tint and a solid red bar on
+   the very left edge, so a failed call is scannable from across the
+   tree. Selected + exception combine via the box-shadow staying put
+   while the background tint stacks. */
+.rec-row.exception {
+  background: rgba(248, 113, 113, 0.10);
+  box-shadow: inset 3px 0 0 var(--accent-red);
+}
 .rec-row.open      { background: var(--bg-base); }
+.rec-row.selected  { background: rgba(96, 165, 250, 0.12); }
+.rec-row.selected.exception { background: rgba(248, 113, 113, 0.18); }
 
+/* Row head splits into two click targets. Disclosure on the left
+   toggles expansion; the rest of the row selects this call as the
+   inspection target. Wrapping div carries hover/selected styling so
+   the whole row reads as a single visual unit. */
 .rec-head {
-  width: 100%; display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.3rem 0.5rem; background: none; border: 0; text-align: left;
-  font: inherit; cursor: pointer; position: relative; color: var(--text-primary);
+  display: flex; align-items: stretch;
+  color: var(--text-primary);
+  position: relative;
 }
 .rec-head:hover { background: var(--bg-hover); }
 
+.rec-disclosure-btn,
+.rec-select-btn {
+  background: none; border: 0; color: inherit; cursor: pointer;
+  font: inherit; text-align: left; padding: 0;
+}
+.rec-disclosure-btn {
+  padding: 0.3rem 0.35rem 0.3rem 0.5rem;
+  flex-shrink: 0;
+}
+.rec-disclosure-btn:hover .rec-disclosure { color: var(--text-primary); }
+.rec-select-btn {
+  flex: 1;
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.3rem 0.5rem 0.3rem 0;
+  min-width: 0;
+}
+
 .rec-disclosure { width: 1ch; color: var(--text-muted); user-select: none; }
-/* Arrow is always shown — it's the "this row is expandable" signal,
-   not a "has nested calls" badge. Calls-within count is rendered
-   separately by FrameChildrenGroup's yellow toggle. */
+
+/* Bubble mark for the inspected instance. Reserved column appears on
+   every row only while tracing is active, so the rest of the tree
+   stays unaffected when no instance is selected. The mark itself
+   only paints on rows whose subtree actually contains the instance —
+   absent rows render an empty placeholder of equal width so the
+   alignment doesn't ripple. Sized + glow-haloed so the eye lands on
+   it from across the tree, not just at hover distance. */
+.rec-bubble {
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+  align-self: center;
+  margin: 0 0.35rem 0 0.15rem;
+}
+.rec-bubble.appears { background: var(--accent-blue); }
+.rec-bubble.mutated { background: var(--accent-amber); }
+.rec-bubble.empty   { background: transparent; }
 
 .layer-stripe { width: 3px; height: 1.1rem; border-radius: 2px; flex-shrink: 0; }
 .layer-stripe.layer-controller { background: #60a5fa; }
@@ -189,9 +209,35 @@ const exitPayloads = computed(() => payloads.value.filter(p => p.kind === 'RE'))
 .rec-time { font-family: ui-monospace, monospace; color: var(--text-muted); width: 13ch; font-size: var(--mono-size); flex-shrink: 0; }
 .rec-dur  { font-family: ui-monospace, monospace; color: var(--text-secondary); width: 8ch; text-align: right; font-size: var(--mono-size); flex-shrink: 0; }
 .rec-sig  { flex: 1; font-family: ui-monospace, monospace; font-size: var(--mono-size); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rec-ret  { font-size: 0.68rem; padding: 0.05rem 0.4rem; border-radius: 3px; background: var(--bg-elevated); color: var(--text-secondary); }
+
+/* Child-count chip — informational, only renders when the row has
+   nested calls. Compact so it doesn't compete with the signature. */
+.rec-childcount {
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  flex-shrink: 0;
+}
+
+/* Return-type now rendered as a single glyph (⊘ void / ↵ value /
+   ⚠ exception) — keeps the row compact and scannable. Tooltip
+   carries the full word. */
+.rec-ret {
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  text-align: center;
+  min-width: 1.6rem;
+}
 .rec-ret.value     { background: rgba(110, 231, 183, 0.15); color: #6ee7b7; }
-.rec-ret.exception { background: rgba(248, 113, 113, 0.18); color: #fca5a5; }
+.rec-ret.exception { background: rgba(248, 113, 113, 0.22); color: #fca5a5; }
 .rec-ret.void      { background: var(--bg-elevated); color: var(--text-muted); }
 
 .rec-body {
@@ -199,33 +245,4 @@ const exitPayloads = computed(() => payloads.value.filter(p => p.kind === 'RE'))
   border-left: 1px dashed var(--border-strong);
   margin-left: 1.4rem;
 }
-.payload { margin: 0.4rem 0; }
-.payload-head { display: flex; gap: 0.6rem; align-items: baseline; margin-bottom: 0.2rem; }
-
-/* AR / AX block visually paired — small gap, AX gets a subtle dividing
-   border so the eye registers them as before/after of the same call. */
-.payload-block-ax { margin-top: 0.15rem; padding-top: 0.15rem; border-top: 1px dashed var(--border); }
-
-/* Mutation badge in the AX header. Block-level highlight removed —
-   it implied "the whole AR scope changed", which is the deep / Merkle
-   framing we don't want. The actual mutated envelope inside JsonTree
-   carries its own per-row highlight. */
-.mutation-badge {
-  background: rgba(251, 191, 36, 0.18);
-  color: #fcd34d;
-  font-size: 0.7rem;
-  padding: 0.05rem 0.4rem;
-  border-radius: 3px;
-  font-weight: 600;
-}
-.added-badge {
-  background: rgba(110, 231, 183, 0.18);
-  color: #6ee7b7;
-  font-size: 0.7rem;
-  padding: 0.05rem 0.4rem;
-  border-radius: 3px;
-  font-weight: 600;
-}
-
-.muted { color: var(--text-muted); font-size: 0.85rem; }
 </style>

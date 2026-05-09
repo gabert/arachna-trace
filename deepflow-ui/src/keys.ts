@@ -6,7 +6,7 @@
 
 import type { ComputedRef, Ref } from 'vue';
 import type { InjectionKey } from 'vue';
-import type { CallRow, Highlight, PayloadRow } from './types';
+import type { AppearanceKind, CallRow, Highlight, PayloadRow, TraceTarget } from './types';
 
 // Loaded payloads grouped by call_id. Each payload has its `parsed`
 // field filled in (one canonical parse per request, shared across
@@ -28,15 +28,6 @@ export const EXPANSION_DEFAULT: InjectionKey<Ref<boolean>> =
 // `overrides.get(id) ?? default`.
 export const EXPANSION_OVERRIDES: InjectionKey<Ref<Map<string, boolean>>> =
   Symbol('expansionOverrides');
-
-// Per-callId override for the children-fold inside an expanded frame.
-// Independent of frame expansion: a frame can be expanded while its
-// children fold is collapsed (showing AR / AX / RE without the nested
-// calls). Default is expanded — only explicit collapses are stored.
-// Navigator's goto walks the ancestor chain and forces this true so a
-// targeted descendant is mounted.
-export const CHILDREN_EXPANDED_OVERRIDES: InjectionKey<Ref<Map<string, boolean>>> =
-  Symbol('childrenExpandedOverrides');
 
 // Per-callId Set<objectId> of envelope ids whose own_hash moved between
 // AR and AX. Scoped down to the AX viewer by PayloadViewer; JsonTree
@@ -72,3 +63,30 @@ export const HIGHLIGHT: InjectionKey<Ref<Highlight | null>> =
 // transitions and the watcher doesn't fire).
 export const NAV_TICK: InjectionKey<Ref<number>> =
   Symbol('navTick');
+
+// Setter for the currently-inspected call. FrameCard injects and calls
+// this on row click; SessionDetailView holds the state and renders
+// CallInspectionCard for it. Independent of the navigator highlight —
+// selecting a call does not move the highlighted JSON node, only what
+// the right-pane inspection card shows.
+export const SELECT_CALL: InjectionKey<(callId: string) => void> =
+  Symbol('selectCall');
+
+// Currently-selected call id (the one the inspection card is showing).
+// FrameCard reads this to render its "selected" affordance so the row
+// matches the open inspection card.
+export const SELECTED_CALL_ID: InjectionKey<Ref<string | null>> =
+  Symbol('selectedCallId');
+
+// Instance the user picked to trace on the tree (clicked 🔎 trace on
+// an envelope row in an inspection card). FrameCard reads this to
+// know whether to reserve space for the bubble mark column.
+export const INSPECTED_INSTANCE: InjectionKey<Ref<TraceTarget | null>> =
+  Symbol('inspectedInstance');
+
+// Per-callId classification of the inspected instance, rolled up so a
+// collapsed parent shows the strongest mark from any descendant. Empty
+// map when no instance is being traced. FrameCard reads its own entry
+// (subtreeAppearances.get(call_id)) to decide which mark to render.
+export const SUBTREE_APPEARANCES_BY_CALL_ID: InjectionKey<ComputedRef<Map<string, AppearanceKind>>> =
+  Symbol('subtreeAppearancesByCallId');

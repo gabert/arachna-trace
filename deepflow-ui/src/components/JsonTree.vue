@@ -2,7 +2,7 @@
 import { computed, inject, onMounted, ref, watch } from 'vue';
 import { isCycleRef, isEnvelope } from '../util/envelope';
 import { MUTATED_OBJECT_IDS, ADDED_OBJECT_IDS, NAV_TICK } from '../keys';
-import type { Path, PathSegment, Watch } from '../types';
+import type { Path, PathSegment, TraceTarget, Watch } from '../types';
 
 interface EnvContext {
   objectId: number;
@@ -37,6 +37,11 @@ const emit = defineEmits<{
   // enriches with callId/kind before bubbling up. Path is relative
   // to the payload root.
   (e: 'origin', target: { path: Path; value: unknown }): void;
+  // Trace this envelope on the call tree. Emitted from envelope
+  // header rows only — payload viewers in the inspection cards
+  // bubble it up to SessionDetailView, which paints subtree marks
+  // on every FrameCard whose subtree contains this object id.
+  (e: 'trace', target: TraceTarget): void;
 }>();
 
 type NodeKind = 'null' | 'array' | 'object' | 'string' | 'number' | 'boolean' | 'undefined' | 'function' | 'symbol' | 'bigint';
@@ -300,6 +305,19 @@ function relayToggle(p: string): void { emit('toggle', p); }
 function relayPin(p: Watch): void    { emit('pin', p); }
 function relayFollow(id: number): void { emit('follow-cycle', id); }
 function relayOrigin(t: { path: Path; value: unknown }): void { emit('origin', t); }
+function relayTrace(t: TraceTarget): void { emit('trace', t); }
+
+// Trace is meaningful only on envelope rows — instances have stable
+// object ids and visit specific frames; plain containers and scalars
+// don't.
+const canTrace = computed(() => !cycleRef.value && !!envelope.value);
+function traceSelf(): void {
+  if (!envelope.value) return;
+  emit('trace', {
+    objectId: envelope.value.objectId,
+    className: envelope.value.className
+  });
+}
 
 // Origin (provenance) is meaningful only for scalar leaves. Containers
 // have no single "value" to chain on; envelopes are tracked by id
@@ -345,6 +363,9 @@ function renderScalar(v: unknown): string {
         <button v-if="canPin" class="jt-pin"
                 @click.stop="pinSelf"
                 :title="pinTitle">⊕ watch</button>
+        <button v-if="canTrace" class="jt-trace"
+                @click.stop="traceSelf"
+                title="Trace this instance on the call tree — every call where this object appears gets a bubble mark; mutating calls get a stronger mark.">🔎 trace</button>
         <button v-if="canTraceOrigin" class="jt-origin"
                 @click.stop="originSelf"
                 title="Trace where this value came from in this request (heuristic — see Origin panel)">↤ origin</button>
@@ -363,7 +384,8 @@ function renderScalar(v: unknown): string {
                 @toggle="relayToggle"
                 @pin="relayPin"
                 @follow-cycle="relayFollow"
-                @origin="relayOrigin" />
+                @origin="relayOrigin"
+                @trace="relayTrace" />
       <button v-if="arrayClipped"
               class="jt-show-all"
               :title="`Rendering only the first ${ARRAY_RENDER_LIMIT} of ${arrayLength} elements; click to render the remaining ${arrayHidden} (may be slow on very large arrays).`"
@@ -419,6 +441,24 @@ function renderScalar(v: unknown): string {
 }
 .jt-row:hover .jt-origin { opacity: 1; pointer-events: auto; }
 .jt-origin:hover { background: rgba(196, 181, 253, 0.3); }
+
+/* Trace affordance — only on envelope rows. Amber palette so it
+   visually relates to the bubble marks it paints on the call tree. */
+.jt-trace {
+  opacity: 0;
+  pointer-events: none;
+  background: rgba(251, 191, 36, 0.16);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  color: #fcd34d;
+  font-size: 0.7rem;
+  cursor: pointer;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  transition: opacity 0.1s;
+  font-family: inherit;
+}
+.jt-row:hover .jt-trace { opacity: 1; pointer-events: auto; }
+.jt-trace:hover { background: rgba(251, 191, 36, 0.28); }
 .jt-children { padding-left: 1.4ch; border-left: 1px dashed var(--border); margin-left: 0.4ch; }
 
 .jt-show-all {

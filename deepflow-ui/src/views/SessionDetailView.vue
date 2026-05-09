@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { provide, ref, toRef, watch } from 'vue';
+import { computed, provide, ref, toRef, watch } from 'vue';
 import Select from 'primevue/select';
 import Message from 'primevue/message';
 import ProgressSpinner from 'primevue/progressspinner';
 import Splitter from 'primevue/splitter';
 import SplitterPanel from 'primevue/splitterpanel';
 import FrameCard from '../components/FrameCard.vue';
+import CallInspectionCard from '../components/CallInspectionCard.vue';
 import WatchPanel from '../components/WatchPanel.vue';
 import MutationsPanel from '../components/MutationsPanel.vue';
 import OriginPanel from '../components/OriginPanel.vue';
@@ -15,23 +16,31 @@ import { useNavigator } from '../composables/useNavigator';
 import { useObjectChanges } from '../composables/useObjectChanges';
 import { useProvenance } from '../composables/useProvenance';
 import { useValueSearch } from '../composables/useValueSearch';
+import { walkEnvelopes } from '../util/envelope';
 import {
   PAYLOADS_BY_CALL_ID, CHILDREN_BY_PARENT,
-  EXPANSION_DEFAULT, EXPANSION_OVERRIDES, CHILDREN_EXPANDED_OVERRIDES,
+  EXPANSION_DEFAULT, EXPANSION_OVERRIDES,
   MUTATED_OBJECTS_BY_CALL_ID, ADDED_OBJECTS_BY_CALL_ID,
-  HIGHLIGHT, NAV_TICK
+  HIGHLIGHT, NAV_TICK,
+  SELECT_CALL, SELECTED_CALL_ID,
+  INSPECTED_INSTANCE, SUBTREE_APPEARANCES_BY_CALL_ID
 } from '../keys';
-import type { OriginTarget, Watch } from '../types';
+import type { AppearanceKind, CallRow, JumpAddress, OriginTarget, TraceTarget, Watch } from '../types';
 
 
 const props = defineProps<{ sessionId: string }>();
 
-// Right-pane tab. Mutations is the discovery surface, default. Watch
-// is the follow-up tool — keeps its pinned items across tab switches.
-// Origin is the trace-where-it-came-from view — auto-activated when
-// the user clicks ↤ origin on a value in the call tree.
-type RightTab = 'mutations' | 'watch' | 'origin' | 'search';
-const rightTab = ref<RightTab>('mutations');
+// Right-edge tool strip. Always-visible icon column on the far right;
+// clicking an icon expands an overlay showing that tool's panel. null
+// = collapsed (icons only). Tools are demoted from a tabbed top-level
+// surface to call-out tools alongside the inspection area, which is
+// the new dominant content. Mutations / Watches / Origin / Search all
+// keep their full state via v-show even when collapsed.
+type ToolId = 'mutations' | 'watch' | 'origin' | 'search';
+const activeTool = ref<ToolId | null>(null);
+function toggleTool(id: ToolId): void {
+  activeTool.value = activeTool.value === id ? null : id;
+}
 
 const selectedRequestId = ref<number | null>(null);
 
@@ -43,7 +52,7 @@ const {
 } = useRequestData(sessionIdRef, selectedRequestId);
 
 const {
-  highlight, navTick, expansionDefault, expansionOverrides, childrenExpandedOverrides,
+  highlight, navTick, expansionDefault, expansionOverrides,
   goto, expandAll, collapseAll, reset: resetNavigator
 } = useNavigator(parentByCallId);
 
@@ -59,15 +68,180 @@ const {
 const provenance = useProvenance(parsedPayloads, callMeta, sessionIdRef, selectedRequestId);
 const valueSearch = useValueSearch(sessionIdRef, selectedRequestId);
 
+// Currently-inspected call. Drives CallInspectionCard in the center
+// pane and the "selected" affordance on FrameCard rows.
+const selectedCallId = ref<string | null>(null);
+function selectCall(id: string): void { selectedCallId.value = id; }
+const callsById = computed<Map<string, CallRow>>(() => {
+  const m = new Map<string, CallRow>();
+  for (const c of calls.value) m.set(c.call_id, c);
+  return m;
+});
+const selectedCall = computed<CallRow | null>(() => {
+  const id = selectedCallId.value;
+  return id ? (callsById.value.get(id) || null) : null;
+});
+
+// Pinned inspection cards. Survive new selections; user manages with
+// the 📌 / ✕ buttons in each card's header. Pin order preserves the
+// order they were pinned, oldest first (top of stack), so the user
+// can predict where each parked card sits.
+const pinnedCallIds = ref<string[]>([]);
+const collapsedCards = ref<Set<string>>(new Set());
+
+function togglePinCard(id: string): void {
+  if (pinnedCallIds.value.includes(id)) {
+    pinnedCallIds.value = pinnedCallIds.value.filter(x => x !== id);
+    const next = new Set(collapsedCards.value);
+    next.delete(id);
+    collapsedCards.value = next;
+  } else {
+    pinnedCallIds.value = [...pinnedCallIds.value, id];
+  }
+}
+
+function toggleCardCollapsed(id: string): void {
+  const next = new Set(collapsedCards.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  collapsedCards.value = next;
+}
+
+const pinnedCalls = computed<CallRow[]>(() => {
+  const map = callsById.value;
+  const out: CallRow[] = [];
+  for (const id of pinnedCallIds.value) {
+    const c = map.get(id);
+    if (c) out.push(c);
+  }
+  return out;
+});
+
+// Hide the "current" card if its call is already pinned — no point
+// rendering the same inspection twice.
+const currentCard = computed<CallRow | null>(() => {
+  const c = selectedCall.value;
+  if (!c) return null;
+  if (pinnedCallIds.value.includes(c.call_id)) return null;
+  return c;
+});
+
+// Instance the user picked to trace on the tree. Click an envelope's
+// "🔎 trace" button in any inspection card to set; click the same
+// instance again to clear (toggle).
+const inspectedInstance = ref<TraceTarget | null>(null);
+function setInspectedInstance(t: TraceTarget): void {
+  if (inspectedInstance.value?.objectId === t.objectId) {
+    inspectedInstance.value = null;
+  } else {
+    inspectedInstance.value = t;
+  }
+}
+function clearInspectedInstance(): void { inspectedInstance.value = null; }
+
+// Per-call own-appearance kind for the inspected instance: 'mutated'
+// when this call's own_hash for the instance changed (AR vs AX),
+// 'appears' when the instance is just present in any of the call's
+// payloads, undefined otherwise. Mutation overrides appearance.
+//
+// Walks parsed payload JSON for envelopes whose __meta__.id matches.
+// Doesn't rely on PayloadRow.object_ids — that column is sometimes
+// absent from the request-payloads endpoint, and walking the parsed
+// tree we already have is cheap (one pass per trace change, runs
+// only when inspectedInstance is non-null).
+const ownAppearancesByCallId = computed<Map<string, AppearanceKind>>(() => {
+  const out = new Map<string, AppearanceKind>();
+  const inst = inspectedInstance.value;
+  if (!inst) return out;
+  const id = inst.objectId;
+  for (const p of parsedPayloads.value) {
+    if (out.get(p.call_id) === 'appears') continue;
+    let found = false;
+    walkEnvelopes(p.parsed, (env) => {
+      if (env.__meta__.id === id) found = true;
+    });
+    if (found && !out.has(p.call_id)) out.set(p.call_id, 'appears');
+  }
+  for (const [callId, ids] of mutatedObjectsByCallId.value) {
+    if (ids.has(id)) out.set(callId, 'mutated');
+  }
+  return out;
+});
+
+// Rolled-up subtree appearance kind: a collapsed parent shows the
+// strongest mark from any descendant. One post-order walk per
+// inspectedInstance change. 'mutated' wins over 'appears'.
+const subtreeAppearancesByCallId = computed<Map<string, AppearanceKind>>(() => {
+  const own = ownAppearancesByCallId.value;
+  const result = new Map<string, AppearanceKind>();
+  if (!inspectedInstance.value) return result;
+  const cbp = childrenByParent.value;
+  // Iterative post-order so deep trees don't blow the stack.
+  type Frame = { id: string; childIdx: number };
+  // Walk every call once, starting from each root (or any unvisited).
+  for (const c of calls.value) {
+    if (result.has(c.call_id)) continue;
+    const stack: Frame[] = [{ id: c.call_id, childIdx: 0 }];
+    while (stack.length) {
+      const top = stack[stack.length - 1];
+      const kids = cbp.get(top.id) || [];
+      if (top.childIdx < kids.length) {
+        const k = kids[top.childIdx++];
+        if (!result.has(k.call_id)) {
+          stack.push({ id: k.call_id, childIdx: 0 });
+        }
+      } else {
+        let kind: AppearanceKind | undefined = own.get(top.id);
+        for (const k of kids) {
+          const childKind = result.get(k.call_id);
+          if (childKind === 'mutated') { kind = 'mutated'; break; }
+          if (childKind === 'appears' && kind !== 'mutated') kind = 'appears';
+        }
+        if (kind) result.set(top.id, kind);
+        stack.pop();
+      }
+    }
+  }
+  return result;
+});
+
+const inspectedCount = computed(() =>
+  Array.from(ownAppearancesByCallId.value.values()).length);
+
+const inspectedShortClass = computed(() => {
+  const c = inspectedInstance.value?.className;
+  if (!c) return '';
+  return String(c).split('.').pop() || c;
+});
+
 provide(PAYLOADS_BY_CALL_ID, payloadsByCallId);
 provide(CHILDREN_BY_PARENT, childrenByParent);
 provide(EXPANSION_DEFAULT, expansionDefault);
 provide(EXPANSION_OVERRIDES, expansionOverrides);
-provide(CHILDREN_EXPANDED_OVERRIDES, childrenExpandedOverrides);
 provide(MUTATED_OBJECTS_BY_CALL_ID, mutatedObjectsByCallId);
 provide(ADDED_OBJECTS_BY_CALL_ID, addedObjectsByCallId);
 provide(HIGHLIGHT, highlight);
 provide(NAV_TICK, navTick);
+provide(SELECT_CALL, selectCall);
+provide(SELECTED_CALL_ID, selectedCallId);
+provide(INSPECTED_INSTANCE, inspectedInstance);
+provide(SUBTREE_APPEARANCES_BY_CALL_ID, subtreeAppearancesByCallId);
+
+// Jumps from tool panels (mutations, watches, origin, search) need to
+// land in a mounted PayloadViewer to drive the highlight scroll. The
+// only PayloadViewers now live inside CallInspectionCard, so a jump
+// must also select the target call (and uncollapse it if it was a
+// collapsed pinned card). This wraps the navigator's goto so panels
+// don't need to know about the inspection model.
+function gotoAndSelect(addr: JumpAddress): void {
+  selectCall(addr.callId);
+  if (collapsedCards.value.has(addr.callId)) {
+    const next = new Set(collapsedCards.value);
+    next.delete(addr.callId);
+    collapsedCards.value = next;
+  }
+  goto(addr);
+}
 
 // Watch model. Local to this view because it scopes to one
 // (session, request) — moving requests should clear watches.
@@ -80,10 +254,10 @@ function pinWatch(w: Watch | null | undefined): void {
     watches.value = [...watches.value, w];
   }
   // Mirror the origin click affordance: surface the panel that just
-  // gained content. Same tab switch even when the watch already
-  // existed, so a duplicate click still feels responsive (the user
-  // gets focus on the panel rather than a silent no-op).
-  rightTab.value = 'watch';
+  // gained content. Same expand even when the watch already existed,
+  // so a duplicate click still feels responsive (the user gets focus
+  // on the panel rather than a silent no-op).
+  activeTool.value = 'watch';
 }
 
 function watchKey(w: Watch): string {
@@ -96,20 +270,40 @@ function removeWatch(idx: number): void {
 }
 
 // Origin target lives inside the provenance composable; the view just
-// wires the user click → tab switch + composable update. Subsequent
+// wires the user click → tool expand + composable update. Subsequent
 // clicks just replace the target without further nav.
 function setOrigin(t: OriginTarget): void {
   provenance.setTarget(t);
-  rightTab.value = 'origin';
+  activeTool.value = 'origin';
 }
+
+const toolMeta: Record<ToolId, { label: string; icon: string }> = {
+  mutations: { label: 'Mutations', icon: '⟳' },
+  watch:     { label: 'Watches',   icon: '⊙' },
+  origin:    { label: 'Origin',    icon: '↤' },
+  search:    { label: 'Search',    icon: '⌕' }
+};
+const toolIds: ToolId[] = ['mutations', 'watch', 'origin', 'search'];
+const toolBadge = computed<Record<ToolId, number>>(() => ({
+  mutations: mutationGroups.value.length,
+  watch:     watches.value.length,
+  origin:    provenance.target.value ? 1 : 0,
+  search:    valueSearch.hits.value.length
+}));
+const activeToolLabel = computed(() => activeTool.value ? toolMeta[activeTool.value].label : '');
 
 function clearOrigin(): void {
   provenance.clear();
 }
 
-// Reset navigator + watches + origin whenever the active request changes.
+// Reset navigator + watches + origin + inspection whenever the active
+// request changes.
 watch(selectedRequestId, () => {
   watches.value = [];
+  selectedCallId.value = null;
+  pinnedCallIds.value = [];
+  collapsedCards.value = new Set();
+  inspectedInstance.value = null;
   provenance.clear();
   resetNavigator();
 });
@@ -146,65 +340,108 @@ watch(selectedRequestId, () => {
 
     <Message v-if="error" severity="error" :closable="false">{{ error }}</Message>
 
-    <Splitter class="workspace" stateKey="deepflow-session-splitter" stateStorage="local">
-      <SplitterPanel :size="65" :minSize="25" class="left-pane">
-        <div v-if="loadingCalls" class="centered"><ProgressSpinner style="width:2rem;height:2rem" /></div>
+    <div class="workspace-row">
+      <Splitter class="workspace" stateKey="deepflow-session-splitter-v2" stateStorage="local">
+        <SplitterPanel :size="50" :minSize="25" class="left-pane">
+          <div v-if="loadingCalls" class="centered"><ProgressSpinner style="width:2rem;height:2rem" /></div>
 
-        <ol v-else class="recording" :start="1">
-          <FrameCard v-for="call in rootCalls"
-                     :key="call.call_id"
-                     :call="call"
-                     @pin="pinWatch"
-                     @origin="setOrigin" />
-        </ol>
+          <div v-if="inspectedInstance" class="trace-banner">
+            <span class="trace-label">🔎 Tracing</span>
+            <code class="trace-target">{{ inspectedShortClass }} #{{ inspectedInstance.objectId }}</code>
+            <span class="trace-count">{{ inspectedCount }} appearance{{ inspectedCount === 1 ? '' : 's' }}</span>
+            <button class="trace-clear" @click="clearInspectedInstance" title="Clear trace">×</button>
+          </div>
 
-        <p v-if="!loadingCalls && !calls.length && selectedRequestId != null" class="muted centered">
-          no calls in this request
-        </p>
-      </SplitterPanel>
+          <ol v-if="!loadingCalls" class="recording" :start="1">
+            <FrameCard v-for="call in rootCalls"
+                       :key="call.call_id"
+                       :call="call"
+                       @pin="pinWatch"
+                       @origin="setOrigin" />
+          </ol>
 
-      <SplitterPanel :size="35" :minSize="20" class="right-pane">
-        <div class="right-pane-shell">
-          <nav class="right-tabs">
-            <button :class="{ active: rightTab === 'mutations' }"
-                    @click="rightTab = 'mutations'">Mutations</button>
-            <button :class="{ active: rightTab === 'watch' }"
-                    @click="rightTab = 'watch'">Watches <span v-if="watches.length" class="tab-count">{{ watches.length }}</span></button>
-            <button :class="{ active: rightTab === 'origin' }"
-                    @click="rightTab = 'origin'">Origin <span v-if="provenance.target.value" class="tab-count">1</span></button>
-            <button :class="{ active: rightTab === 'search' }"
-                    @click="rightTab = 'search'">Search <span v-if="valueSearch.hits.value.length" class="tab-count">{{ valueSearch.hits.value.length }}</span></button>
-          </nav>
-          <div class="right-tab-body">
-            <!-- Panels stay mounted (v-show) so per-row / per-group
-                 expansion state survives tab switches. Outer v-if
-                 guards on having a request selected to avoid a flash
-                 of empty content during initial load. -->
+          <p v-if="!loadingCalls && !calls.length && selectedRequestId != null" class="muted centered">
+            no calls in this request
+          </p>
+        </SplitterPanel>
+
+        <SplitterPanel :size="50" :minSize="20" class="inspection-pane">
+          <div class="inspection-area">
+            <CallInspectionCard v-if="currentCard"
+                                :call="currentCard"
+                                :pinned="false"
+                                @pin="pinWatch"
+                                @origin="setOrigin"
+                                @trace="setInspectedInstance"
+                                @pin-card="togglePinCard(currentCard.call_id)" />
+            <CallInspectionCard v-for="c in pinnedCalls"
+                                :key="c.call_id"
+                                :call="c"
+                                :pinned="true"
+                                :collapsed="collapsedCards.has(c.call_id)"
+                                @pin="pinWatch"
+                                @origin="setOrigin"
+                                @trace="setInspectedInstance"
+                                @pin-card="togglePinCard(c.call_id)"
+                                @toggle-collapsed="toggleCardCollapsed(c.call_id)" />
+            <div v-if="!currentCard && !pinnedCalls.length" class="inspection-placeholder">
+              <p>Click a call on the left to inspect its TI / AR / AX / RE.</p>
+              <p class="hint">Pin (📌) a card to keep it side-by-side with later selections.</p>
+            </div>
+          </div>
+        </SplitterPanel>
+      </Splitter>
+
+      <!-- Tool strip on the far right edge: always-visible icon column,
+           plus a content overlay (only when a tool is active). The
+           panels remain mounted via v-show so per-group / per-row
+           expansion state survives expand/collapse. -->
+      <aside class="tool-strip" :class="{ expanded: activeTool != null }">
+        <section v-if="activeTool != null" class="tool-content">
+          <header class="tool-header">
+            <span class="tool-title">{{ activeToolLabel }}</span>
+            <button class="tool-close" @click="activeTool = null" title="Collapse">×</button>
+          </header>
+          <div class="tool-body">
             <template v-if="selectedRequestId != null">
-              <MutationsPanel v-show="rightTab === 'mutations'"
+              <MutationsPanel v-show="activeTool === 'mutations'"
                               :groups="mutationGroups"
                               :summary="mutationsSummary"
                               :loading="loadingMutations"
                               :error="mutationsError"
-                              @jump="goto" />
-              <WatchPanel v-show="rightTab === 'watch'"
+                              @jump="gotoAndSelect" />
+              <WatchPanel v-show="activeTool === 'watch'"
                           :watches="watches"
                           :payloads="parsedPayloads"
                           :callMeta="callMeta"
                           @remove="removeWatch"
-                          @jump="goto" />
-              <OriginPanel v-show="rightTab === 'origin'"
+                          @jump="gotoAndSelect" />
+              <OriginPanel v-show="activeTool === 'origin'"
                            :provenance="provenance"
-                           @jump="goto" />
-              <SearchPanel v-show="rightTab === 'search'"
+                           @jump="gotoAndSelect" />
+              <SearchPanel v-show="activeTool === 'search'"
                            :search="valueSearch"
-                           :active="rightTab === 'search'"
-                           @jump="goto" />
+                           :active="activeTool === 'search'"
+                           @jump="gotoAndSelect" />
             </template>
+            <p v-else class="tool-empty">Pick a request to start.</p>
           </div>
-        </div>
-      </SplitterPanel>
-    </Splitter>
+        </section>
+
+        <nav class="tool-icons">
+          <button v-for="id in toolIds"
+                  :key="id"
+                  class="tool-icon"
+                  :class="{ active: activeTool === id }"
+                  :title="toolMeta[id].label"
+                  @click="toggleTool(id)">
+            <span class="tool-glyph">{{ toolMeta[id].icon }}</span>
+            <span class="tool-label">{{ toolMeta[id].label }}</span>
+            <span v-if="toolBadge[id]" class="tool-badge">{{ toolBadge[id] }}</span>
+          </button>
+        </nav>
+      </aside>
+    </div>
   </section>
 </template>
 
@@ -256,37 +493,165 @@ watch(selectedRequestId, () => {
 
 .recording { list-style: none; padding: 0; margin: 0; }
 
-/* Right-pane tab shell — Mutations | Watches. */
-.right-pane-shell { display: flex; flex-direction: column; height: 100%; }
-.right-tabs {
+/* Trace banner — appears above the call tree when an instance is
+   being traced. Amber palette matches the .jt-trace button and the
+   bubble marks it paints, so the user reads them as one feature. */
+.trace-banner {
   display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.75rem;
+  margin: 0 0.25rem 0.25rem;
+  background: rgba(251, 191, 36, 0.10);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+.trace-label { color: #fcd34d; font-weight: 600; }
+.trace-target {
+  font-family: ui-monospace, monospace;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+}
+.trace-count { color: var(--text-secondary); margin-left: auto; }
+.trace-clear {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 0.3rem;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.trace-clear:hover { color: var(--text-primary); background: var(--bg-hover); }
+
+/* Workspace row: Splitter (tree | inspection) on the left, fixed-width
+   tool strip on the right edge. The Splitter fills the remaining width
+   so tool strip expand/collapse never resizes the splitter ratio. */
+.workspace-row {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+.workspace-row .workspace { flex: 1; min-width: 0; }
+
+/* Inspection pane — center column, currently a placeholder. Override
+   the global .workspace .right-pane overflow rule because we want the
+   inner area to scroll, not the SplitterPanel itself (Phase 2+ will
+   stack cards inside it). */
+:deep(.workspace .inspection-pane) {
+  overflow: hidden !important;
+  background: var(--bg-base);
+}
+.inspection-area {
+  height: 100%;
+  overflow-y: auto;
+  padding: 0.75rem 1rem;
+}
+.inspection-placeholder {
+  margin: 4rem auto;
+  max-width: 26rem;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.inspection-placeholder p { margin: 0.4rem 0; }
+.inspection-placeholder .hint { color: var(--text-muted); font-size: 0.85rem; }
+
+/* Tool strip — always-visible icon column on the far right; expands
+   leftward with a content panel when a tool is active. Width is the
+   sum of icon column + (optional) content panel; flex doesn't grow
+   the strip, the splitter eats the remainder. */
+.tool-strip {
+  display: flex;
+  flex-direction: row;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+.tool-strip .tool-content {
+  width: 22rem;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--bg-base);
+  min-height: 0;
+}
+.tool-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.45rem 0.75rem;
   border-bottom: 1px solid var(--border);
   background: var(--bg-surface);
   flex-shrink: 0;
 }
-.right-tabs button {
-  flex: 1;
+.tool-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+.tool-close {
   background: transparent;
   border: 0;
-  border-bottom: 2px solid transparent;
-  color: var(--text-secondary);
-  padding: 0.5rem 0.6rem;
-  font-size: 0.85rem;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  line-height: 1;
   cursor: pointer;
+  padding: 0 0.3rem;
 }
-.right-tabs button:hover { color: var(--text-primary); background: var(--bg-hover); }
-.right-tabs button.active {
-  color: var(--text-primary);
-  border-bottom-color: var(--accent-blue);
-  background: var(--bg-base);
+.tool-close:hover { color: var(--text-primary); }
+.tool-body { flex: 1; overflow: auto; min-height: 0; }
+.tool-empty { padding: 2rem 1rem; text-align: center; color: var(--text-muted); }
+
+.tool-icons {
+  display: flex;
+  flex-direction: column;
+  width: 3rem;
+  flex-shrink: 0;
+  padding-top: 0.4rem;
+  gap: 0.15rem;
+  background: var(--bg-surface);
 }
-.tab-count {
-  background: var(--bg-elevated);
+.tool-icon {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.45rem 0.2rem;
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
   color: var(--text-secondary);
-  border-radius: 8px;
-  padding: 0 0.4rem;
-  margin-left: 0.3rem;
-  font-size: 0.7rem;
+  cursor: pointer;
+  font-family: inherit;
 }
-.right-tab-body { flex: 1; overflow: hidden; }
+.tool-icon:hover { color: var(--text-primary); background: var(--bg-hover); }
+.tool-icon.active {
+  color: var(--text-primary);
+  background: var(--bg-base);
+  border-left-color: var(--accent-blue);
+}
+.tool-glyph { font-size: 1.05rem; line-height: 1; }
+.tool-label { font-size: 0.6rem; letter-spacing: 0.03em; }
+.tool-badge {
+  position: absolute;
+  top: 0.15rem;
+  right: 0.15rem;
+  background: var(--accent-blue);
+  color: #0b1220;
+  font-size: 0.6rem;
+  font-weight: 700;
+  border-radius: 8px;
+  padding: 0 0.3rem;
+  min-width: 1rem;
+  text-align: center;
+  line-height: 1.1;
+}
 </style>

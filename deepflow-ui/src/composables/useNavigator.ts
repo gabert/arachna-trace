@@ -7,7 +7,6 @@ export interface UseNavigator {
   navTick: Ref<number>;
   expansionDefault: Ref<boolean>;
   expansionOverrides: Ref<Map<string, boolean>>;
-  childrenExpandedOverrides: Ref<Map<string, boolean>>;
   goto: (addr: JumpAddress) => void;
   expandAll: () => void;
   collapseAll: () => void;
@@ -45,26 +44,20 @@ export function useNavigator(
   const expansionDefault = ref(false);
   const expansionOverrides = ref<Map<string, boolean>>(new Map());
 
-  // Children-fold overrides default to "expanded" (true) when missing —
-  // only explicit collapses are stored. See CHILDREN_EXPANDED_OVERRIDES.
-  const childrenExpandedOverrides = ref<Map<string, boolean>>(new Map());
-
   function goto(addr: JumpAddress): void {
-    // Expand every ancestor of the target so its FrameCard is mounted
-    // by the time Vue settles, AND force-open every ancestor's
-    // children-fold so the nested FrameCards render. (Collapsed frames
-    // unmount their bodies; collapsed children-folds unmount the child
-    // list — either path leaves the target unmounted otherwise.)
+    // Expand every ancestor of the target so the path from the root
+    // FrameCard down to the target row is mounted by the time Vue
+    // settles. The target call's own inspection card is what hosts the
+    // PayloadViewer that JsonTree's highlight will land in — caller
+    // (SessionDetailView) is responsible for selecting it via the
+    // SELECT_CALL provider.
     const nextExp = new Map(expansionOverrides.value);
-    const nextChildren = new Map(childrenExpandedOverrides.value);
     let cur: string | undefined = addr.callId;
     while (cur != null) {
       nextExp.set(cur, true);
-      nextChildren.set(cur, true);
       cur = parentByCallId.value.get(cur);
     }
     expansionOverrides.value = nextExp;
-    childrenExpandedOverrides.value = nextChildren;
 
     // Set the address. Vue's reactivity does the rest.
     highlight.value = {
@@ -78,13 +71,11 @@ export function useNavigator(
   function collapseAll(): void {
     expansionDefault.value = false;
     expansionOverrides.value = new Map();
-    childrenExpandedOverrides.value = new Map();
   }
 
   function expandAll(): void {
     expansionDefault.value = true;
     expansionOverrides.value = new Map();
-    childrenExpandedOverrides.value = new Map();
   }
 
   // Reset to a known state when the active request changes — caller
@@ -92,7 +83,6 @@ export function useNavigator(
   function reset(): void {
     highlight.value = null;
     expansionOverrides.value = new Map();
-    childrenExpandedOverrides.value = new Map();
     expansionDefault.value = false;
   }
 
@@ -101,7 +91,6 @@ export function useNavigator(
     navTick,
     expansionDefault,
     expansionOverrides,
-    childrenExpandedOverrides,
     goto,
     expandAll,
     collapseAll,

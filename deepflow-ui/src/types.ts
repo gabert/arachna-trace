@@ -123,6 +123,20 @@ export interface OriginTarget {
   value: unknown;
 }
 
+// Instance currently being "traced" on the call tree. Selecting one
+// from a JsonTree envelope row paints bubble marks on every FrameCard
+// whose subtree contains this object_id. Mutated calls (own_hash
+// transitions on this id) get a stronger mark than plain appearances.
+export interface TraceTarget {
+  objectId: number;
+  className: string;
+}
+
+// Per-call (or per-subtree) classification used by FrameCard's bubble
+// mark. 'mutated' wins over 'appears' when both are present somewhere
+// in the rolled-up subtree.
+export type AppearanceKind = 'appears' | 'mutated';
+
 // Confidence the algorithm assigns to a match. Heuristic, not
 // authoritative — see useProvenance for the rules. UI shows it as a
 // pill so the reader can judge weak chains.

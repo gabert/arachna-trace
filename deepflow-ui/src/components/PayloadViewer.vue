@@ -7,7 +7,7 @@ import {
   MUTATED_OBJECT_IDS, ADDED_OBJECT_IDS,
   HIGHLIGHT
 } from '../keys';
-import type { OriginTarget, Path, PayloadKind, PayloadNode, Watch } from '../types';
+import type { OriginTarget, Path, PayloadKind, PayloadNode, TraceTarget, Watch } from '../types';
 
 const props = defineProps<{
   data: PayloadNode | undefined;
@@ -37,6 +37,7 @@ provide(ADDED_OBJECT_IDS, addedObjectIds);
 const emit = defineEmits<{
   (e: 'pin', payload: Watch): void;
   (e: 'origin', target: OriginTarget): void;
+  (e: 'trace', target: TraceTarget): void;
 }>();
 
 // Bubbles JsonTree's path-only origin event up with this viewer's
@@ -131,5 +132,6 @@ function onFollowCycle(targetId: number): void {
             @toggle="onToggle"
             @pin="(p) => emit('pin', p)"
             @follow-cycle="onFollowCycle"
-            @origin="onOrigin" />
+            @origin="onOrigin"
+            @trace="(t) => emit('trace', t)" />
 </template>
