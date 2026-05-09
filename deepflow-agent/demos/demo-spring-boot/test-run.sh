@@ -44,11 +44,22 @@ for i in $(seq 1 30); do
     sleep 2
 done
 
-# --- Run the demo scenario (single request, full trace) ---
+# --- Run the demo client: multiple requests, shared HTTP session ---
+COOKIE_JAR=$(mktemp)
+
 echo ""
-echo ">>> Running demo scenario (create, rename, merge, transfer)..."
-echo -n "    POST /api/library/demo-scenario ... "
-curl -sf -X POST "$BASE_URL/api/library/demo-scenario" | python -m json.tool 2>/dev/null || true
+echo ">>> Request 1: POST /api/library/demo-scenario (succeeds, mutates state)"
+curl -s -b "$COOKIE_JAR" -c "$COOKIE_JAR" -X POST "$BASE_URL/api/library/demo-scenario" \
+    | python -m json.tool 2>/dev/null || true
+
+echo ""
+echo ">>> Request 2: GET /api/authors/1/summary (throws — ISBNs were silently"
+echo "    corrupted by Request 1; the registration-group parser doesn't"
+echo "    expect dash-stripped ISBNs and propagates the exception up to"
+echo "    LibraryExceptionHandler → HTTP 500)"
+curl -s -b "$COOKIE_JAR" -c "$COOKIE_JAR" -w "\n    HTTP %{http_code}\n" "$BASE_URL/api/authors/1/summary"
+
+rm -f "$COOKIE_JAR"
 echo ""
 
 # --- Let the agent flush ---

@@ -56,6 +56,11 @@ public class LibraryController {
         return libraryService.booksByAuthor(authorId);
     }
 
+    @GetMapping("/authors/{authorId}/summary")
+    public String authorSummary(@PathVariable Long authorId) {
+        return libraryService.publishCatalogSummary(authorId);
+    }
+
     @PostMapping("/library/demo-scenario")
     public Map<String, Object> runDemoScenario() {
         return libraryService.runDemoScenario();

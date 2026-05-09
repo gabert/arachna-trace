@@ -6,7 +6,9 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Repository
@@ -127,6 +129,22 @@ public class LibraryDAO {
         return author.getBooks().stream()
                 .map(this::toBookDTO)
                 .toList();
+    }
+
+    public String summarizeRegistrationGroups(AuthorEntity author) {
+        // Builds "registration group" tally for the export header. ISBN-13
+        // is expected in canonical hyphenated form: 978-X-NNN-NNNNN-N.
+        // Segment [1] is the registration group (language / region code).
+        Map<Integer, Integer> tally = new LinkedHashMap<>();
+        for (BookEntity book : author.getBooks()) {
+            String[] parts = book.getIsbn().split("-");
+            int group = Integer.parseInt(parts[1]);
+            tally.merge(group, 1, Integer::sum);
+        }
+        StringBuilder out = new StringBuilder();
+        tally.forEach((g, n) -> out.append("group ").append(g)
+                                   .append(": ").append(n).append(" books; "));
+        return out.toString();
     }
 
     private AuthorDTO toAuthorDTO(AuthorEntity entity) {

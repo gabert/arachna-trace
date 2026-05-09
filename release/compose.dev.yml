@@ -1,0 +1,27 @@
+# Dev override for release/compose.yml — used when running the local
+# demo (with in-development agent / demo code) against the smoke stack
+# instead of the baked v0.0.2 demo image.
+#
+# Usage:
+#   docker compose -p deepflow-smoke \
+#     -f release/compose.yml \
+#     -f release/compose.dev.yml \
+#     up -d
+#
+# What it does:
+#   - Exposes the collector's :8099 to the host so the local agent
+#     (running outside docker) can POST records to it.
+#   - Disables demo-spring-boot and demo-traffic via a "disabled"
+#     profile, so they don't start (the local demo replaces them).
+
+services:
+
+  collector:
+    ports:
+      - "8099:8099"
+
+  demo-spring-boot:
+    profiles: ["disabled"]
+
+  demo-traffic:
+    profiles: ["disabled"]

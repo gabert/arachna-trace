@@ -80,7 +80,11 @@ const callHighlight = inject(CALL_HIGHLIGHT, {
 });
 const isHighlighted = computed(() => callHighlight.callId.value === props.call.call_id);
 const rowEl = ref<HTMLElement | null>(null);
-useScrollIntoViewOnHighlight(rowEl, isHighlighted, callHighlight.tick);
+// runOnMount: highlightCall() in CallTreePanel auto-expands ancestors,
+// which can cause this FrameCard to mount with isHighlighted already
+// true. The post-flush watch wouldn't fire in that case; the onMount
+// hook handles it.
+useScrollIntoViewOnHighlight(rowEl, isHighlighted, callHighlight.tick, { runOnMount: true });
 
 const expanded = computed<boolean>({
   get() {
@@ -162,17 +166,18 @@ function layerOf(signature: string | null | undefined): Layer {
 
 <style scoped>
 .rec-row { border-top: 1px solid var(--border); list-style: none; }
-/* Exception rows pop with a stronger red tint and a solid red bar on
-   the very left edge, so a failed call is scannable from across the
-   tree. Selected + exception combine via the box-shadow staying put
-   while the background tint stacks. */
-.rec-row.exception {
+/* Exception rows: red background tint bounded to the row head, so a
+   chain of nested exception rows doesn't paint the parent's
+   indentation gutter and merge into one continuous red column. Same
+   reasoning applies to the `selected` tint — it lives on the head,
+   not the whole <li>. `.open` stays on the <li> on purpose: it tints
+   the expanded body so the children read as a grouped block. */
+.rec-row.exception > .rec-head {
   background: rgba(248, 113, 113, 0.10);
-  box-shadow: inset 3px 0 0 var(--accent-red);
 }
 .rec-row.open      { background: var(--bg-base); }
-.rec-row.selected  { background: rgba(96, 165, 250, 0.12); }
-.rec-row.selected.exception { background: rgba(248, 113, 113, 0.18); }
+.rec-row.selected  > .rec-head { background: rgba(96, 165, 250, 0.12); }
+.rec-row.selected.exception > .rec-head { background: rgba(248, 113, 113, 0.18); }
 /* Programmatic highlight from CallTreePanel.highlightCall — amber
    outline matching JsonTree's flash and the trace banner palette,
    so trace ↑/↓ navigation reads as one feature. Outline lives on

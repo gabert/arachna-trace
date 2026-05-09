@@ -17,6 +17,7 @@ import { useProvenance } from '../composables/useProvenance';
 import { useValueSearch } from '../composables/useValueSearch';
 import { useInspectionStack } from '../composables/useInspectionStack';
 import { useInstanceTrace } from '../composables/useInstanceTrace';
+import { useExceptionNav } from '../composables/useExceptionNav';
 import { useToolStrip, type ToolId } from '../composables/useToolStrip';
 import {
   PAYLOADS_BY_CALL_ID, CHILDREN_BY_PARENT,
@@ -141,6 +142,19 @@ function selectCall(id: string): void {
   if (loc) goto({ callId: id, kind: loc.kind, path: loc.path });
 }
 
+// Exception navigator for the fixed header in the call tree. Reuses
+// selectCall (so the inspection card opens the same way a row click
+// would) and the call-tree row-flash. Cursor is derived from the
+// stack's selectedCallId, so request-change resets fall through for
+// free.
+const exceptionNav = useExceptionNav({
+  calls,
+  callMeta,
+  selectedCallId: stack.selectedCallId,
+  selectCall,
+  highlightCallRow: (callId) => callTreeRef.value?.highlightCall(callId)
+});
+
 // Watch model. Local to this view because it scopes to one
 // (session, request) — moving requests should clear watches.
 const watches = ref<Watch[]>([]);
@@ -252,12 +266,17 @@ watch(trace.inspectedInstance, (v) => {
                          :rootCalls="rootCalls"
                          :callsLoading="loadingCalls"
                          :hasNoCalls="!calls.length && selectedRequestId != null"
+                         :parentByCallId="parentByCallId"
+                         :exceptionCount="exceptionNav.exceptionCount.value"
+                         :exceptionCursor="exceptionNav.exceptionCursor.value"
                          :inspectedInstance="trace.inspectedInstance.value"
                          :inspectedShortClass="trace.inspectedShortClass.value"
                          :inspectedCount="trace.inspectedCount.value"
                          :traceCursor="trace.traceCursor.value"
                          @pin="pinWatch"
                          @origin="setOrigin"
+                         @goto-prev-exception="exceptionNav.gotoPrevException"
+                         @goto-next-exception="exceptionNav.gotoNextException"
                          @goto-prev-appearance="trace.gotoPrevAppearance"
                          @goto-next-appearance="trace.gotoNextAppearance"
                          @clear-instance="trace.clearInspectedInstance" />

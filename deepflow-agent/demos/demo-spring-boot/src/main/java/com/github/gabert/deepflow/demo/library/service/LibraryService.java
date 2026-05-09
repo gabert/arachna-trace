@@ -87,6 +87,18 @@ public class LibraryService {
         return result;
     }
 
+    // Catalog summary — parses the registration group out of each book's
+    // ISBN. Expects the canonical hyphenated form (978-X-NNN-NNNNN-N).
+    // Throws ArrayIndexOutOfBoundsException if any ISBN is missing
+    // dashes — which is exactly what runDemoScenario's Step 2 leaves
+    // behind. Wired through GET /api/authors/{id}/summary so the demo
+    // client can drive it as a separate request and see the exception
+    // propagate independently of the data-corrupting scenario.
+    public String publishCatalogSummary(Long authorId) {
+        AuthorEntity author = libraryDAO.findAuthorEntityById(authorId);
+        return libraryDAO.summarizeRegistrationGroups(author);
+    }
+
     public Map<String, Object> prepareCatalogExport(Long authorId) {
         Map<String, Object> export = new LinkedHashMap<>();
 
