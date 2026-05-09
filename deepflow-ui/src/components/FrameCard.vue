@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, inject, ref } from 'vue';
+import { computed, inject, ref, watch } from 'vue';
 import FrameChildrenGroup from './FrameChildrenGroup.vue';
 import { fmtTime, shortSig } from '../util/format';
 import {
   CHILDREN_BY_PARENT,
   EXPANSION_DEFAULT, EXPANSION_OVERRIDES,
   SELECT_CALL, SELECTED_CALL_ID,
-  INSPECTED_INSTANCE, SUBTREE_APPEARANCES_BY_CALL_ID
+  INSPECTED_INSTANCE, INSTANCE_APPEARANCES_BY_CALL_ID,
+  HIGHLIGHTED_CALL_ID, HIGHLIGHT_CALL_TICK,
+  NAVIGATE_TO_APPEARANCE
 } from '../keys';
 import type { AppearanceKind, CallRow, OriginTarget, TraceTarget, Watch } from '../types';
 
@@ -36,24 +38,70 @@ const selectedCallId = inject(SELECTED_CALL_ID, ref<string | null>(null));
 const isSelected = computed(() => selectedCallId.value === props.call.call_id);
 function select(): void { selectCall(props.call.call_id); }
 
-// Bubble mark for the inspected instance. The "subtree" map already
-// rolls a descendant's mark up to this row, so a collapsed parent
-// shows an indicator when something below it touches the instance.
+// Bubble mark for the inspected instance — direct appearances only.
+// Collapsed parents do NOT inherit a descendant's mark; the trace
+// banner's ↑/↓ navigation is the right primitive for "find the
+// next call that touches this instance".
 const inspectedInstance = inject(INSPECTED_INSTANCE, ref<TraceTarget | null>(null));
-const subtreeAppearancesByCallId = inject(SUBTREE_APPEARANCES_BY_CALL_ID,
+const instanceAppearancesByCallId = inject(INSTANCE_APPEARANCES_BY_CALL_ID,
   computed(() => new Map<string, AppearanceKind>()));
 const tracingActive = computed(() => inspectedInstance.value != null);
 const bubbleKind = computed<AppearanceKind | null>(() =>
-  subtreeAppearancesByCallId.value.get(props.call.call_id) || null);
+  instanceAppearancesByCallId.value.get(props.call.call_id) || null);
 const bubbleTitle = computed(() => {
   if (!inspectedInstance.value) return '';
   const inst = inspectedInstance.value;
   const cls = String(inst.className).split('.').pop() || inst.className;
   if (bubbleKind.value === 'mutated') {
-    return `${cls} #${inst.objectId} — own_hash changes inside this subtree (this call or a descendant mutates the instance)`;
+    return `Click to inspect — ${cls} #${inst.objectId} is mutated here (own_hash changes between AR and AX)`;
   }
-  return `${cls} #${inst.objectId} — appears inside this subtree`;
+  return `Click to inspect — ${cls} #${inst.objectId} appears here`;
 });
+
+// Random-access bubble click: jumps the workspace to this exact
+// appearance (opens inspection card pointed at the instance's path,
+// flashes + scrolls the row in the tree). Same end state as ↑/↓
+// landing on this row.
+const navigateToAppearance = inject(NAVIGATE_TO_APPEARANCE, (_id: string) => {});
+function onBubbleClick(): void {
+  if (!bubbleKind.value) return;
+  navigateToAppearance(props.call.call_id);
+}
+
+// Programmatic highlight from CallTreePanel.highlightCall(). Distinct
+// from `selected` (persistent, blue, tracks the open inspection card)
+// — this is the search-cursor pointer set by the parent after trace
+// nav etc. Two coverage paths for scrollIntoView, mirroring the
+// JsonTree pattern: an isHighlighted watch (catches highlight/clear
+// transitions) and a tick watch (catches re-highlights of the same
+// call where isHighlighted didn't transition).
+const highlightedCallId = inject(HIGHLIGHTED_CALL_ID, ref<string | null>(null));
+const highlightTick = inject(HIGHLIGHT_CALL_TICK, ref(0));
+const isHighlighted = computed(() => highlightedCallId.value === props.call.call_id);
+const rowEl = ref<HTMLElement | null>(null);
+
+function scrollSelfIfHighlighted(): void {
+  if (!isHighlighted.value || !rowEl.value) return;
+  requestAnimationFrame(() => {
+    if (!isHighlighted.value || !rowEl.value) return;
+    if (isFullyVisible(rowEl.value)) return;
+    rowEl.value.scrollIntoView({ block: 'center' });
+  });
+}
+function isFullyVisible(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  let parent: HTMLElement | null = el.parentElement;
+  while (parent) {
+    const style = window.getComputedStyle(parent);
+    if (style.overflowY === 'auto' || style.overflowY === 'scroll') break;
+    parent = parent.parentElement;
+  }
+  const top = parent ? parent.getBoundingClientRect().top : 0;
+  const bottom = parent ? parent.getBoundingClientRect().bottom : window.innerHeight;
+  return rect.top >= top && rect.bottom <= bottom;
+}
+watch(isHighlighted, scrollSelfIfHighlighted, { flush: 'post' });
+watch(highlightTick, scrollSelfIfHighlighted, { flush: 'post' });
 
 const expanded = computed<boolean>({
   get() {
@@ -84,32 +132,29 @@ function layerOf(signature: string | null | undefined): Layer {
   return 'other';
 }
 
-// Compact glyph for the return-type chip on the row. Tooltip carries
-// the full word for readers who don't recognise the symbol.
-const RETURN_GLYPH: Record<string, string> = {
-  VOID:      '⊘',
-  VALUE:     '↵',
-  EXCEPTION: '⚠'
-};
-const returnGlyph = computed(() => RETURN_GLYPH[props.call.return_type] || '·');
 </script>
 
 <template>
-  <li class="rec-row"
-      :class="['layer-' + layer, { open: expanded, exception: call.is_exception, leaf: !hasChildren, selected: isSelected }]">
+  <li ref="rowEl" class="rec-row"
+      :class="['layer-' + layer, { open: expanded, exception: call.is_exception, leaf: !hasChildren, selected: isSelected, highlighted: isHighlighted }]">
     <div class="rec-head">
-      <button class="rec-disclosure-btn"
-              @click.stop="toggle"
-              :title="expanded ? 'Collapse' : 'Expand'">
-        <span class="rec-disclosure">{{ expanded ? '▾' : '▸' }}</span>
-      </button>
-      <span v-if="tracingActive"
-            class="rec-bubble"
-            :class="bubbleKind || 'empty'"
-            :title="bubbleTitle"></span>
-      <button class="rec-select-btn"
-              @click="select"
+      <!-- Whole-row click toggles expansion: browsing the call tree is
+           the primary interaction when first reading a trace. Showing
+           values is opt-in via the explicit ↗ inspect button on the
+           right edge of the row. The bubble is its own button, so
+           it lives outside .rec-row-btn (nested <button> is invalid
+           HTML); when no row matches the trace, an empty span
+           reserves the same width to keep alignment stable. -->
+      <button v-if="tracingActive && bubbleKind"
+              class="rec-bubble"
+              :class="bubbleKind"
+              :title="bubbleTitle"
+              @click.stop="onBubbleClick">→</button>
+      <span v-else-if="tracingActive" class="rec-bubble empty" aria-hidden="true"></span>
+      <button class="rec-row-btn"
+              @click="toggle"
               :title="call.signature">
+        <span class="rec-disclosure">{{ expanded ? '▾' : '▸' }}</span>
         <span class="rec-time">{{ fmtTime(call.ts_in) }}</span>
         <span class="rec-dur">{{ call.duration_ms }} ms</span>
         <span class="layer-stripe" :class="'layer-' + layer"></span>
@@ -119,10 +164,10 @@ const returnGlyph = computed(() => RETURN_GLYPH[props.call.return_type] || '·')
               :title="children.length + ' nested call' + (children.length === 1 ? '' : 's')">
           {{ children.length }}↳
         </span>
-        <span class="rec-ret"
-              :class="(call.return_type || 'VOID').toLowerCase()"
-              :title="call.return_type">{{ returnGlyph }}</span>
       </button>
+      <button class="rec-inspect-btn"
+              @click.stop="select"
+              title="Inspect TI / AR / AX / RE in the right pane">↗</button>
     </div>
 
     <!-- Body now carries only the nested call structure. TI / AR / AX
@@ -149,11 +194,24 @@ const returnGlyph = computed(() => RETURN_GLYPH[props.call.return_type] || '·')
 .rec-row.open      { background: var(--bg-base); }
 .rec-row.selected  { background: rgba(96, 165, 250, 0.12); }
 .rec-row.selected.exception { background: rgba(248, 113, 113, 0.18); }
+/* Programmatic highlight from CallTreePanel.highlightCall — amber
+   outline matching JsonTree's flash and the trace banner palette,
+   so trace ↑/↓ navigation reads as one feature. Outline lives on
+   the head row only (NOT the whole .rec-row li, which contains the
+   nested-children body when expanded — outlining that wraps the
+   entire subtree). Persistent until the next highlightCall or trace
+   clear; not a transient flash. */
+.rec-row.highlighted > .rec-head {
+  outline: 2px solid #fbbf24;
+  outline-offset: -2px;
+  border-radius: 3px;
+}
 
-/* Row head splits into two click targets. Disclosure on the left
-   toggles expansion; the rest of the row selects this call as the
-   inspection target. Wrapping div carries hover/selected styling so
-   the whole row reads as a single visual unit. */
+/* Row head: one big click target that toggles expansion (the whole
+   row, including the disclosure glyph) plus a small inspect button
+   on the right edge that opens the call's TI / AR / AX / RE in the
+   right pane. Wrapping div carries hover/selected styling so the
+   whole row reads as a single visual unit. */
 .rec-head {
   display: flex; align-items: stretch;
   color: var(--text-primary);
@@ -161,43 +219,89 @@ const returnGlyph = computed(() => RETURN_GLYPH[props.call.return_type] || '·')
 }
 .rec-head:hover { background: var(--bg-hover); }
 
-.rec-disclosure-btn,
-.rec-select-btn {
-  background: none; border: 0; color: inherit; cursor: pointer;
-  font: inherit; text-align: left; padding: 0;
-}
-.rec-disclosure-btn {
-  padding: 0.3rem 0.35rem 0.3rem 0.5rem;
-  flex-shrink: 0;
-}
-.rec-disclosure-btn:hover .rec-disclosure { color: var(--text-primary); }
-.rec-select-btn {
+.rec-row-btn {
   flex: 1;
   display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.3rem 0.5rem 0.3rem 0;
+  background: none; border: 0; color: inherit; cursor: pointer;
+  font: inherit; text-align: left;
+  padding: 0.3rem 0.5rem 0.3rem 0.5rem;
   min-width: 0;
+}
+.rec-row-btn:hover .rec-disclosure { color: var(--text-primary); }
+
+/* Inspect arrow on the right edge — chip-styled affordance to "open
+   in right pane". Same blue palette as JsonTree's ⊕ watch chip so
+   the per-row interactive elements share a visual language. */
+.rec-inspect-btn {
+  background: rgba(96, 165, 250, 0.18);
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  color: #93c5fd;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.1rem 0.5rem;
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+  align-self: center;
+  margin: 0 0.5rem 0 0.4rem;
+}
+.rec-inspect-btn:hover {
+  background: rgba(96, 165, 250, 0.32);
+  color: #bfdbfe;
+}
+.rec-row.selected .rec-inspect-btn {
+  background: rgba(96, 165, 250, 0.32);
+  color: #bfdbfe;
 }
 
 .rec-disclosure { width: 1ch; color: var(--text-muted); user-select: none; }
 
-/* Bubble mark for the inspected instance. Reserved column appears on
-   every row only while tracing is active, so the rest of the tree
-   stays unaffected when no instance is selected. The mark itself
-   only paints on rows whose subtree actually contains the instance —
-   absent rows render an empty placeholder of equal width so the
-   alignment doesn't ripple. Sized + glow-haloed so the eye lands on
-   it from across the tree, not just at hover distance. */
+/* Bubble for the inspected instance — chip with → glyph that suggests
+   "click to go there". Random-access alternative to ↑/↓ stepping;
+   uses → to distinguish from the right-edge ↗ inspect chip ("open in
+   right pane"). Reserved column appears on every row only while
+   tracing is active so the rest of the tree stays unaffected when
+   nothing's traced. Empty rows render a same-width span so alignment
+   doesn't ripple. */
 .rec-bubble {
-  width: 0.9rem;
-  height: 0.9rem;
-  border-radius: 50%;
   flex-shrink: 0;
   align-self: center;
-  margin: 0 0.35rem 0 0.15rem;
+  margin: 0 0.4rem 0 0.45rem;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1;
+  border-radius: 3px;
+  border: 1px solid;
+  cursor: pointer;
+  font-family: inherit;
 }
-.rec-bubble.appears { background: var(--accent-blue); }
-.rec-bubble.mutated { background: var(--accent-amber); }
-.rec-bubble.empty   { background: transparent; }
+.rec-bubble.appears {
+  background: rgba(96, 165, 250, 0.32);
+  border-color: rgba(96, 165, 250, 0.65);
+  color: #bfdbfe;
+}
+.rec-bubble.appears:hover {
+  background: rgba(96, 165, 250, 0.55);
+  color: #dbeafe;
+}
+.rec-bubble.mutated {
+  background: rgba(251, 191, 36, 0.32);
+  border-color: rgba(251, 191, 36, 0.65);
+  color: #fde68a;
+}
+.rec-bubble.mutated:hover {
+  background: rgba(251, 191, 36, 0.55);
+  color: #fef3c7;
+}
+.rec-bubble.empty {
+  /* Same-width invisible placeholder so non-appearance rows align. */
+  visibility: hidden;
+  cursor: default;
+  background: transparent;
+  border-color: transparent;
+}
 
 .layer-stripe { width: 3px; height: 1.1rem; border-radius: 2px; flex-shrink: 0; }
 .layer-stripe.layer-controller { background: #60a5fa; }
@@ -222,23 +326,9 @@ const returnGlyph = computed(() => RETURN_GLYPH[props.call.return_type] || '·')
   flex-shrink: 0;
 }
 
-/* Return-type now rendered as a single glyph (⊘ void / ↵ value /
-   ⚠ exception) — keeps the row compact and scannable. Tooltip
-   carries the full word. */
-.rec-ret {
-  font-size: 0.95rem;
-  line-height: 1;
-  padding: 0.1rem 0.35rem;
-  border-radius: 3px;
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  flex-shrink: 0;
-  text-align: center;
-  min-width: 1.6rem;
-}
-.rec-ret.value     { background: rgba(110, 231, 183, 0.15); color: #6ee7b7; }
-.rec-ret.exception { background: rgba(248, 113, 113, 0.22); color: #fca5a5; }
-.rec-ret.void      { background: var(--bg-elevated); color: var(--text-muted); }
+/* Return-type chip removed; exception rows are already signaled by
+   the red row treatment, void/value distinction wasn't carrying its
+   weight. */
 
 .rec-body {
   padding: 0.25rem 0 0.25rem 1.4rem;

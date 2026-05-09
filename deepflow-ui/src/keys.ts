@@ -84,9 +84,35 @@ export const SELECTED_CALL_ID: InjectionKey<Ref<string | null>> =
 export const INSPECTED_INSTANCE: InjectionKey<Ref<TraceTarget | null>> =
   Symbol('inspectedInstance');
 
-// Per-callId classification of the inspected instance, rolled up so a
-// collapsed parent shows the strongest mark from any descendant. Empty
-// map when no instance is being traced. FrameCard reads its own entry
-// (subtreeAppearances.get(call_id)) to decide which mark to render.
-export const SUBTREE_APPEARANCES_BY_CALL_ID: InjectionKey<ComputedRef<Map<string, AppearanceKind>>> =
-  Symbol('subtreeAppearancesByCallId');
+// Per-callId classification of the inspected instance — direct
+// appearances only (no subtree rollup; collapsed parents do NOT
+// inherit a descendant's mark). Empty map when no instance is being
+// traced. FrameCard reads its own entry to decide which mark to
+// render. Bubbling-up was tried and rejected (2026-05-09) — it
+// conflated "instance is here" with "instance is somewhere below
+// here", which the trace banner's ↑/↓ navigation handles better.
+export const INSTANCE_APPEARANCES_BY_CALL_ID: InjectionKey<ComputedRef<Map<string, AppearanceKind>>> =
+  Symbol('instanceAppearancesByCallId');
+
+// "You are here" pointer for the call tree, distinct from selection.
+// CallTreePanel owns this ref and exposes highlightCall(callId) as
+// the public API for parents to flash + scroll a row into view —
+// e.g. on trace ↑/↓ nav. FrameCard reads its own entry, renders the
+// highlight class, and scrolls into view on the watched transition.
+export const HIGHLIGHTED_CALL_ID: InjectionKey<Ref<string | null>> =
+  Symbol('highlightedCallId');
+
+// Counter bumped on every highlightCall(), so re-highlighting the
+// same row still re-fires FrameCard's scroll-into-view watcher.
+// Same trick the navigator uses with NAV_TICK for the JSON-node
+// highlight.
+export const HIGHLIGHT_CALL_TICK: InjectionKey<Ref<number>> =
+  Symbol('highlightCallTick');
+
+// Random-access nav for the inspected instance — click the bubble on
+// any appearance row to jump there directly, equivalent to using ↑/↓
+// to step through the chronological list. SessionDetailView provides
+// the impl (gotoAndSelect + highlightCall in one shot); FrameCard
+// invokes it from the bubble's click handler.
+export const NAVIGATE_TO_APPEARANCE: InjectionKey<(callId: string) => void> =
+  Symbol('navigateToAppearance');

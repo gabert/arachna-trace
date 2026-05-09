@@ -2,10 +2,9 @@
 import { computed, provide, ref, toRef, watch } from 'vue';
 import Select from 'primevue/select';
 import Message from 'primevue/message';
-import ProgressSpinner from 'primevue/progressspinner';
 import Splitter from 'primevue/splitter';
 import SplitterPanel from 'primevue/splitterpanel';
-import FrameCard from '../components/FrameCard.vue';
+import CallTreePanel from '../components/CallTreePanel.vue';
 import CallInspectionCard from '../components/CallInspectionCard.vue';
 import WatchPanel from '../components/WatchPanel.vue';
 import MutationsPanel from '../components/MutationsPanel.vue';
@@ -23,9 +22,11 @@ import {
   MUTATED_OBJECTS_BY_CALL_ID, ADDED_OBJECTS_BY_CALL_ID,
   HIGHLIGHT, NAV_TICK,
   SELECT_CALL, SELECTED_CALL_ID,
-  INSPECTED_INSTANCE, SUBTREE_APPEARANCES_BY_CALL_ID
+  INSPECTED_INSTANCE, INSTANCE_APPEARANCES_BY_CALL_ID,
+  NAVIGATE_TO_APPEARANCE
 } from '../keys';
-import type { AppearanceKind, CallRow, JumpAddress, OriginTarget, TraceTarget, Watch } from '../types';
+import { findPathToObjectId } from '../util/envelope';
+import type { AppearanceKind, CallRow, JumpAddress, OriginTarget, Path, PayloadKind, TraceTarget, Watch } from '../types';
 
 
 const props = defineProps<{ sessionId: string }>();
@@ -117,7 +118,21 @@ const valueSearch = useValueSearch(sessionIdRef, selectedRequestId);
 // Currently-inspected call. Drives CallInspectionCard in the center
 // pane and the "selected" affordance on FrameCard rows.
 const selectedCallId = ref<string | null>(null);
-function selectCall(id: string): void { selectedCallId.value = id; }
+
+// Bare setter — used by gotoAndSelect (which already carries its own
+// kind/path target) and by the request-change reset. Manual row
+// clicks go through selectCall() below, which adds auto-navigation
+// to the inspected instance when tracing is active.
+function setSelectedCallId(id: string | null): void {
+  selectedCallId.value = id;
+}
+
+// SELECT_CALL provider — called by FrameCard on manual row click.
+// When an instance is being traced AND this call has the instance,
+// auto-navigates the right-pane PayloadViewer to where the instance
+// lives so the developer doesn't have to hunt for it among TI / AR /
+// AX / RE. Defined later (after gotoAndSelect / instanceAppearances /
+// findInstanceLocation are in scope) — see selectCall below.
 const callsById = computed<Map<string, CallRow>>(() => {
   const m = new Map<string, CallRow>();
   for (const c of calls.value) m.set(c.call_id, c);
@@ -184,17 +199,19 @@ function setInspectedInstance(t: TraceTarget): void {
 }
 function clearInspectedInstance(): void { inspectedInstance.value = null; }
 
-// Per-call own-appearance kind for the inspected instance: 'mutated'
-// when this call's own_hash for the instance changed (AR vs AX),
-// 'appears' when the instance is just present in any of the call's
-// payloads, undefined otherwise. Mutation overrides appearance.
+// Per-call appearance kind for the inspected instance: 'mutated' when
+// this call's own_hash for the instance changed (AR vs AX), 'appears'
+// when the instance is just present in any of the call's payloads.
+// Direct only — no subtree rollup. The trace banner's ↑/↓ buttons
+// handle navigation across the chronological appearance list, which
+// is the right primitive for "where else does this instance live".
 //
 // Walks parsed payload JSON for envelopes whose __meta__.id matches.
 // Doesn't rely on PayloadRow.object_ids — that column is sometimes
 // absent from the request-payloads endpoint, and walking the parsed
 // tree we already have is cheap (one pass per trace change, runs
 // only when inspectedInstance is non-null).
-const ownAppearancesByCallId = computed<Map<string, AppearanceKind>>(() => {
+const instanceAppearancesByCallId = computed<Map<string, AppearanceKind>>(() => {
   const out = new Map<string, AppearanceKind>();
   const inst = inspectedInstance.value;
   if (!inst) return out;
@@ -213,51 +230,97 @@ const ownAppearancesByCallId = computed<Map<string, AppearanceKind>>(() => {
   return out;
 });
 
-// Rolled-up subtree appearance kind: a collapsed parent shows the
-// strongest mark from any descendant. One post-order walk per
-// inspectedInstance change. 'mutated' wins over 'appears'.
-const subtreeAppearancesByCallId = computed<Map<string, AppearanceKind>>(() => {
-  const own = ownAppearancesByCallId.value;
-  const result = new Map<string, AppearanceKind>();
-  if (!inspectedInstance.value) return result;
-  const cbp = childrenByParent.value;
-  // Iterative post-order so deep trees don't blow the stack.
-  type Frame = { id: string; childIdx: number };
-  // Walk every call once, starting from each root (or any unvisited).
-  for (const c of calls.value) {
-    if (result.has(c.call_id)) continue;
-    const stack: Frame[] = [{ id: c.call_id, childIdx: 0 }];
-    while (stack.length) {
-      const top = stack[stack.length - 1];
-      const kids = cbp.get(top.id) || [];
-      if (top.childIdx < kids.length) {
-        const k = kids[top.childIdx++];
-        if (!result.has(k.call_id)) {
-          stack.push({ id: k.call_id, childIdx: 0 });
-        }
-      } else {
-        let kind: AppearanceKind | undefined = own.get(top.id);
-        for (const k of kids) {
-          const childKind = result.get(k.call_id);
-          if (childKind === 'mutated') { kind = 'mutated'; break; }
-          if (childKind === 'appears' && kind !== 'mutated') kind = 'appears';
-        }
-        if (kind) result.set(top.id, kind);
-        stack.pop();
-      }
-    }
-  }
-  return result;
+// Chronologically-ordered list of call ids where the instance appears.
+// Sorted by callMeta.pre (DFS pre-order) — same total ordering the
+// rest of the UI uses for "what happened next?". Drives ↑/↓ navigation
+// in the trace banner.
+const orderedAppearanceCallIds = computed<string[]>(() => {
+  const ids = Array.from(instanceAppearancesByCallId.value.keys());
+  const meta = callMeta.value;
+  ids.sort((a, b) => (meta.get(a)?.pre ?? 0) - (meta.get(b)?.pre ?? 0));
+  return ids;
 });
 
-const inspectedCount = computed(() =>
-  Array.from(ownAppearancesByCallId.value.values()).length);
+const inspectedCount = computed(() => orderedAppearanceCallIds.value.length);
+
+// Cursor is derived from the current selection: if the selected call
+// is in the appearance list, that's our position; otherwise -1 (no
+// position, ↓ goes to first / ↑ goes to last). Manual clicks update
+// the counter naturally without a separate state ref to keep in sync.
+const traceCursor = computed<number>(() => {
+  const id = selectedCallId.value;
+  if (!id) return -1;
+  return orderedAppearanceCallIds.value.indexOf(id);
+});
+
+// Walk the call's payloads to find where the instance lives, so the
+// JsonTree highlight can land on the actual envelope. Prefers TI →
+// AR → AX → RE (the order they were observed in this call).
+const PAYLOAD_KIND_ORDER: PayloadKind[] = ['TI', 'AR', 'AX', 'RE'];
+function findInstanceLocation(callId: string, objectId: number): { kind: PayloadKind; path: Path } | null {
+  const ps = payloadsByCallId.value.get(callId) || [];
+  for (const k of PAYLOAD_KIND_ORDER) {
+    const p = ps.find(x => x.kind === k);
+    if (!p?.parsed) continue;
+    const path = findPathToObjectId(p.parsed, objectId);
+    if (path) return { kind: k, path };
+  }
+  return null;
+}
+
+// Ref to the call-tree panel so we can call its public highlightCall
+// method after a programmatic navigation. The panel owns the highlight
+// state internally — this view doesn't poke at FrameCard rows directly.
+const callTreeRef = ref<InstanceType<typeof CallTreePanel> | null>(null);
+
+// Random-access nav: jump to a specific appearance call by id. Used
+// by both the trace ↑/↓ buttons (via index → callId) and the bubble
+// click affordance on each FrameCard row. Both flash the row and
+// open the inspection card pointed at the instance's path.
+function gotoAppearanceForCall(callId: string): void {
+  const inst = inspectedInstance.value;
+  if (!inst) return;
+  const loc = findInstanceLocation(callId, inst.objectId);
+  gotoAndSelect({
+    callId,
+    kind: loc?.kind || 'AR',
+    path: loc?.path || []
+  });
+  // Flash + scroll the call row in the tree, separate from the JSON-
+  // node highlight that gotoAndSelect drives inside the inspection
+  // card. Both fire together so the user sees "you are here" on both
+  // sides of the workspace.
+  callTreeRef.value?.highlightCall(callId);
+}
+function gotoAppearanceAt(index: number): void {
+  const ids = orderedAppearanceCallIds.value;
+  if (!ids.length) return;
+  const wrapped = ((index % ids.length) + ids.length) % ids.length;
+  gotoAppearanceForCall(ids[wrapped]);
+}
+function gotoNextAppearance(): void { gotoAppearanceAt(traceCursor.value + 1); }
+function gotoPrevAppearance(): void { gotoAppearanceAt(traceCursor.value - 1); }
 
 const inspectedShortClass = computed(() => {
   const c = inspectedInstance.value?.className;
   if (!c) return '';
   return String(c).split('.').pop() || c;
 });
+
+// Manual row-click handler. Sets the selection AND, when an instance
+// is being traced, auto-navigates the inspection card's PayloadViewer
+// to where the instance lives so the developer doesn't have to hunt
+// for it among TI / AR / AX / RE. gotoAndSelect (used for programmatic
+// jumps from tool panels) bypasses this — those carry their own
+// kind/path target.
+function selectCall(id: string): void {
+  setSelectedCallId(id);
+  const inst = inspectedInstance.value;
+  if (!inst) return;
+  if (!instanceAppearancesByCallId.value.has(id)) return;
+  const loc = findInstanceLocation(id, inst.objectId);
+  if (loc) goto({ callId: id, kind: loc.kind, path: loc.path });
+}
 
 provide(PAYLOADS_BY_CALL_ID, payloadsByCallId);
 provide(CHILDREN_BY_PARENT, childrenByParent);
@@ -270,16 +333,17 @@ provide(NAV_TICK, navTick);
 provide(SELECT_CALL, selectCall);
 provide(SELECTED_CALL_ID, selectedCallId);
 provide(INSPECTED_INSTANCE, inspectedInstance);
-provide(SUBTREE_APPEARANCES_BY_CALL_ID, subtreeAppearancesByCallId);
+provide(INSTANCE_APPEARANCES_BY_CALL_ID, instanceAppearancesByCallId);
+provide(NAVIGATE_TO_APPEARANCE, gotoAppearanceForCall);
 
 // Jumps from tool panels (mutations, watches, origin, search) need to
 // land in a mounted PayloadViewer to drive the highlight scroll. The
 // only PayloadViewers now live inside CallInspectionCard, so a jump
 // must also select the target call (and uncollapse it if it was a
-// collapsed pinned card). This wraps the navigator's goto so panels
-// don't need to know about the inspection model.
+// collapsed pinned card). Uses setSelectedCallId (bare) so the
+// caller's own kind/path isn't overwritten by selectCall's auto-nav.
 function gotoAndSelect(addr: JumpAddress): void {
-  selectCall(addr.callId);
+  setSelectedCallId(addr.callId);
   if (collapsedCards.value.has(addr.callId)) {
     const next = new Set(collapsedCards.value);
     next.delete(addr.callId);
@@ -352,6 +416,13 @@ watch(selectedRequestId, () => {
   provenance.clear();
   resetNavigator();
 });
+
+// Clearing the trace target also clears the call-tree highlight so a
+// stale "you are here" outline doesn't linger on a row that no longer
+// has any reason to be highlighted.
+watch(inspectedInstance, (v) => {
+  if (v == null) callTreeRef.value?.clearHighlight();
+});
 </script>
 
 <template>
@@ -388,26 +459,19 @@ watch(selectedRequestId, () => {
     <div class="workspace-row">
       <Splitter class="workspace" stateKey="deepflow-session-splitter-v2" stateStorage="local">
         <SplitterPanel :size="50" :minSize="25" class="left-pane">
-          <div v-if="loadingCalls" class="centered"><ProgressSpinner style="width:2rem;height:2rem" /></div>
-
-          <div v-if="inspectedInstance" class="trace-banner">
-            <span class="trace-label">🔎 Tracing</span>
-            <code class="trace-target">{{ inspectedShortClass }} #{{ inspectedInstance.objectId }}</code>
-            <span class="trace-count">{{ inspectedCount }} appearance{{ inspectedCount === 1 ? '' : 's' }}</span>
-            <button class="trace-clear" @click="clearInspectedInstance" title="Clear trace">×</button>
-          </div>
-
-          <ol v-if="!loadingCalls" class="recording" :start="1">
-            <FrameCard v-for="call in rootCalls"
-                       :key="call.call_id"
-                       :call="call"
-                       @pin="pinWatch"
-                       @origin="setOrigin" />
-          </ol>
-
-          <p v-if="!loadingCalls && !calls.length && selectedRequestId != null" class="muted centered">
-            no calls in this request
-          </p>
+          <CallTreePanel ref="callTreeRef"
+                         :rootCalls="rootCalls"
+                         :callsLoading="loadingCalls"
+                         :hasNoCalls="!calls.length && selectedRequestId != null"
+                         :inspectedInstance="inspectedInstance"
+                         :inspectedShortClass="inspectedShortClass"
+                         :inspectedCount="inspectedCount"
+                         :traceCursor="traceCursor"
+                         @pin="pinWatch"
+                         @origin="setOrigin"
+                         @goto-prev-appearance="gotoPrevAppearance"
+                         @goto-next-appearance="gotoNextAppearance"
+                         @clear-instance="clearInspectedInstance" />
         </SplitterPanel>
 
         <SplitterPanel :size="50" :minSize="20" class="inspection-pane">
@@ -541,42 +605,8 @@ watch(selectedRequestId, () => {
    doesn't need it because the DataTable header already has padding. */
 :deep(.workspace .left-pane) { padding: 0.25rem 0; }
 
-.recording { list-style: none; padding: 0; margin: 0; }
-
-/* Trace banner — appears above the call tree when an instance is
-   being traced. Amber palette matches the .jt-trace button and the
-   bubble marks it paints, so the user reads them as one feature. */
-.trace-banner {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.4rem 0.75rem;
-  margin: 0 0.25rem 0.25rem;
-  background: rgba(251, 191, 36, 0.10);
-  border: 1px solid rgba(251, 191, 36, 0.35);
-  border-radius: 4px;
-  font-size: 0.8rem;
-}
-.trace-label { color: #fcd34d; font-weight: 600; }
-.trace-target {
-  font-family: ui-monospace, monospace;
-  color: var(--text-primary);
-  background: var(--bg-elevated);
-  padding: 0.05rem 0.4rem;
-  border-radius: 3px;
-}
-.trace-count { color: var(--text-secondary); margin-left: auto; }
-.trace-clear {
-  background: transparent;
-  border: 0;
-  color: var(--text-muted);
-  font-size: 1.1rem;
-  line-height: 1;
-  padding: 0 0.3rem;
-  cursor: pointer;
-  border-radius: 3px;
-}
-.trace-clear:hover { color: var(--text-primary); background: var(--bg-hover); }
+/* .recording, trace-banner, and centered/.muted now live inside
+   CallTreePanel (the entire left-pane chrome moved). */
 
 /* Workspace row: Splitter (tree | inspection) on the left, fixed-width
    tool strip on the right edge. The Splitter fills the remaining width
