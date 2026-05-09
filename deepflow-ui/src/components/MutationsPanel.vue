@@ -82,15 +82,25 @@ function memberDiff(callId: string, objectId: number): DiffEntry[] | null {
   return diffOwnState(arEnv, axEnv);
 }
 
-function jumpTo(callId: string, objectId: number): void {
+function jumpTo(g: MutationGroup, objectId: number): void {
   // Land on the actual mutated envelope inside AX (e.g. the BookEntity),
   // not the AX args-array root. Walk the loaded AX payload to find the
   // path; PayloadViewer's existing highlight machinery does the rest
   // (expand prefixes, scroll into view, flash).
+  // Mutations are session-wide — the target call's request may not
+  // be loaded yet; carry request_id so the navigator can ensure-load
+  // before opening the card.
+  const callId = g.call_id;
   const calls = payloadsByCallId.value.get(callId) || [];
   const ax = calls.find(p => p.kind === 'AX');
   const path = ax?.parsed ? findPathToObjectId(ax.parsed, objectId) : null;
-  emit('jump', { callId, kind: 'AX', objectId, path: path || [] });
+  emit('jump', {
+    callId,
+    kind: 'AX',
+    objectId,
+    path: path || [],
+    requestId: g.request_id != null ? Number(g.request_id) : undefined
+  });
 }
 </script>
 
@@ -124,7 +134,7 @@ function jumpTo(callId: string, objectId: number): void {
              share one click target — same affordance as the per-member
              rows below. Avoids "wide row clickable up top, narrow text
              clickable for the same hop". -->
-        <div class="mp-sample" @click="jumpTo(g.call_id, g.sample.object_id)">
+        <div class="mp-sample" @click="jumpTo(g, g.sample.object_id)">
           <header class="mp-row-head">
             <code class="mp-sig">{{ shortSig(g.signature) }}</code>
             <span class="mp-arrow-sep">⏵</span>
@@ -151,7 +161,7 @@ function jumpTo(callId: string, objectId: number): void {
             <template v-for="oid in g.object_ids" :key="oid">
               <li v-if="oid !== g.sample.object_id"
                   class="mp-member"
-                  @click="jumpTo(g.call_id, oid)">
+                  @click="jumpTo(g, oid)">
                 <header class="mp-member-head">
                   <strong class="mp-class">{{ shortClass(g.class) }}</strong>
                   <code class="mp-id">#{{ oid }}</code>

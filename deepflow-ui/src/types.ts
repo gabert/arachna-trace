@@ -160,6 +160,10 @@ export interface OriginAppearance {
   signature: string;
   confidence: Confidence;
   isCurrent: boolean;
+  // Carry the request the appearance lives in so jumps can ensure
+  // the target's call tree is loaded (calls load lazily per
+  // request).
+  requestId?: number;
 }
 
 // "Then mutated to V'": the next observation of the SAME field on
@@ -179,6 +183,7 @@ export interface OriginMutation {
   newValue: unknown;
   envelopeId: number;
   fieldPath: Path;
+  requestId?: number;
 }
 
 // Structured view of a single value's provenance within the request.
@@ -323,6 +328,9 @@ export interface MutationSample {
 
 export interface MutationGroup {
   call_id: string;
+  // Server-side mutations are session-wide; carry request_id per
+  // group so jumps can lazy-load the target's call tree.
+  request_id: number | string;
   signature: string;
   ts_in: string;
   class: string;

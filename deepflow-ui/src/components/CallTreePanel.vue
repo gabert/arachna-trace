@@ -67,13 +67,11 @@ const props = defineProps<{
   // to walk ancestors + auto-expand the containing request node.
   parentByCallId: Map<string, string>;
   requestIdByCallId: Map<string, number>;
-  // Exception-nav state (always rendered). count=0 → green "no
-  // exceptions in trace"; count>0 → red "<N> exceptions in trace"
-  // with ↑/↓ enabled.
-  exceptionCount: number;
-  exceptionCursor: number;
-  // Instance-trace banner state — second header row, only when an
-  // instance is being traced.
+  // Instance-trace banner state — only when an instance is being
+  // traced. Lives here because it's a "currently active tool" signal
+  // tied to the call tree. Exception nav was moved up to the
+  // workspace header (it's session-scoped, the panel was overloaded
+  // when both showed at once).
   inspectedInstance: TraceTarget | null;
   inspectedShortClass: string;
   inspectedCount: number;
@@ -83,11 +81,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'pin', payload: Watch): void;
   (e: 'origin', target: OriginTarget): void;
-  (e: 'goto-prev-exception'): void;
-  (e: 'goto-next-exception'): void;
   (e: 'goto-prev-appearance'): void;
   (e: 'goto-next-appearance'): void;
   (e: 'clear-instance'): void;
+  (e: 'expand-all'): void;
+  (e: 'collapse-all'): void;
 }>();
 
 // Highlight state lives here. Cleared automatically when the trace
@@ -184,29 +182,20 @@ const traceObjectId = computed(() => props.inspectedInstance?.objectId ?? null);
 
 <template>
   <div class="ctp">
-    <!-- Header for the call-tree panel. Structurally always present
-         (semantic <header>), but visually invisible: no bg, no border,
-         no padding of its own. Hosts the two cycle-nav overlay chips
-         (exception + instance trace) which stack vertically and
-         render as floating bars over the call tree. The wrapper
-         disappears entirely (v-if) when both chips are hidden, so the
-         tree starts flush with the top of the panel. -->
-    <header v-if="exceptionCount > 0 || inspectedInstance" class="ctp-header">
-      <NavOverlay v-if="exceptionCount > 0"
-                  variant="exception"
-                  :count="exceptionCount"
-                  :cursor="exceptionCursor"
-                  itemSingular="exception"
-                  summaryInLabel
-                  prevTitle="Previous exception"
-                  nextTitle="Next exception"
-                  @prev="emit('goto-prev-exception')"
-                  @next="emit('goto-next-exception')">
-        <span class="ov-icon">⚠</span>
-        <span>{{ exceptionCount }} exception{{ exceptionCount === 1 ? '' : 's' }} recorded in the trace.</span>
-      </NavOverlay>
-
+    <!-- Sticky panel header. Tree toolbar on the left (always — the
+         expand/collapse-all buttons live with the tree they control),
+         trace banner on the right (when an instance is being traced
+         it grows to fill the remaining width). When no trace is
+         active, only the toolbar shows. -->
+    <header class="ctp-header">
+      <div class="ctp-toolbar">
+        <button class="tree-btn" @click="emit('expand-all')"
+                title="Expand every request and frame">expand all</button>
+        <button class="tree-btn" @click="emit('collapse-all')"
+                title="Collapse every request and frame">collapse all</button>
+      </div>
       <NavOverlay v-if="inspectedInstance"
+                  class="ctp-trace-overlay"
                   variant="trace"
                   :count="inspectedCount"
                   :cursor="traceCursor"
@@ -264,10 +253,37 @@ const traceObjectId = computed(() => props.inspectedInstance?.objectId ?? null);
   z-index: 5;
   padding: 0.5rem 0.75rem;
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  flex-direction: row;
+  align-items: center;
   gap: 0.5rem;
+  background: var(--bg-surface);
 }
+
+/* Tree toolbar — small horizontal strip with the expand/collapse-all
+   controls. Always-on, on the left. Lives next to the tree it
+   operates on; the workspace header is reserved for session-level
+   state (title, exception nav). */
+.ctp-toolbar {
+  display: flex;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+/* Trace overlay — grows into the remaining row width so its label /
+   count / buttons get all the room they can. Only renders when an
+   instance is being traced. */
+.ctp-trace-overlay { flex: 1; min-width: 0; }
+.tree-btn {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  padding: 0.3rem 0.55rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.tree-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 
 /* Inline content slotted into the overlay's label slot. */
 .ov-icon { font-size: 0.9rem; }

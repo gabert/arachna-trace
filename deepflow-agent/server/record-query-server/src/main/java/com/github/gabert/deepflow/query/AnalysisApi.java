@@ -59,6 +59,7 @@ class AnalysisApi {
         String sql = """
                 SELECT
                     ar.call_id      AS call_id,
+                    ar.request_id   AS request_id,
                     ar.signature    AS signature,
                     ar.ts_in        AS ts_in,
                     ar.payload_json AS ar_json,
@@ -74,7 +75,7 @@ class AnalysisApi {
                         ax.object_ids
                     ) AS added_ids
                 FROM
-                    (SELECT call_id, signature, ts_in,
+                    (SELECT call_id, request_id, signature, ts_in,
                             object_ids, own_hashes, payload_json
                      FROM payloads
                      WHERE session_id = {session_id:String}
@@ -134,6 +135,7 @@ class AnalysisApi {
                     }
                     group = new LinkedHashMap<>();
                     group.put("call_id", r.get("call_id"));
+                    group.put("request_id", r.get("request_id"));
                     group.put("signature", r.get("signature"));
                     group.put("ts_in", r.get("ts_in"));
                     group.put("class", cls);

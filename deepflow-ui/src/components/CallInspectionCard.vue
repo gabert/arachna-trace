@@ -54,6 +54,11 @@ const emit = defineEmits<{
   // Only emitted for pinned cards (transient cards have no drag
   // handle), so the parent's pinned-relative idx stays accurate.
   (e: 'handle-drag-start', evt: DragEvent): void;
+  // User clicked ↙ on the header asking "show this call in the
+  // tree". Inverse of FrameCard's ↗. Parent runs the same
+  // CallTreePanel.highlightCall primitive every other navigator
+  // uses (BOX outline + EXPAND ancestors + SCROLL into view).
+  (e: 'reveal'): void;
 }>();
 
 function onHandleDragStart(e: DragEvent): void {
@@ -143,8 +148,9 @@ watch(() => props.call.call_id, () => {
         <span class="cic-time">{{ fmtTime(call.ts_in) }}</span>
         <span class="cic-dur">{{ call.duration_ms }} ms</span>
         <ExceptionChip v-if="call.return_type === 'EXCEPTION'" />
-        <span v-else
-              class="cic-ret" :class="(call.return_type || 'VOID').toLowerCase()">{{ call.return_type }}</span>
+        <button class="cic-reveal-btn"
+                @click.stop="emit('reveal')"
+                title="Show this call in the tree">↙</button>
         <button class="cic-close-btn"
                 @click.stop="emit('close')"
                 title="Close inspection card">✕</button>
@@ -245,6 +251,28 @@ watch(() => props.call.call_id, () => {
 }
 .cic-close-btn:hover { background: var(--bg-hover); color: var(--accent-red); }
 
+/* Inverse of FrameCard's ↗ (open-in-card): ↙ sends the user back
+   from the card to the call's row in the tree, running the same
+   highlightCall primitive (yellow outline + expand ancestors +
+   scroll). Same chip-blue palette as the FrameCard ↗ so the pair
+   reads as one round-trip. */
+.cic-reveal-btn {
+  background: rgba(96, 165, 250, 0.18);
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  color: #93c5fd;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.1rem 0.5rem;
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.cic-reveal-btn:hover {
+  background: rgba(96, 165, 250, 0.32);
+  color: #bfdbfe;
+}
+
 /* Drop indicators — accent-blue line above or below the card during
    dragover, signals where the dragged card will land if released
    here. The .dragging source dims slightly so the user can see
@@ -274,12 +302,9 @@ watch(() => props.call.call_id, () => {
 .cic-meta { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
 .cic-time { font-family: ui-monospace, monospace; color: var(--text-muted); font-size: 0.8rem; }
 .cic-dur  { font-family: ui-monospace, monospace; color: var(--text-secondary); font-size: 0.8rem; }
-.cic-ret {
-  font-size: 0.68rem; padding: 0.05rem 0.4rem; border-radius: 3px;
-  background: var(--bg-elevated); color: var(--text-secondary);
-}
-.cic-ret.value     { background: rgba(110, 231, 183, 0.15); color: #6ee7b7; }
-.cic-ret.void      { background: var(--bg-elevated); color: var(--text-muted); }
+/* The return-type pill (VALUE / VOID) was removed — silence on the
+   normal-return paths, only ExceptionChip when something interesting
+   happened. */
 
 /* CollapsiblePanel handles the header chevron and click affordance;
    we just style the per-section spacing + dividers + the body indent.

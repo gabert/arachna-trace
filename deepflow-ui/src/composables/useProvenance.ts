@@ -205,7 +205,8 @@ function appearancesFromHits(
       confidence,
       isCurrent: h.call_id === target.callId
               && h.kind === target.kind
-              && JSON.stringify(h.path) === targetPathKey
+              && JSON.stringify(h.path) === targetPathKey,
+      requestId: h.request_id != null ? Number(h.request_id) : undefined
     };
   });
   rows.sort(eventComparator<OriginAppearance>(callMeta));
@@ -289,7 +290,8 @@ function buildMutation(
     signature: p.signature,
     newValue,
     envelopeId: env.envelopeId,
-    fieldPath: env.fieldPath
+    fieldPath: env.fieldPath,
+    requestId: p.request_id != null ? Number(p.request_id) : undefined
   };
 }
 

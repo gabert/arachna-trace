@@ -5,6 +5,7 @@ import Splitter from 'primevue/splitter';
 import SplitterPanel from 'primevue/splitterpanel';
 import CallTreePanel from '../components/CallTreePanel.vue';
 import CallInspectionCard from '../components/CallInspectionCard.vue';
+import NavOverlay from '../components/NavOverlay.vue';
 import WatchPanel from '../components/WatchPanel.vue';
 import MutationsPanel from '../components/MutationsPanel.vue';
 import OriginPanel from '../components/OriginPanel.vue';
@@ -136,6 +137,26 @@ const callTreeRef = ref<InstanceType<typeof CallTreePanel> | null>(null);
 // callsById can resolve the row. JumpAddress optionally carries the
 // requestId; we fall back to requestIdByCallId for already-loaded
 // calls (no load needed).
+//
+// Calls callTreeRef.highlightCall as the final step so every
+// consumer of gotoAndSelect (Watch, Origin, Search, Mutations,
+// instance trace ↑/↓) gets the call-tree's BOX + EXPAND ancestors +
+// SCROLL into view contract. Without this the row only got the
+// .selected (blue) tint — the yellow highlight box and auto-
+// expansion stayed dormant.
+// "Show me where this card's call lives in the tree." The card stays
+// where it is (don't disturb the inspection stack); only the
+// call-tree side runs — which means the same one-shot BOX + EXPAND
+// ancestors + SCROLL contract that highlightCall delivers for any
+// other navigator. Mirrors FrameCard's ↗ in reverse.
+async function revealInTree(callId: string): Promise<void> {
+  const rid = requestIdByCallId.value.get(callId);
+  if (rid !== undefined && !isRequestLoaded(rid)) {
+    await loadRequestCalls(rid);
+  }
+  callTreeRef.value?.highlightCall(callId);
+}
+
 async function gotoAndSelect(addr: JumpAddress): Promise<void> {
   const rid = addr.requestId ?? requestIdByCallId.value.get(addr.callId);
   if (rid !== undefined && !isRequestLoaded(rid)) {
@@ -143,6 +164,7 @@ async function gotoAndSelect(addr: JumpAddress): Promise<void> {
   }
   stack.showTransient(addr.callId);
   goto(addr);
+  callTreeRef.value?.highlightCall(addr.callId);
 }
 
 const trace = useInstanceTrace({
@@ -314,8 +336,27 @@ watch(trace.inspectedInstance, (v) => {
         <code>{{ sessionId }}</code>
       </h1>
       <div class="req-pick">
-        <button class="tree-btn" @click="expandEverything" title="Expand every request and frame">expand all</button>
-        <button class="tree-btn" @click="collapseEverything" title="Collapse every request and frame">collapse all</button>
+        <!-- Exception nav lives at session-scope (the workspace header).
+             It's always-on when any request in the session has an
+             exception, so it belongs at the session level — not in the
+             call tree's chrome. The trace banner (per-instance,
+             transient, dismissable) and the expand/collapse-all
+             controls (which act on the tree) stay INSIDE CallTreePanel
+             where they're contextual. -->
+        <NavOverlay v-if="exceptionNav.exceptionCount.value > 0"
+                    class="sv-exc-nav"
+                    variant="exception"
+                    :count="exceptionNav.exceptionCount.value"
+                    :cursor="exceptionNav.exceptionCursor.value"
+                    itemSingular="exception"
+                    summaryInLabel
+                    prevTitle="Previous exception"
+                    nextTitle="Next exception"
+                    @prev="exceptionNav.gotoPrevException"
+                    @next="exceptionNav.gotoNextException">
+          <span class="ov-icon">⚠</span>
+          <span>{{ exceptionNav.exceptionCount.value }} exception{{ exceptionNav.exceptionCount.value === 1 ? '' : 's' }} recorded in session.</span>
+        </NavOverlay>
       </div>
     </header>
 
@@ -332,19 +373,17 @@ watch(trace.inspectedInstance, (v) => {
                            :hasNoRequests="!requests.length && !loadingRequests"
                            :parentByCallId="parentByCallId"
                            :requestIdByCallId="requestIdByCallId"
-                           :exceptionCount="exceptionNav.exceptionCount.value"
-                           :exceptionCursor="exceptionNav.exceptionCursor.value"
                            :inspectedInstance="trace.inspectedInstance.value"
                            :inspectedShortClass="trace.inspectedShortClass.value"
                            :inspectedCount="trace.inspectedCount.value"
                            :traceCursor="trace.traceCursor.value"
                            @pin="pinWatch"
                            @origin="setOrigin"
-                           @goto-prev-exception="exceptionNav.gotoPrevException"
-                           @goto-next-exception="exceptionNav.gotoNextException"
                            @goto-prev-appearance="trace.gotoPrevAppearance"
                            @goto-next-appearance="trace.gotoNextAppearance"
-                           @clear-instance="trace.clearInspectedInstance" />
+                           @clear-instance="trace.clearInspectedInstance"
+                           @expand-all="expandEverything"
+                           @collapse-all="collapseEverything" />
           </div>
         </SplitterPanel>
 
@@ -365,7 +404,8 @@ watch(trace.inspectedInstance, (v) => {
                                 @trace="trace.setInspectedInstance"
                                 @close="onTransientClose"
                                 @set-collapsed="onTransientSetCollapsed"
-                                @pin-card="stack.pinCurrent" />
+                                @pin-card="stack.pinCurrent"
+                                @reveal="revealInTree(transientCard.call_id)" />
 
             <!-- Pinned cards — drag-reorderable. idx is pinned-relative
                  so the drag handlers see their own array indexes. -->
@@ -384,6 +424,7 @@ watch(trace.inspectedInstance, (v) => {
                                 @trace="trace.setInspectedInstance"
                                 @close="stack.closeInspection(c.call_id)"
                                 @set-collapsed="(v) => stack.setCardCollapsed(c.call_id, v)"
+                                @reveal="revealInTree(c.call_id)"
                                 @handle-drag-start="stack.onCardDragStart(idx, $event)"
                                 @dragover="stack.onCardDragOver(idx, $event)"
                                 @dragleave="stack.onCardDragLeave(idx)"
@@ -498,12 +539,53 @@ watch(trace.inspectedInstance, (v) => {
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 .req-pick { display: flex; align-items: center; gap: 0.5rem; }
-.req-pick label { font-size: 0.85rem; color: var(--text-secondary); }
-.tree-btn {
-  background: var(--bg-elevated); border: 1px solid var(--border-strong); color: var(--text-secondary);
-  font-size: 0.75rem; padding: 0.3rem 0.55rem; border-radius: 4px; cursor: pointer;
+/* The exception nav chip is wider than a button. Keep it from
+   pushing the row layout vertically by bounding the max width and
+   letting the label text ellipsize. The cycle ↑↓ stays visible. */
+.req-pick .sv-exc-nav { max-width: 52rem; flex-shrink: 1; }
+
+/* Workspace-header context override: the chip is INFORMATIONAL here,
+   not an alert. The dominant-red treatment makes sense in the call
+   tree (foreground reading context) but is too loud as permanent
+   header chrome. Match the visual weight of the other header
+   buttons (elevated bg, subtle border, secondary text) and keep
+   red ONLY on the ⚠ glyph as the colour cue. The call tree's
+   exception chips on actual rows still wear the loud red — the
+   visual weight matches the context.
+   Targets the chip's own element directly (sv-exc-nav and
+   variant-exception are both on the same node — Vue forwards the
+   parent's class onto the component's root). Children use :deep
+   because the .nav-btn / .nav-label elements live inside
+   NavOverlay's scoped CSS. */
+.req-pick .sv-exc-nav.variant-exception {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  box-shadow: none;
+  backdrop-filter: none;
+  font-weight: 400;
 }
-.tree-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.req-pick .sv-exc-nav :deep(.nav-btn) {
+  color: var(--text-secondary);
+}
+.req-pick .sv-exc-nav :deep(.nav-btn:hover:not(:disabled)) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.req-pick .sv-exc-nav :deep(.nav-label) {
+  font-weight: 400;
+}
+/* Slot icon stays red — the one signal-coloured element in the
+   chip, so a developer scanning the header still reads "this is
+   an exception thing" without being yelled at. */
+.req-pick .sv-exc-nav .ov-icon { font-size: 0.9rem; flex-shrink: 0; color: #fca5a5; }
+/* Hide the invisible × placeholder NavOverlay reserves for vertical
+   alignment when stacked with a clearable variant. Standing alone
+   in the workspace header there's nothing to align with, and the
+   placeholder pushes the ↑↓ inward; dropping it makes the arrows
+   the rightmost element. */
+.req-pick .sv-exc-nav :deep(.nav-clear.empty) { display: none; }
+.req-pick label { font-size: 0.85rem; color: var(--text-secondary); }
 .muted { color: var(--text-muted); font-size: 0.8rem; }
 .centered { display: flex; justify-content: center; padding: 2rem; }
 

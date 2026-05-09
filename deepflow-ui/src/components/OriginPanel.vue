@@ -52,11 +52,11 @@ const propagationCollapsed = ref(true);
 watch(target, () => { propagationCollapsed.value = true; });
 
 function jumpRow(a: OriginAppearance): void {
-  emit('jump', { callId: a.callId, kind: a.kind, path: a.path });
+  emit('jump', { callId: a.callId, kind: a.kind, path: a.path, requestId: a.requestId });
 }
 
 function jumpMutation(m: OriginMutation): void {
-  emit('jump', { callId: m.callId, kind: m.kind, path: m.path });
+  emit('jump', { callId: m.callId, kind: m.kind, path: m.path, requestId: m.requestId });
 }
 
 const sourceLabel = computed(() => {
