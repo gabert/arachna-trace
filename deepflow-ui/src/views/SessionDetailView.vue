@@ -143,22 +143,35 @@ const selectedCall = computed<CallRow | null>(() => {
   return id ? (callsById.value.get(id) || null) : null;
 });
 
-// Pinned inspection cards. Survive new selections; user manages with
-// the 📌 / ✕ buttons in each card's header. Pin order preserves the
-// order they were pinned, oldest first (top of stack), so the user
-// can predict where each parked card sits.
-const pinnedCallIds = ref<string[]>([]);
+// Inspection cards in insertion order. Single ordered list — every
+// click that "inspects" a call appends a new card here (or, if the
+// call already has a card, just focuses the existing one). Existing
+// cards never move on their own; only the user re-orders them via
+// drag-and-drop. The previous current/pinned dichotomy was removed
+// because promoting a "current" card into a "pinned" stack on the
+// next click was rearrangement-by-default, which the user explicitly
+// does not want.
+const inspectionCallIds = ref<string[]>([]);
 const collapsedCards = ref<Set<string>>(new Set());
 
-function togglePinCard(id: string): void {
-  if (pinnedCallIds.value.includes(id)) {
-    pinnedCallIds.value = pinnedCallIds.value.filter(x => x !== id);
+function inspectCall(id: string): void {
+  if (!inspectionCallIds.value.includes(id)) {
+    // Prepend: newest at the top so the most recently opened card
+    // is immediately visible without scrolling. Existing cards keep
+    // their relative order.
+    inspectionCallIds.value = [id, ...inspectionCallIds.value];
+  }
+  setSelectedCallId(id);
+}
+
+function closeInspection(id: string): void {
+  inspectionCallIds.value = inspectionCallIds.value.filter(x => x !== id);
+  if (collapsedCards.value.has(id)) {
     const next = new Set(collapsedCards.value);
     next.delete(id);
     collapsedCards.value = next;
-  } else {
-    pinnedCallIds.value = [...pinnedCallIds.value, id];
   }
+  if (selectedCallId.value === id) setSelectedCallId(null);
 }
 
 function setCardCollapsed(id: string, collapsed: boolean): void {
@@ -167,24 +180,63 @@ function setCardCollapsed(id: string, collapsed: boolean): void {
   collapsedCards.value = next;
 }
 
-const pinnedCalls = computed<CallRow[]>(() => {
+const inspectionCalls = computed<CallRow[]>(() => {
   const map = callsById.value;
   const out: CallRow[] = [];
-  for (const id of pinnedCallIds.value) {
+  for (const id of inspectionCallIds.value) {
     const c = map.get(id);
     if (c) out.push(c);
   }
   return out;
 });
 
-// Hide the "current" card if its call is already pinned — no point
-// rendering the same inspection twice.
-const currentCard = computed<CallRow | null>(() => {
-  const c = selectedCall.value;
-  if (!c) return null;
-  if (pinnedCallIds.value.includes(c.call_id)) return null;
-  return c;
-});
+// Drag-to-reorder state. Uses native HTML5 dnd: handle on each
+// card's header is draggable, every card body is a drop target.
+// dragOverIdx + dragOverPos drive a CSS class on the target card
+// for the drop indicator (line above or below).
+const dragSourceIdx = ref<number | null>(null);
+const dragOverIdx = ref<number | null>(null);
+const dragOverPos = ref<'before' | 'after'>('before');
+
+function onCardDragStart(idx: number, e: DragEvent): void {
+  dragSourceIdx.value = idx;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(idx));
+  }
+}
+function onCardDragOver(idx: number, e: DragEvent): void {
+  if (dragSourceIdx.value === null) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  const target = e.currentTarget as HTMLElement | null;
+  if (!target) return;
+  const rect = target.getBoundingClientRect();
+  const midY = rect.top + rect.height / 2;
+  dragOverIdx.value = idx;
+  dragOverPos.value = e.clientY < midY ? 'before' : 'after';
+}
+function onCardDragLeave(idx: number): void {
+  if (dragOverIdx.value === idx) dragOverIdx.value = null;
+}
+function onCardDrop(idx: number, e: DragEvent): void {
+  e.preventDefault();
+  const from = dragSourceIdx.value;
+  dragSourceIdx.value = null;
+  dragOverIdx.value = null;
+  if (from === null) return;
+  let to = idx + (dragOverPos.value === 'after' ? 1 : 0);
+  if (from < to) to -= 1;
+  if (from === to) return;
+  const next = [...inspectionCallIds.value];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  inspectionCallIds.value = next;
+}
+function onCardDragEnd(): void {
+  dragSourceIdx.value = null;
+  dragOverIdx.value = null;
+}
 
 // Instance the user picked to trace on the tree. Click an envelope's
 // "🔎 trace" button in any inspection card to set; click the same
@@ -307,14 +359,15 @@ const inspectedShortClass = computed(() => {
   return String(c).split('.').pop() || c;
 });
 
-// Manual row-click handler. Sets the selection AND, when an instance
-// is being traced, auto-navigates the inspection card's PayloadViewer
-// to where the instance lives so the developer doesn't have to hunt
-// for it among TI / AR / AX / RE. gotoAndSelect (used for programmatic
-// jumps from tool panels) bypasses this — those carry their own
-// kind/path target.
+// Manual row-click handler (FrameCard's ↗ inspect chip). Adds an
+// inspection card if one for this call doesn't exist yet, then —
+// when an instance is being traced AND this call has the instance
+// — auto-navigates the card's PayloadViewer to the instance's path
+// so the developer doesn't have to hunt for it among TI / AR / AX /
+// RE. gotoAndSelect (used for programmatic jumps from tool panels)
+// carries its own kind/path target and uses inspectCall directly.
 function selectCall(id: string): void {
-  setSelectedCallId(id);
+  inspectCall(id);
   const inst = inspectedInstance.value;
   if (!inst) return;
   if (!instanceAppearancesByCallId.value.has(id)) return;
@@ -339,11 +392,11 @@ provide(NAVIGATE_TO_APPEARANCE, gotoAppearanceForCall);
 // Jumps from tool panels (mutations, watches, origin, search) need to
 // land in a mounted PayloadViewer to drive the highlight scroll. The
 // only PayloadViewers now live inside CallInspectionCard, so a jump
-// must also select the target call (and uncollapse it if it was a
-// collapsed pinned card). Uses setSelectedCallId (bare) so the
-// caller's own kind/path isn't overwritten by selectCall's auto-nav.
+// must ensure an inspection card for the target exists (inspectCall
+// handles "add if absent, focus existing otherwise"). Also uncollapses
+// the card if it was folded.
 function gotoAndSelect(addr: JumpAddress): void {
-  setSelectedCallId(addr.callId);
+  inspectCall(addr.callId);
   if (collapsedCards.value.has(addr.callId)) {
     const next = new Set(collapsedCards.value);
     next.delete(addr.callId);
@@ -410,7 +463,7 @@ function clearOrigin(): void {
 watch(selectedRequestId, () => {
   watches.value = [];
   selectedCallId.value = null;
-  pinnedCallIds.value = [];
+  inspectionCallIds.value = [];
   collapsedCards.value = new Set();
   inspectedInstance.value = null;
   provenance.clear();
@@ -476,26 +529,28 @@ watch(inspectedInstance, (v) => {
 
         <SplitterPanel :size="50" :minSize="20" class="inspection-pane">
           <div class="inspection-area">
-            <CallInspectionCard v-if="currentCard"
-                                :call="currentCard"
-                                :pinned="false"
-                                @pin="pinWatch"
-                                @origin="setOrigin"
-                                @trace="setInspectedInstance"
-                                @pin-card="togglePinCard(currentCard.call_id)" />
-            <CallInspectionCard v-for="c in pinnedCalls"
+            <CallInspectionCard v-for="(c, idx) in inspectionCalls"
                                 :key="c.call_id"
                                 :call="c"
-                                :pinned="true"
                                 :collapsed="collapsedCards.has(c.call_id)"
+                                :class="{
+                                  'drop-before': dragOverIdx === idx && dragOverPos === 'before',
+                                  'drop-after':  dragOverIdx === idx && dragOverPos === 'after',
+                                  'dragging':    dragSourceIdx === idx
+                                }"
                                 @pin="pinWatch"
                                 @origin="setOrigin"
                                 @trace="setInspectedInstance"
-                                @pin-card="togglePinCard(c.call_id)"
-                                @set-collapsed="(v) => setCardCollapsed(c.call_id, v)" />
-            <div v-if="!currentCard && !pinnedCalls.length" class="inspection-placeholder">
-              <p>Click a call on the left to inspect its TI / AR / AX / RE.</p>
-              <p class="hint">Pin (📌) a card to keep it side-by-side with later selections.</p>
+                                @close="closeInspection(c.call_id)"
+                                @set-collapsed="(v) => setCardCollapsed(c.call_id, v)"
+                                @handle-drag-start="onCardDragStart(idx, $event)"
+                                @dragover="onCardDragOver(idx, $event)"
+                                @dragleave="onCardDragLeave(idx)"
+                                @drop="onCardDrop(idx, $event)"
+                                @dragend="onCardDragEnd" />
+            <div v-if="!inspectionCalls.length" class="inspection-placeholder">
+              <p>Click <code>↗</code> on a call in the tree to open its TI / AR / AX / RE.</p>
+              <p class="hint">Cards stack in the order you open them. Drag a card's grip (⋮⋮) to reorder; click <code>✕</code> to close.</p>
             </div>
           </div>
         </SplitterPanel>

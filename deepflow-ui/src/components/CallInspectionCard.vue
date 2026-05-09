@@ -1,19 +1,17 @@
 <script setup lang="ts">
 // Right-pane card showing every recorded payload (TI / AR / AX / RE)
-// for one call. Renders independently of the call tree on the left;
-// the user picks which call to inspect by clicking it in the tree, and
-// SessionDetailView feeds the matching CallRow in.
+// for one call. All cards are equal — there is no current/pinned
+// distinction; opening one never displaces another. Order is purely
+// the order the user opened them, with manual drag-to-reorder via
+// the ⋮⋮ handle in the header. Closed by the ✕ button.
 //
 // Show-everything-that-was-recorded principle: we don't filter AX out
-// when it's identical to AR. The user clicked into this card asking
-// "what was this call's data" — they get it. The PayloadViewer's own
+// when it's identical to AR. The user opened this card asking "what
+// was this call's data" — they get it. The PayloadViewer's own
 // collapsed-by-default state keeps an unmutated AX from being noisy.
 //
-// Cards live in two slots in the inspection area: one "current" (the
-// active selection — replaced when the user clicks a different call)
-// and any number of "pinned" (parked, survive new selections). Pinned
-// cards can be collapsed; the body stays mounted via v-show so the
-// PayloadViewer's per-tree expansion state survives folding.
+// Body is wrapped in CollapsiblePanel's v-show so the PayloadViewer's
+// per-tree expansion state survives folding the card away.
 
 import { computed, inject, ref, watch } from 'vue';
 import CollapsiblePanel from './CollapsiblePanel.vue';
@@ -24,10 +22,8 @@ import type { CallRow, OriginTarget, PayloadKind, PayloadRow, TraceTarget, Watch
 
 const props = withDefaults(defineProps<{
   call: CallRow;
-  pinned?: boolean;
   collapsed?: boolean;
 }>(), {
-  pinned: false,
   collapsed: false
 });
 
@@ -35,13 +31,19 @@ const emit = defineEmits<{
   (e: 'pin', payload: Watch): void;
   (e: 'origin', target: OriginTarget): void;
   (e: 'trace', target: TraceTarget): void;
-  (e: 'pin-card'): void;
-  // Pinned-card collapse delegates to the parent, which holds the
+  (e: 'close'): void;
+  // Card collapse delegates to the parent, which holds the
   // collapsedCards Set so navigator jumps can auto-uncollapse a target.
-  // Carries the new collapsed state so the parent doesn't have to
-  // re-toggle by id.
   (e: 'set-collapsed', collapsed: boolean): void;
+  // Drag-handle initiated dragstart. Parent owns the reorder state;
+  // dragover/dragleave/drop/dragend are bound directly on the card
+  // root and bubble naturally from the underlying DOM, no re-emit.
+  (e: 'handle-drag-start', evt: DragEvent): void;
 }>();
+
+function onHandleDragStart(e: DragEvent): void {
+  emit('handle-drag-start', e);
+}
 
 const payloadsByCallId = inject(PAYLOADS_BY_CALL_ID, computed(() => new Map<string, PayloadRow[]>()));
 const payloads = computed<PayloadRow[]>(() => payloadsByCallId.value.get(props.call.call_id) || []);
@@ -81,26 +83,24 @@ watch(() => props.call.call_id, () => {
 </script>
 
 <template>
-  <!-- Pinned cards use CollapsiblePanel so the chevron + click-to-fold
-       affordance matches every other collapsible in the app. Current
-       (un-pinned) cards aren't foldable — they're the active selection,
-       not parked workspace — so they render as a plain article. The
-       body content is identical between branches. -->
-  <CollapsiblePanel v-if="pinned"
-                    class="cic pinned"
+  <CollapsiblePanel class="cic"
                     :class="{ collapsed }"
                     :collapsed="collapsed"
                     @update:collapsed="(v) => emit('set-collapsed', v)">
     <template #header>
+      <span class="cic-drag-handle"
+            draggable="true"
+            @dragstart="onHandleDragStart"
+            @click.stop
+            title="Drag to reorder">⋮⋮</span>
       <div class="cic-sig" :title="call.signature">{{ shortSig(call.signature) }}</div>
       <div class="cic-meta">
-        <span class="cic-pin-badge" title="This card is pinned and survives new selections.">PINNED</span>
         <span class="cic-time">{{ fmtTime(call.ts_in) }}</span>
         <span class="cic-dur">{{ call.duration_ms }} ms</span>
         <span class="cic-ret" :class="(call.return_type || 'VOID').toLowerCase()">{{ call.return_type }}</span>
-        <button class="cic-pin-btn"
-                @click.stop="emit('pin-card')"
-                title="Close pinned card">✕</button>
+        <button class="cic-close-btn"
+                @click.stop="emit('close')"
+                title="Close inspection card">✕</button>
       </div>
     </template>
 
@@ -123,39 +123,6 @@ watch(() => props.call.call_id, () => {
       </CollapsiblePanel>
     </div>
   </CollapsiblePanel>
-
-  <article v-else class="cic">
-    <header class="cic-head">
-      <div class="cic-sig" :title="call.signature">{{ shortSig(call.signature) }}</div>
-      <div class="cic-meta">
-        <span class="cic-time">{{ fmtTime(call.ts_in) }}</span>
-        <span class="cic-dur">{{ call.duration_ms }} ms</span>
-        <span class="cic-ret" :class="(call.return_type || 'VOID').toLowerCase()">{{ call.return_type }}</span>
-        <button class="cic-pin-btn"
-                @click="emit('pin-card')"
-                title="Pin this card so it survives new selections">📌</button>
-      </div>
-    </header>
-
-    <div class="cic-body">
-      <div v-if="!ordered.length" class="cic-empty">No payloads recorded for this call.</div>
-      <CollapsiblePanel v-for="p in ordered" :key="p.kind"
-                        class="cic-section"
-                        :collapsed="isSectionCollapsed(p.kind)"
-                        @update:collapsed="(v) => setSectionCollapsed(p.kind, v)">
-        <template #header>
-          <span class="kind" :class="p.kind">{{ p.kind }}</span>
-          <span class="cic-section-meta">{{ p.payload_size }} B</span>
-        </template>
-        <PayloadViewer :data="p.parsed"
-                       :callId="call.call_id"
-                       :kind="p.kind"
-                       @pin="(payload) => emit('pin', payload)"
-                       @origin="(t) => emit('origin', t)"
-                       @trace="(t) => emit('trace', t)" />
-      </CollapsiblePanel>
-    </div>
-  </article>
 </template>
 
 <style scoped>
@@ -165,44 +132,59 @@ watch(() => props.call.call_id, () => {
   border-radius: 6px;
   margin-bottom: 0.75rem;
   overflow: hidden;
+  position: relative;
 }
-/* Pinned cards get an amber left edge so the eye can pick them out
-   from the current selection at a glance — they're the parked
-   workspace, not what was just clicked. */
-.cic.pinned { border-left: 3px solid var(--accent-amber); }
 
-/* Pinned card uses CollapsiblePanel as its root; style its head as
-   the card header (background, padding, border) and let the slotted
-   header content handle layout via cic-meta below. */
-.cic.pinned :deep(.cp-head) {
+/* Card root uses CollapsiblePanel; style its head as the card header
+   (background, padding, border) and let the slotted header content
+   handle layout via cic-meta below. */
+.cic :deep(.cp-head) {
   padding: 0.5rem 0.75rem;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
   border-radius: 0;
   align-items: center;
 }
-.cic.pinned.collapsed :deep(.cp-head) { border-bottom: 0; }
-.cic.pinned :deep(.cp-head:hover) { background: var(--bg-hover); }
+.cic.collapsed :deep(.cp-head) { border-bottom: 0; }
+.cic :deep(.cp-head:hover) { background: var(--bg-hover); }
 
-.cic-head {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.5rem 0.75rem;
-  background: var(--bg-elevated);
-  border-bottom: 1px solid var(--border);
+/* Drag handle — small grip glyph, cursor:grab so it reads as a
+   drag affordance distinct from the rest of the clickable header. */
+.cic-drag-handle {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0 0.3rem;
+  cursor: grab;
+  user-select: none;
 }
-.cic-pin-badge {
-  background: rgba(251, 191, 36, 0.18); color: #fcd34d;
-  font-size: 0.6rem; font-weight: 700; letter-spacing: 0.05em;
-  padding: 0.05rem 0.35rem; border-radius: 3px;
-}
-.cic-pin-btn {
+.cic-drag-handle:hover { color: var(--text-primary); }
+.cic-drag-handle:active { cursor: grabbing; }
+
+.cic-close-btn {
   background: none; border: 0; color: var(--text-muted); cursor: pointer;
   font-size: 0.85rem; line-height: 1; padding: 0.1rem 0.3rem; border-radius: 3px;
   flex-shrink: 0;
 }
-.cic-pin-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.cic-close-btn:hover { background: var(--bg-hover); color: var(--accent-red); }
+
+/* Drop indicators — accent-blue line above or below the card during
+   dragover, signals where the dragged card will land if released
+   here. The .dragging source dims slightly so the user can see
+   what's moving. */
+.cic.drop-before::before,
+.cic.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  height: 2px;
+  background: var(--accent-blue);
+  pointer-events: none;
+}
+.cic.drop-before::before { top: -1px; }
+.cic.drop-after::after { bottom: -1px; }
+.cic.dragging { opacity: 0.55; }
 .cic-sig {
   font-family: ui-monospace, monospace;
   font-size: var(--mono-size);
