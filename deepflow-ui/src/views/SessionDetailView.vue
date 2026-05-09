@@ -15,87 +15,28 @@ import { useNavigator } from '../composables/useNavigator';
 import { useObjectChanges } from '../composables/useObjectChanges';
 import { useProvenance } from '../composables/useProvenance';
 import { useValueSearch } from '../composables/useValueSearch';
-import { walkEnvelopes } from '../util/envelope';
+import { useInspectionStack } from '../composables/useInspectionStack';
+import { useInstanceTrace } from '../composables/useInstanceTrace';
+import { useToolStrip, type ToolId } from '../composables/useToolStrip';
 import {
   PAYLOADS_BY_CALL_ID, CHILDREN_BY_PARENT,
   EXPANSION_DEFAULT, EXPANSION_OVERRIDES,
   MUTATED_OBJECTS_BY_CALL_ID, ADDED_OBJECTS_BY_CALL_ID,
   HIGHLIGHT, NAV_TICK,
-  SELECT_CALL, SELECTED_CALL_ID,
-  INSPECTED_INSTANCE, INSTANCE_APPEARANCES_BY_CALL_ID,
-  NAVIGATE_TO_APPEARANCE
+  CALL_SELECTION, INSTANCE_TRACE
 } from '../keys';
-import { findPathToObjectId } from '../util/envelope';
-import type { AppearanceKind, CallRow, JumpAddress, OriginTarget, Path, PayloadKind, TraceTarget, Watch } from '../types';
-
+import type { CallRow, JumpAddress, OriginTarget, Watch } from '../types';
 
 const props = defineProps<{ sessionId: string }>();
 
-// Right-edge tool strip. Always-visible icon column on the far right;
-// clicking an icon expands an overlay showing that tool's panel. null
-// = collapsed (icons only). Tools are demoted from a tabbed top-level
-// surface to call-out tools alongside the inspection area, which is
-// the new dominant content. Mutations / Watches / Origin / Search all
-// keep their full state via v-show even when collapsed.
-type ToolId = 'mutations' | 'watch' | 'origin' | 'search';
-const activeTool = ref<ToolId | null>(null);
-function toggleTool(id: ToolId): void {
-  activeTool.value = activeTool.value === id ? null : id;
-}
-
-// Tool-content panel width is user-resizable via a drag handle on its
-// left edge. Persisted to localStorage so the user's preferred width
-// survives reload (mirrors the Splitter's stateStorage="local" pattern
-// for the tree-vs-inspection divider).
-const TOOL_WIDTH_KEY = 'deepflow-tool-content-width';
-const TOOL_WIDTH_DEFAULT = 360;
-const TOOL_WIDTH_MIN = 220;
-const TOOL_WIDTH_MAX = 1100;
-function readStoredToolWidth(): number {
-  try {
-    const v = localStorage.getItem(TOOL_WIDTH_KEY);
-    if (!v) return TOOL_WIDTH_DEFAULT;
-    const n = parseInt(v, 10);
-    if (!Number.isFinite(n)) return TOOL_WIDTH_DEFAULT;
-    return Math.min(TOOL_WIDTH_MAX, Math.max(TOOL_WIDTH_MIN, n));
-  } catch { return TOOL_WIDTH_DEFAULT; }
-}
-const toolWidth = ref<number>(readStoredToolWidth());
-
-let dragStartX = 0;
-let dragStartWidth = 0;
-function onResizeMove(e: MouseEvent): void {
-  // Panel sits on the right; dragging the handle leftward should widen
-  // the panel, so subtract the cursor delta.
-  const delta = dragStartX - e.clientX;
-  const next = dragStartWidth + delta;
-  toolWidth.value = Math.min(TOOL_WIDTH_MAX, Math.max(TOOL_WIDTH_MIN, next));
-}
-function onResizeEnd(): void {
-  document.removeEventListener('mousemove', onResizeMove);
-  document.removeEventListener('mouseup', onResizeEnd);
-  document.body.style.userSelect = '';
-  document.body.style.cursor = '';
-  try { localStorage.setItem(TOOL_WIDTH_KEY, String(toolWidth.value)); } catch { /* quota / private mode */ }
-}
-function onResizeStart(e: MouseEvent): void {
-  dragStartX = e.clientX;
-  dragStartWidth = toolWidth.value;
-  document.addEventListener('mousemove', onResizeMove);
-  document.addEventListener('mouseup', onResizeEnd);
-  // Suppress text selection and lock the cursor so the drag feels like
-  // a UI gesture rather than a stray drag-select on the page content.
-  document.body.style.userSelect = 'none';
-  document.body.style.cursor = 'col-resize';
-}
-
 const selectedRequestId = ref<number | null>(null);
-
 const sessionIdRef = toRef(props, 'sessionId');
+
 const {
   requests, calls, parsedPayloads,
   loadingRequests, loadingCalls, error,
-  payloadsByCallId, childrenByParent, rootCalls, parentByCallId, callMeta
+  payloadsByCallId, childrenByParent, rootCalls, parentByCallId, callMeta,
+  callIdsByObjectId
 } = useRequestData(sessionIdRef, selectedRequestId);
 
 const {
@@ -115,265 +56,127 @@ const {
 const provenance = useProvenance(parsedPayloads, callMeta, sessionIdRef, selectedRequestId);
 const valueSearch = useValueSearch(sessionIdRef, selectedRequestId);
 
-// Currently-inspected call. Drives CallInspectionCard in the center
-// pane and the "selected" affordance on FrameCard rows.
-const selectedCallId = ref<string | null>(null);
-
-// Bare setter — used by gotoAndSelect (which already carries its own
-// kind/path target) and by the request-change reset. Manual row
-// clicks go through selectCall() below, which adds auto-navigation
-// to the inspected instance when tracing is active.
-function setSelectedCallId(id: string | null): void {
-  selectedCallId.value = id;
-}
-
-// SELECT_CALL provider — called by FrameCard on manual row click.
-// When an instance is being traced AND this call has the instance,
-// auto-navigates the right-pane PayloadViewer to where the instance
-// lives so the developer doesn't have to hunt for it among TI / AR /
-// AX / RE. Defined later (after gotoAndSelect / instanceAppearances /
-// findInstanceLocation are in scope) — see selectCall below.
+// Right-pane card stack. Owns inspectionCallIds/collapsedCards/drag
+// state and the selectedCallId that pairs with it (the "selected"
+// affordance on FrameCard rows mirrors which card is focused).
 const callsById = computed<Map<string, CallRow>>(() => {
   const m = new Map<string, CallRow>();
   for (const c of calls.value) m.set(c.call_id, c);
   return m;
 });
-const selectedCall = computed<CallRow | null>(() => {
-  const id = selectedCallId.value;
-  return id ? (callsById.value.get(id) || null) : null;
+const stack = useInspectionStack({ callsById });
+
+// Template-side helpers — splitting transientCallId / pinnedCallIds
+// into resolved CallRow objects keeps the template free of repeated
+// callsById lookups and lets the v-for over pinned use idx as a
+// pinned-relative index for the drag handlers.
+const transientCard = computed<CallRow | null>(() => {
+  const id = stack.transientCallId.value;
+  if (!id) return null;
+  return callsById.value.get(id) || null;
 });
-
-// Inspection cards in insertion order. Single ordered list — every
-// click that "inspects" a call appends a new card here (or, if the
-// call already has a card, just focuses the existing one). Existing
-// cards never move on their own; only the user re-orders them via
-// drag-and-drop. The previous current/pinned dichotomy was removed
-// because promoting a "current" card into a "pinned" stack on the
-// next click was rearrangement-by-default, which the user explicitly
-// does not want.
-const inspectionCallIds = ref<string[]>([]);
-const collapsedCards = ref<Set<string>>(new Set());
-
-function inspectCall(id: string): void {
-  if (!inspectionCallIds.value.includes(id)) {
-    // Prepend: newest at the top so the most recently opened card
-    // is immediately visible without scrolling. Existing cards keep
-    // their relative order.
-    inspectionCallIds.value = [id, ...inspectionCallIds.value];
-  }
-  setSelectedCallId(id);
-}
-
-function closeInspection(id: string): void {
-  inspectionCallIds.value = inspectionCallIds.value.filter(x => x !== id);
-  if (collapsedCards.value.has(id)) {
-    const next = new Set(collapsedCards.value);
-    next.delete(id);
-    collapsedCards.value = next;
-  }
-  if (selectedCallId.value === id) setSelectedCallId(null);
-}
-
-function setCardCollapsed(id: string, collapsed: boolean): void {
-  const next = new Set(collapsedCards.value);
-  if (collapsed) next.add(id); else next.delete(id);
-  collapsedCards.value = next;
-}
-
-const inspectionCalls = computed<CallRow[]>(() => {
+const pinnedCalls = computed<CallRow[]>(() => {
   const map = callsById.value;
   const out: CallRow[] = [];
-  for (const id of inspectionCallIds.value) {
+  for (const id of stack.pinnedCallIds.value) {
     const c = map.get(id);
     if (c) out.push(c);
   }
   return out;
 });
 
-// Drag-to-reorder state. Uses native HTML5 dnd: handle on each
-// card's header is draggable, every card body is a drop target.
-// dragOverIdx + dragOverPos drive a CSS class on the target card
-// for the drop indicator (line above or below).
-const dragSourceIdx = ref<number | null>(null);
-const dragOverIdx = ref<number | null>(null);
-const dragOverPos = ref<'before' | 'after'>('before');
-
-function onCardDragStart(idx: number, e: DragEvent): void {
-  dragSourceIdx.value = idx;
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', String(idx));
-  }
+// Transient-card event helpers. The inline arrow form
+//   `(v) => stack.setCardCollapsed(transientCard.call_id, v)`
+// loses vue-tsc's v-if narrowing inside the closure, so use stable
+// wrappers that re-read transientCallId.
+function onTransientSetCollapsed(v: boolean): void {
+  const id = stack.transientCallId.value;
+  if (id) stack.setCardCollapsed(id, v);
 }
-function onCardDragOver(idx: number, e: DragEvent): void {
-  if (dragSourceIdx.value === null) return;
-  e.preventDefault();
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-  const target = e.currentTarget as HTMLElement | null;
-  if (!target) return;
-  const rect = target.getBoundingClientRect();
-  const midY = rect.top + rect.height / 2;
-  dragOverIdx.value = idx;
-  dragOverPos.value = e.clientY < midY ? 'before' : 'after';
-}
-function onCardDragLeave(idx: number): void {
-  if (dragOverIdx.value === idx) dragOverIdx.value = null;
-}
-function onCardDrop(idx: number, e: DragEvent): void {
-  e.preventDefault();
-  const from = dragSourceIdx.value;
-  dragSourceIdx.value = null;
-  dragOverIdx.value = null;
-  if (from === null) return;
-  let to = idx + (dragOverPos.value === 'after' ? 1 : 0);
-  if (from < to) to -= 1;
-  if (from === to) return;
-  const next = [...inspectionCallIds.value];
-  const [moved] = next.splice(from, 1);
-  next.splice(to, 0, moved);
-  inspectionCallIds.value = next;
-}
-function onCardDragEnd(): void {
-  dragSourceIdx.value = null;
-  dragOverIdx.value = null;
+function onTransientClose(): void {
+  const id = stack.transientCallId.value;
+  if (id) stack.closeInspection(id);
 }
 
-// Instance the user picked to trace on the tree. Click an envelope's
-// "🔎 trace" button in any inspection card to set; click the same
-// instance again to clear (toggle).
-const inspectedInstance = ref<TraceTarget | null>(null);
-function setInspectedInstance(t: TraceTarget): void {
-  if (inspectedInstance.value?.objectId === t.objectId) {
-    inspectedInstance.value = null;
-  } else {
-    inspectedInstance.value = t;
-  }
-}
-function clearInspectedInstance(): void { inspectedInstance.value = null; }
-
-// Per-call appearance kind for the inspected instance: 'mutated' when
-// this call's own_hash for the instance changed (AR vs AX), 'appears'
-// when the instance is just present in any of the call's payloads.
-// Direct only — no subtree rollup. The trace banner's ↑/↓ buttons
-// handle navigation across the chronological appearance list, which
-// is the right primitive for "where else does this instance live".
-//
-// Walks parsed payload JSON for envelopes whose __meta__.id matches.
-// Doesn't rely on PayloadRow.object_ids — that column is sometimes
-// absent from the request-payloads endpoint, and walking the parsed
-// tree we already have is cheap (one pass per trace change, runs
-// only when inspectedInstance is non-null).
-const instanceAppearancesByCallId = computed<Map<string, AppearanceKind>>(() => {
-  const out = new Map<string, AppearanceKind>();
-  const inst = inspectedInstance.value;
-  if (!inst) return out;
-  const id = inst.objectId;
-  for (const p of parsedPayloads.value) {
-    if (out.get(p.call_id) === 'appears') continue;
-    let found = false;
-    walkEnvelopes(p.parsed, (env) => {
-      if (env.__meta__.id === id) found = true;
-    });
-    if (found && !out.has(p.call_id)) out.set(p.call_id, 'appears');
-  }
-  for (const [callId, ids] of mutatedObjectsByCallId.value) {
-    if (ids.has(id)) out.set(callId, 'mutated');
-  }
-  return out;
-});
-
-// Chronologically-ordered list of call ids where the instance appears.
-// Sorted by callMeta.pre (DFS pre-order) — same total ordering the
-// rest of the UI uses for "what happened next?". Drives ↑/↓ navigation
-// in the trace banner.
-const orderedAppearanceCallIds = computed<string[]>(() => {
-  const ids = Array.from(instanceAppearancesByCallId.value.keys());
-  const meta = callMeta.value;
-  ids.sort((a, b) => (meta.get(a)?.pre ?? 0) - (meta.get(b)?.pre ?? 0));
-  return ids;
-});
-
-const inspectedCount = computed(() => orderedAppearanceCallIds.value.length);
-
-// Cursor is derived from the current selection: if the selected call
-// is in the appearance list, that's our position; otherwise -1 (no
-// position, ↓ goes to first / ↑ goes to last). Manual clicks update
-// the counter naturally without a separate state ref to keep in sync.
-const traceCursor = computed<number>(() => {
-  const id = selectedCallId.value;
-  if (!id) return -1;
-  return orderedAppearanceCallIds.value.indexOf(id);
-});
-
-// Walk the call's payloads to find where the instance lives, so the
-// JsonTree highlight can land on the actual envelope. Prefers TI →
-// AR → AX → RE (the order they were observed in this call).
-const PAYLOAD_KIND_ORDER: PayloadKind[] = ['TI', 'AR', 'AX', 'RE'];
-function findInstanceLocation(callId: string, objectId: number): { kind: PayloadKind; path: Path } | null {
-  const ps = payloadsByCallId.value.get(callId) || [];
-  for (const k of PAYLOAD_KIND_ORDER) {
-    const p = ps.find(x => x.kind === k);
-    if (!p?.parsed) continue;
-    const path = findPathToObjectId(p.parsed, objectId);
-    if (path) return { kind: k, path };
-  }
-  return null;
-}
-
-// Ref to the call-tree panel so we can call its public highlightCall
-// method after a programmatic navigation. The panel owns the highlight
-// state internally — this view doesn't poke at FrameCard rows directly.
+// Ref to the call-tree panel so trace nav can flash + scroll a row in
+// addition to opening its inspection card. Created up front because
+// useInstanceTrace closes over highlightCallRow below.
 const callTreeRef = ref<InstanceType<typeof CallTreePanel> | null>(null);
 
-// Random-access nav: jump to a specific appearance call by id. Used
-// by both the trace ↑/↓ buttons (via index → callId) and the bubble
-// click affordance on each FrameCard row. Both flash the row and
-// open the inspection card pointed at the instance's path.
-function gotoAppearanceForCall(callId: string): void {
-  const inst = inspectedInstance.value;
-  if (!inst) return;
-  const loc = findInstanceLocation(callId, inst.objectId);
-  gotoAndSelect({
-    callId,
-    kind: loc?.kind || 'AR',
-    path: loc?.path || []
-  });
-  // Flash + scroll the call row in the tree, separate from the JSON-
-  // node highlight that gotoAndSelect drives inside the inspection
-  // card. Both fire together so the user sees "you are here" on both
-  // sides of the workspace.
-  callTreeRef.value?.highlightCall(callId);
+// Cross-pane jump used by trace nav AND the tool panels. Composables
+// (instance trace below) only need the gotoAndSelect handle, but they
+// need it to exist before they're constructed — so define it first.
+//
+// Goes through showTransient — navigations replace the browsing slot
+// rather than piling cards onto the right pane. The user pins
+// (📌 button on the transient card's header) to promote a card out of
+// the slot when they want to keep it.
+function gotoAndSelect(addr: JumpAddress): void {
+  stack.showTransient(addr.callId);
+  goto(addr);
 }
-function gotoAppearanceAt(index: number): void {
-  const ids = orderedAppearanceCallIds.value;
-  if (!ids.length) return;
-  const wrapped = ((index % ids.length) + ids.length) % ids.length;
-  gotoAppearanceForCall(ids[wrapped]);
-}
-function gotoNextAppearance(): void { gotoAppearanceAt(traceCursor.value + 1); }
-function gotoPrevAppearance(): void { gotoAppearanceAt(traceCursor.value - 1); }
 
-const inspectedShortClass = computed(() => {
-  const c = inspectedInstance.value?.className;
-  if (!c) return '';
-  return String(c).split('.').pop() || c;
+const trace = useInstanceTrace({
+  callIdsByObjectId,
+  mutatedObjectsByCallId,
+  payloadsByCallId,
+  callMeta,
+  selectedCallId: stack.selectedCallId,
+  gotoAndSelect,
+  highlightCallRow: (callId) => callTreeRef.value?.highlightCall(callId)
 });
 
-// Manual row-click handler (FrameCard's ↗ inspect chip). Adds an
-// inspection card if one for this call doesn't exist yet, then —
-// when an instance is being traced AND this call has the instance
-// — auto-navigates the card's PayloadViewer to the instance's path
-// so the developer doesn't have to hunt for it among TI / AR / AX /
-// RE. gotoAndSelect (used for programmatic jumps from tool panels)
-// carries its own kind/path target and uses inspectCall directly.
+// Manual row-click handler (FrameCard's ↗ inspect chip). Shows the
+// call in the transient browsing slot and — when an instance is being
+// traced AND this call has the instance — auto-navigates the card's
+// PayloadViewer to the instance's path so the developer doesn't have
+// to hunt for it among TI / AR / AX / RE. The user pins (📌) when
+// they want the card kept across the next navigation.
 function selectCall(id: string): void {
-  inspectCall(id);
-  const inst = inspectedInstance.value;
+  stack.showTransient(id);
+  const inst = trace.inspectedInstance.value;
   if (!inst) return;
-  if (!instanceAppearancesByCallId.value.has(id)) return;
-  const loc = findInstanceLocation(id, inst.objectId);
+  if (!trace.instanceAppearancesByCallId.value.has(id)) return;
+  const loc = trace.findInstanceLocation(id, inst.objectId);
   if (loc) goto({ callId: id, kind: loc.kind, path: loc.path });
 }
+
+// Watch model. Local to this view because it scopes to one
+// (session, request) — moving requests should clear watches.
+const watches = ref<Watch[]>([]);
+
+function watchKey(w: Watch): string {
+  if (w.kind === 'field') return `field:${w.objectId}:${(w.fieldPath || []).join('.')}`;
+  return `instance:${w.objectId}`;
+}
+
+function pinWatch(w: Watch | null | undefined): void {
+  if (!w || w.objectId == null) return;
+  const key = watchKey(w);
+  if (!watches.value.some(x => watchKey(x) === key)) {
+    watches.value = [...watches.value, w];
+  }
+  // Surface the panel that just gained content. Even on duplicate
+  // pins, so the click never feels like a silent no-op.
+  toolStrip.setActiveTool('watch');
+}
+
+function removeWatch(idx: number): void {
+  watches.value = watches.value.filter((_, i) => i !== idx);
+}
+
+function setOrigin(t: OriginTarget): void {
+  provenance.setTarget(t);
+  toolStrip.setActiveTool('origin');
+}
+
+const toolBadges = computed<Record<ToolId, number>>(() => ({
+  mutations: mutationGroups.value.length,
+  watch:     watches.value.length,
+  origin:    provenance.target.value ? 1 : 0,
+  search:    valueSearch.hits.value.length
+}));
+const toolStrip = useToolStrip({ badges: toolBadges });
 
 provide(PAYLOADS_BY_CALL_ID, payloadsByCallId);
 provide(CHILDREN_BY_PARENT, childrenByParent);
@@ -383,89 +186,22 @@ provide(MUTATED_OBJECTS_BY_CALL_ID, mutatedObjectsByCallId);
 provide(ADDED_OBJECTS_BY_CALL_ID, addedObjectsByCallId);
 provide(HIGHLIGHT, highlight);
 provide(NAV_TICK, navTick);
-provide(SELECT_CALL, selectCall);
-provide(SELECTED_CALL_ID, selectedCallId);
-provide(INSPECTED_INSTANCE, inspectedInstance);
-provide(INSTANCE_APPEARANCES_BY_CALL_ID, instanceAppearancesByCallId);
-provide(NAVIGATE_TO_APPEARANCE, gotoAppearanceForCall);
-
-// Jumps from tool panels (mutations, watches, origin, search) need to
-// land in a mounted PayloadViewer to drive the highlight scroll. The
-// only PayloadViewers now live inside CallInspectionCard, so a jump
-// must ensure an inspection card for the target exists (inspectCall
-// handles "add if absent, focus existing otherwise"). Also uncollapses
-// the card if it was folded.
-function gotoAndSelect(addr: JumpAddress): void {
-  inspectCall(addr.callId);
-  if (collapsedCards.value.has(addr.callId)) {
-    const next = new Set(collapsedCards.value);
-    next.delete(addr.callId);
-    collapsedCards.value = next;
-  }
-  goto(addr);
-}
-
-// Watch model. Local to this view because it scopes to one
-// (session, request) — moving requests should clear watches.
-const watches = ref<Watch[]>([]);
-
-function pinWatch(w: Watch | null | undefined): void {
-  if (!w || w.objectId == null) return;
-  const key = watchKey(w);
-  if (!watches.value.some(x => watchKey(x) === key)) {
-    watches.value = [...watches.value, w];
-  }
-  // Mirror the origin click affordance: surface the panel that just
-  // gained content. Same expand even when the watch already existed,
-  // so a duplicate click still feels responsive (the user gets focus
-  // on the panel rather than a silent no-op).
-  activeTool.value = 'watch';
-}
-
-function watchKey(w: Watch): string {
-  if (w.kind === 'field') return `field:${w.objectId}:${(w.fieldPath || []).join('.')}`;
-  return `instance:${w.objectId}`;
-}
-
-function removeWatch(idx: number): void {
-  watches.value = watches.value.filter((_, i) => i !== idx);
-}
-
-// Origin target lives inside the provenance composable; the view just
-// wires the user click → tool expand + composable update. Subsequent
-// clicks just replace the target without further nav.
-function setOrigin(t: OriginTarget): void {
-  provenance.setTarget(t);
-  activeTool.value = 'origin';
-}
-
-const toolMeta: Record<ToolId, { label: string; icon: string }> = {
-  mutations: { label: 'Mutations', icon: '⟳' },
-  watch:     { label: 'Watches',   icon: '⊙' },
-  origin:    { label: 'Origin',    icon: '↤' },
-  search:    { label: 'Search',    icon: '⌕' }
-};
-const toolIds: ToolId[] = ['mutations', 'watch', 'origin', 'search'];
-const toolBadge = computed<Record<ToolId, number>>(() => ({
-  mutations: mutationGroups.value.length,
-  watch:     watches.value.length,
-  origin:    provenance.target.value ? 1 : 0,
-  search:    valueSearch.hits.value.length
-}));
-const activeToolLabel = computed(() => activeTool.value ? toolMeta[activeTool.value].label : '');
-
-function clearOrigin(): void {
-  provenance.clear();
-}
+provide(CALL_SELECTION, {
+  selectedId: stack.selectedCallId,
+  select: selectCall
+});
+provide(INSTANCE_TRACE, {
+  instance: trace.inspectedInstance,
+  appearances: trace.instanceAppearancesByCallId,
+  navigateTo: trace.gotoAppearanceForCall
+});
 
 // Reset navigator + watches + origin + inspection whenever the active
 // request changes.
 watch(selectedRequestId, () => {
   watches.value = [];
-  selectedCallId.value = null;
-  inspectionCallIds.value = [];
-  collapsedCards.value = new Set();
-  inspectedInstance.value = null;
+  stack.reset();
+  trace.clearInspectedInstance();
   provenance.clear();
   resetNavigator();
 });
@@ -473,7 +209,7 @@ watch(selectedRequestId, () => {
 // Clearing the trace target also clears the call-tree highlight so a
 // stale "you are here" outline doesn't linger on a row that no longer
 // has any reason to be highlighted.
-watch(inspectedInstance, (v) => {
+watch(trace.inspectedInstance, (v) => {
   if (v == null) callTreeRef.value?.clearHighlight();
 });
 </script>
@@ -516,41 +252,61 @@ watch(inspectedInstance, (v) => {
                          :rootCalls="rootCalls"
                          :callsLoading="loadingCalls"
                          :hasNoCalls="!calls.length && selectedRequestId != null"
-                         :inspectedInstance="inspectedInstance"
-                         :inspectedShortClass="inspectedShortClass"
-                         :inspectedCount="inspectedCount"
-                         :traceCursor="traceCursor"
+                         :inspectedInstance="trace.inspectedInstance.value"
+                         :inspectedShortClass="trace.inspectedShortClass.value"
+                         :inspectedCount="trace.inspectedCount.value"
+                         :traceCursor="trace.traceCursor.value"
                          @pin="pinWatch"
                          @origin="setOrigin"
-                         @goto-prev-appearance="gotoPrevAppearance"
-                         @goto-next-appearance="gotoNextAppearance"
-                         @clear-instance="clearInspectedInstance" />
+                         @goto-prev-appearance="trace.gotoPrevAppearance"
+                         @goto-next-appearance="trace.gotoNextAppearance"
+                         @clear-instance="trace.clearInspectedInstance" />
         </SplitterPanel>
 
         <SplitterPanel :size="50" :minSize="20" class="inspection-pane">
           <div class="inspection-area">
-            <CallInspectionCard v-for="(c, idx) in inspectionCalls"
+            <!-- Transient slot — at most one card. No drag handle, no
+                 drag-drop class flags; lives above the pinned list and
+                 gets replaced by the next nav. The 📌 button on its
+                 header promotes it into the pinned list below. -->
+            <CallInspectionCard v-if="transientCard"
+                                :key="transientCard.call_id"
+                                :call="transientCard"
+                                :transient="true"
+                                :collapsed="stack.collapsedCards.value.has(transientCard.call_id)"
+                                @pin="pinWatch"
+                                @origin="setOrigin"
+                                @trace="trace.setInspectedInstance"
+                                @close="onTransientClose"
+                                @set-collapsed="onTransientSetCollapsed"
+                                @pin-card="stack.pinCurrent" />
+
+            <!-- Pinned cards — drag-reorderable. idx is pinned-relative
+                 so the drag handlers see their own array indexes. -->
+            <CallInspectionCard v-for="(c, idx) in pinnedCalls"
                                 :key="c.call_id"
                                 :call="c"
-                                :collapsed="collapsedCards.has(c.call_id)"
+                                :transient="false"
+                                :collapsed="stack.collapsedCards.value.has(c.call_id)"
                                 :class="{
-                                  'drop-before': dragOverIdx === idx && dragOverPos === 'before',
-                                  'drop-after':  dragOverIdx === idx && dragOverPos === 'after',
-                                  'dragging':    dragSourceIdx === idx
+                                  'drop-before': stack.dragOverIdx.value === idx && stack.dragOverPos.value === 'before',
+                                  'drop-after':  stack.dragOverIdx.value === idx && stack.dragOverPos.value === 'after',
+                                  'dragging':    stack.dragSourceIdx.value === idx
                                 }"
                                 @pin="pinWatch"
                                 @origin="setOrigin"
-                                @trace="setInspectedInstance"
-                                @close="closeInspection(c.call_id)"
-                                @set-collapsed="(v) => setCardCollapsed(c.call_id, v)"
-                                @handle-drag-start="onCardDragStart(idx, $event)"
-                                @dragover="onCardDragOver(idx, $event)"
-                                @dragleave="onCardDragLeave(idx)"
-                                @drop="onCardDrop(idx, $event)"
-                                @dragend="onCardDragEnd" />
-            <div v-if="!inspectionCalls.length" class="inspection-placeholder">
+                                @trace="trace.setInspectedInstance"
+                                @close="stack.closeInspection(c.call_id)"
+                                @set-collapsed="(v) => stack.setCardCollapsed(c.call_id, v)"
+                                @handle-drag-start="stack.onCardDragStart(idx, $event)"
+                                @dragover="stack.onCardDragOver(idx, $event)"
+                                @dragleave="stack.onCardDragLeave(idx)"
+                                @drop="stack.onCardDrop(idx, $event)"
+                                @dragend="stack.onCardDragEnd" />
+
+            <div v-if="!transientCard && !pinnedCalls.length" class="inspection-placeholder">
               <p>Click <code>↗</code> on a call in the tree to open its TI / AR / AX / RE.</p>
-              <p class="hint">Cards stack in the order you open them. Drag a card's grip (⋮⋮) to reorder; click <code>✕</code> to close.</p>
+              <p class="hint">A new card replaces the previous one as you browse. Click <code>📌</code> on its header to keep it; pinned cards stack below and are drag-reorderable.</p>
             </div>
           </div>
         </SplitterPanel>
@@ -560,37 +316,37 @@ watch(inspectedInstance, (v) => {
            plus a content overlay (only when a tool is active). The
            panels remain mounted via v-show so per-group / per-row
            expansion state survives expand/collapse. -->
-      <aside class="tool-strip" :class="{ expanded: activeTool != null }">
-        <section v-if="activeTool != null"
+      <aside class="tool-strip" :class="{ expanded: toolStrip.activeTool.value != null }">
+        <section v-if="toolStrip.activeTool.value != null"
                  class="tool-content"
-                 :style="{ width: toolWidth + 'px' }">
+                 :style="{ width: toolStrip.toolWidth.value + 'px' }">
           <div class="tool-resize-handle"
-               @mousedown.prevent="onResizeStart"
+               @mousedown.prevent="toolStrip.onResizeStart"
                title="Drag to resize"></div>
           <header class="tool-header">
-            <span class="tool-title">{{ activeToolLabel }}</span>
-            <button class="tool-close" @click="activeTool = null" title="Collapse">×</button>
+            <span class="tool-title">{{ toolStrip.activeToolLabel.value }}</span>
+            <button class="tool-close" @click="toolStrip.setActiveTool(null)" title="Collapse">×</button>
           </header>
           <div class="tool-body">
             <template v-if="selectedRequestId != null">
-              <MutationsPanel v-show="activeTool === 'mutations'"
+              <MutationsPanel v-show="toolStrip.activeTool.value === 'mutations'"
                               :groups="mutationGroups"
                               :summary="mutationsSummary"
                               :loading="loadingMutations"
                               :error="mutationsError"
                               @jump="gotoAndSelect" />
-              <WatchPanel v-show="activeTool === 'watch'"
+              <WatchPanel v-show="toolStrip.activeTool.value === 'watch'"
                           :watches="watches"
                           :payloads="parsedPayloads"
                           :callMeta="callMeta"
                           @remove="removeWatch"
                           @jump="gotoAndSelect" />
-              <OriginPanel v-show="activeTool === 'origin'"
+              <OriginPanel v-show="toolStrip.activeTool.value === 'origin'"
                            :provenance="provenance"
                            @jump="gotoAndSelect" />
-              <SearchPanel v-show="activeTool === 'search'"
+              <SearchPanel v-show="toolStrip.activeTool.value === 'search'"
                            :search="valueSearch"
-                           :active="activeTool === 'search'"
+                           :active="toolStrip.activeTool.value === 'search'"
                            @jump="gotoAndSelect" />
             </template>
             <p v-else class="tool-empty">Pick a request to start.</p>
@@ -598,15 +354,15 @@ watch(inspectedInstance, (v) => {
         </section>
 
         <nav class="tool-icons">
-          <button v-for="id in toolIds"
+          <button v-for="id in toolStrip.toolIds"
                   :key="id"
                   class="tool-icon"
-                  :class="{ active: activeTool === id }"
-                  :title="toolMeta[id].label"
-                  @click="toggleTool(id)">
-            <span class="tool-glyph">{{ toolMeta[id].icon }}</span>
-            <span class="tool-label">{{ toolMeta[id].label }}</span>
-            <span v-if="toolBadge[id]" class="tool-badge">{{ toolBadge[id] }}</span>
+                  :class="{ active: toolStrip.activeTool.value === id }"
+                  :title="toolStrip.toolMeta[id].label"
+                  @click="toolStrip.toggleTool(id)">
+            <span class="tool-glyph">{{ toolStrip.toolMeta[id].icon }}</span>
+            <span class="tool-label">{{ toolStrip.toolMeta[id].label }}</span>
+            <span v-if="toolStrip.toolBadge.value[id]" class="tool-badge">{{ toolStrip.toolBadge.value[id] }}</span>
           </button>
         </nav>
       </aside>

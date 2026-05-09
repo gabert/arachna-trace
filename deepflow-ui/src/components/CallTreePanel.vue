@@ -13,9 +13,7 @@
 import { provide, ref } from 'vue';
 import ProgressSpinner from 'primevue/progressspinner';
 import FrameCard from './FrameCard.vue';
-import {
-  HIGHLIGHTED_CALL_ID, HIGHLIGHT_CALL_TICK
-} from '../keys';
+import { CALL_HIGHLIGHT } from '../keys';
 import type { CallRow, OriginTarget, TraceTarget, Watch } from '../types';
 
 const props = defineProps<{
@@ -46,8 +44,10 @@ const emit = defineEmits<{
 const highlightedCallId = ref<string | null>(null);
 const highlightTick = ref(0);
 
-provide(HIGHLIGHTED_CALL_ID, highlightedCallId);
-provide(HIGHLIGHT_CALL_TICK, highlightTick);
+provide(CALL_HIGHLIGHT, {
+  callId: highlightedCallId,
+  tick: highlightTick
+});
 
 // Public API surface. Parent grabs a ref to this component and calls
 // highlightCall(callId) after a programmatic navigation (trace ↑/↓,

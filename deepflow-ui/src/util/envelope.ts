@@ -111,6 +111,30 @@ function visit(node: unknown, path: Path, visitor: EnvelopeVisitor): void {
   }
 }
 
+// Path-free variant of walkEnvelopes for callers that only care about
+// the envelope identity, not where it lives in the tree. Skips the
+// per-step `[...path, seg]` allocation, which dominates the cost on
+// deep payload trees.
+export type EnvelopeVisitorNoPath = (envelope: Envelope) => void;
+
+export function walkEnvelopesNoPath(root: unknown, visitor: EnvelopeVisitorNoPath): void {
+  visitNoPath(root, visitor);
+}
+
+function visitNoPath(node: unknown, visitor: EnvelopeVisitorNoPath): void {
+  if (node == null || typeof node !== 'object') return;
+  if (isEnvelope(node)) visitor(node);
+  if (Array.isArray(node)) {
+    for (let i = 0; i < node.length; i++) visitNoPath(node[i], visitor);
+    return;
+  }
+  const obj = node as Record<string, unknown>;
+  for (const k of Object.keys(obj)) {
+    if (k === '__meta__') continue;
+    visitNoPath(obj[k], visitor);
+  }
+}
+
 // Collect every appearance of `targetId` along with each appearance's
 // path. A single object_id can appear multiple times in one payload
 // tree (same instance referenced from different fields), and the

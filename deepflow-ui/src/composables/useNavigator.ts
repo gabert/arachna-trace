@@ -50,7 +50,7 @@ export function useNavigator(
     // settles. The target call's own inspection card is what hosts the
     // PayloadViewer that JsonTree's highlight will land in — caller
     // (SessionDetailView) is responsible for selecting it via the
-    // SELECT_CALL provider.
+    // CALL_SELECTION.select() provider.
     const nextExp = new Map(expansionOverrides.value);
     let cur: string | undefined = addr.callId;
     while (cur != null) {

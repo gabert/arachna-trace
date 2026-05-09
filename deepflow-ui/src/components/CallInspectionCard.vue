@@ -23,8 +23,15 @@ import type { CallRow, OriginTarget, PayloadKind, PayloadRow, TraceTarget, Watch
 const props = withDefaults(defineProps<{
   call: CallRow;
   collapsed?: boolean;
+  // Transient cards are the single browsing slot — replaced on the
+  // next nav, until the user pins them. They render a 📌 button
+  // instead of the ⋮⋮ drag handle and get a left-edge accent stripe
+  // so the user can tell at a glance "this one will go away if I
+  // step further".
+  transient?: boolean;
 }>(), {
-  collapsed: false
+  collapsed: false,
+  transient: false
 });
 
 const emit = defineEmits<{
@@ -32,12 +39,18 @@ const emit = defineEmits<{
   (e: 'origin', target: OriginTarget): void;
   (e: 'trace', target: TraceTarget): void;
   (e: 'close'): void;
+  // User clicked 📌 on a transient card to promote it to the pinned
+  // list. Distinct from `pin` (which carries a Watch payload from
+  // PayloadViewer / JsonTree).
+  (e: 'pin-card'): void;
   // Card collapse delegates to the parent, which holds the
   // collapsedCards Set so navigator jumps can auto-uncollapse a target.
   (e: 'set-collapsed', collapsed: boolean): void;
   // Drag-handle initiated dragstart. Parent owns the reorder state;
   // dragover/dragleave/drop/dragend are bound directly on the card
   // root and bubble naturally from the underlying DOM, no re-emit.
+  // Only emitted for pinned cards (transient cards have no drag
+  // handle), so the parent's pinned-relative idx stays accurate.
   (e: 'handle-drag-start', evt: DragEvent): void;
 }>();
 
@@ -84,11 +97,16 @@ watch(() => props.call.call_id, () => {
 
 <template>
   <CollapsiblePanel class="cic"
-                    :class="{ collapsed }"
+                    :class="{ collapsed, transient }"
                     :collapsed="collapsed"
                     @update:collapsed="(v) => emit('set-collapsed', v)">
     <template #header>
-      <span class="cic-drag-handle"
+      <button v-if="transient"
+              class="cic-pin-btn"
+              @click.stop="emit('pin-card')"
+              title="Pin to keep this card open (otherwise it gets replaced on the next trace step or inspect click)">📌</button>
+      <span v-else
+            class="cic-drag-handle"
             draggable="true"
             @dragstart="onHandleDragStart"
             @click.stop
@@ -161,6 +179,30 @@ watch(() => props.call.call_id, () => {
 }
 .cic-drag-handle:hover { color: var(--text-primary); }
 .cic-drag-handle:active { cursor: grabbing; }
+
+/* Pin button — replaces the drag handle on transient cards. Same
+   slot, same width, so the header layout doesn't shift when the card
+   gets pinned. The 📌 emoji renders slightly off-baseline; nudged
+   with line-height for a flush header row. */
+.cic-pin-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: 0;
+  color: var(--accent-blue);
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0.05rem 0.3rem;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.cic-pin-btn:hover { background: var(--bg-hover); }
+
+/* Transient card — left-edge accent stripe so the user can tell it
+   apart from pinned cards at a glance. Same accent-blue used on the
+   pin button, reinforcing "click here to keep me". */
+.cic.transient {
+  border-left: 3px solid var(--accent-blue);
+}
 
 .cic-close-btn {
   background: none; border: 0; color: var(--text-muted); cursor: pointer;

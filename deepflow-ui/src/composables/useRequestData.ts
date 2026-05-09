@@ -1,6 +1,7 @@
 import { computed, ref, watch } from 'vue';
 import type { ComputedRef, Ref } from 'vue';
 import { api } from '../api/client';
+import { walkEnvelopesNoPath } from '../util/envelope';
 import { tryParse } from '../util/format';
 import type { CallMeta, CallRow, PayloadNode, PayloadRow, RequestRow } from '../types';
 
@@ -20,6 +21,12 @@ export interface UseRequestData {
   rootCalls: ComputedRef<CallRow[]>;
   parentByCallId: ComputedRef<Map<string, string>>;
   callMeta: ComputedRef<Map<string, CallMeta>>;
+  // Inverted index: which call_ids contain envelopes for a given
+  // object_id, anywhere in any of the call's payloads. Built once per
+  // request load with a single DFS over every parsed payload — the
+  // alternative (walking on every trace toggle) was O(N_payloads ×
+  // tree) per click. Consumers (instance-trace lookup) hit it O(1).
+  callIdsByObjectId: ComputedRef<Map<number, Set<string>>>;
 }
 
 // Loads requests / calls / payloads for a session and exposes the
@@ -117,6 +124,22 @@ export function useRequestData(
     return m;
   });
 
+  // One DFS over every payload, collecting "this object_id appears in
+  // these call_ids". Recomputes only when parsedPayloads changes (i.e.
+  // on request load), not on every trace target change.
+  const callIdsByObjectId: ComputedRef<Map<number, Set<string>>> = computed(() => {
+    const out = new Map<number, Set<string>>();
+    for (const p of parsedPayloads.value) {
+      walkEnvelopesNoPath(p.parsed, (env) => {
+        const id = env.__meta__.id;
+        let s = out.get(id);
+        if (!s) { s = new Set<string>(); out.set(id, s); }
+        s.add(p.call_id);
+      });
+    }
+    return out;
+  });
+
   // Build the parent → ordered children map. Children inherit the
   // server's seq order so iterating them in array order = time order.
   const childrenByParent: ComputedRef<Map<string | null, CallRow[]>> = computed(() => {
@@ -178,6 +201,7 @@ export function useRequestData(
     childrenByParent,
     rootCalls,
     parentByCallId,
-    callMeta
+    callMeta,
+    callIdsByObjectId
   };
 }

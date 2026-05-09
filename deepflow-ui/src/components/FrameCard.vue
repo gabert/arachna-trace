@@ -1,15 +1,13 @@
 <script setup lang="ts">
-import { computed, inject, ref, watch } from 'vue';
+import { computed, inject, ref } from 'vue';
 import FrameChildrenGroup from './FrameChildrenGroup.vue';
 import { fmtTime, shortSig } from '../util/format';
 import {
   CHILDREN_BY_PARENT,
   EXPANSION_DEFAULT, EXPANSION_OVERRIDES,
-  SELECT_CALL, SELECTED_CALL_ID,
-  INSPECTED_INSTANCE, INSTANCE_APPEARANCES_BY_CALL_ID,
-  HIGHLIGHTED_CALL_ID, HIGHLIGHT_CALL_TICK,
-  NAVIGATE_TO_APPEARANCE
+  CALL_SELECTION, INSTANCE_TRACE, CALL_HIGHLIGHT
 } from '../keys';
+import { useScrollIntoViewOnHighlight } from '../composables/useScrollIntoViewOnHighlight';
 import type { AppearanceKind, CallRow, OriginTarget, TraceTarget, Watch } from '../types';
 
 const props = defineProps<{ call: CallRow }>();
@@ -30,27 +28,31 @@ const expansionDefault   = inject(EXPANSION_DEFAULT, ref(false));
 const expansionOverrides = inject(EXPANSION_OVERRIDES, ref(new Map<string, boolean>()));
 
 // Click splits two ways: the disclosure button toggles expand/collapse,
-// the rest of the row sets this call as the inspection target. They
-// must not conflict — selecting a row should never accidentally
-// collapse it.
-const selectCall = inject(SELECT_CALL, (_id: string) => {});
-const selectedCallId = inject(SELECTED_CALL_ID, ref<string | null>(null));
-const isSelected = computed(() => selectedCallId.value === props.call.call_id);
-function select(): void { selectCall(props.call.call_id); }
+// the inspect chip opens the call in the right pane. They must not
+// conflict — selecting a row should never accidentally collapse it.
+// `select` is more than a setter (see CALL_SELECTION docs).
+const callSelection = inject(CALL_SELECTION, {
+  selectedId: ref<string | null>(null),
+  select: (_id: string) => {}
+});
+const isSelected = computed(() => callSelection.selectedId.value === props.call.call_id);
+function select(): void { callSelection.select(props.call.call_id); }
 
 // Bubble mark for the inspected instance — direct appearances only.
 // Collapsed parents do NOT inherit a descendant's mark; the trace
 // banner's ↑/↓ navigation is the right primitive for "find the
 // next call that touches this instance".
-const inspectedInstance = inject(INSPECTED_INSTANCE, ref<TraceTarget | null>(null));
-const instanceAppearancesByCallId = inject(INSTANCE_APPEARANCES_BY_CALL_ID,
-  computed(() => new Map<string, AppearanceKind>()));
-const tracingActive = computed(() => inspectedInstance.value != null);
+const trace = inject(INSTANCE_TRACE, {
+  instance: ref<TraceTarget | null>(null),
+  appearances: computed(() => new Map<string, AppearanceKind>()),
+  navigateTo: (_id: string) => {}
+});
+const tracingActive = computed(() => trace.instance.value != null);
 const bubbleKind = computed<AppearanceKind | null>(() =>
-  instanceAppearancesByCallId.value.get(props.call.call_id) || null);
+  trace.appearances.value.get(props.call.call_id) || null);
 const bubbleTitle = computed(() => {
-  if (!inspectedInstance.value) return '';
-  const inst = inspectedInstance.value;
+  if (!trace.instance.value) return '';
+  const inst = trace.instance.value;
   const cls = String(inst.className).split('.').pop() || inst.className;
   if (bubbleKind.value === 'mutated') {
     return `Click to inspect — ${cls} #${inst.objectId} is mutated here (own_hash changes between AR and AX)`;
@@ -62,46 +64,23 @@ const bubbleTitle = computed(() => {
 // appearance (opens inspection card pointed at the instance's path,
 // flashes + scrolls the row in the tree). Same end state as ↑/↓
 // landing on this row.
-const navigateToAppearance = inject(NAVIGATE_TO_APPEARANCE, (_id: string) => {});
 function onBubbleClick(): void {
   if (!bubbleKind.value) return;
-  navigateToAppearance(props.call.call_id);
+  trace.navigateTo(props.call.call_id);
 }
 
 // Programmatic highlight from CallTreePanel.highlightCall(). Distinct
 // from `selected` (persistent, blue, tracks the open inspection card)
 // — this is the search-cursor pointer set by the parent after trace
-// nav etc. Two coverage paths for scrollIntoView, mirroring the
-// JsonTree pattern: an isHighlighted watch (catches highlight/clear
-// transitions) and a tick watch (catches re-highlights of the same
-// call where isHighlighted didn't transition).
-const highlightedCallId = inject(HIGHLIGHTED_CALL_ID, ref<string | null>(null));
-const highlightTick = inject(HIGHLIGHT_CALL_TICK, ref(0));
-const isHighlighted = computed(() => highlightedCallId.value === props.call.call_id);
+// nav etc. The composable handles both transition (isHighlighted) and
+// re-trigger (tick) coverage paths.
+const callHighlight = inject(CALL_HIGHLIGHT, {
+  callId: ref<string | null>(null),
+  tick: ref(0)
+});
+const isHighlighted = computed(() => callHighlight.callId.value === props.call.call_id);
 const rowEl = ref<HTMLElement | null>(null);
-
-function scrollSelfIfHighlighted(): void {
-  if (!isHighlighted.value || !rowEl.value) return;
-  requestAnimationFrame(() => {
-    if (!isHighlighted.value || !rowEl.value) return;
-    if (isFullyVisible(rowEl.value)) return;
-    rowEl.value.scrollIntoView({ block: 'center' });
-  });
-}
-function isFullyVisible(el: HTMLElement): boolean {
-  const rect = el.getBoundingClientRect();
-  let parent: HTMLElement | null = el.parentElement;
-  while (parent) {
-    const style = window.getComputedStyle(parent);
-    if (style.overflowY === 'auto' || style.overflowY === 'scroll') break;
-    parent = parent.parentElement;
-  }
-  const top = parent ? parent.getBoundingClientRect().top : 0;
-  const bottom = parent ? parent.getBoundingClientRect().bottom : window.innerHeight;
-  return rect.top >= top && rect.bottom <= bottom;
-}
-watch(isHighlighted, scrollSelfIfHighlighted, { flush: 'post' });
-watch(highlightTick, scrollSelfIfHighlighted, { flush: 'post' });
+useScrollIntoViewOnHighlight(rowEl, isHighlighted, callHighlight.tick);
 
 const expanded = computed<boolean>({
   get() {
