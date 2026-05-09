@@ -14,6 +14,7 @@
 // a call whose inputs didn't carry it (the 'produced' case).
 
 import { computed, ref, watch } from 'vue';
+import CollapsiblePanel from './CollapsiblePanel.vue';
 import { fmtTime, formatValue, shortSig } from '../util/format';
 import { formatPath } from '../util/envelopeDiff';
 import type { JumpAddress, OriginAppearance, OriginMutation } from '../types';
@@ -45,8 +46,10 @@ const onlyOneRow = computed(() => {
 // Propagation rows are collapsed by default — that's the whole
 // point of the source/current framing. Reset whenever the target
 // changes so a fresh click doesn't carry old expand state.
-const propagationExpanded = ref(false);
-watch(target, () => { propagationExpanded.value = false; });
+// CollapsiblePanel uses `collapsed` semantics, so this flips the
+// polarity of the previous `propagationExpanded`.
+const propagationCollapsed = ref(true);
+watch(target, () => { propagationCollapsed.value = true; });
 
 function jumpRow(a: OriginAppearance): void {
   emit('jump', { callId: a.callId, kind: a.kind, path: a.path });
@@ -140,13 +143,14 @@ const sourceExplanation = computed(() => {
       <!-- Propagation collapse. One row when collapsed, full list
            when expanded. Hidden entirely when source and current
            are adjacent (no intermediate rows). -->
-      <div v-if="chain.propagation.length > 0" class="op-prop">
-        <button class="op-prop-toggle" @click="propagationExpanded = !propagationExpanded">
-          <span class="op-prop-disclosure">{{ propagationExpanded ? '▾' : '▸' }}</span>
+      <CollapsiblePanel v-if="chain.propagation.length > 0"
+                        class="op-prop"
+                        v-model:collapsed="propagationCollapsed">
+        <template #header>
           propagated through {{ chain.propagation.length }} method
           {{ chain.propagation.length === 1 ? 'boundary' : 'boundaries' }}
-        </button>
-        <ol v-if="propagationExpanded" class="op-prop-list">
+        </template>
+        <ol class="op-prop-list">
           <li v-for="(a, i) in chain.propagation"
               :key="i"
               class="op-row"
@@ -157,7 +161,7 @@ const sourceExplanation = computed(() => {
             <code class="op-path">{{ formatPath(a.path) || '·' }}</code>
           </li>
         </ol>
-      </div>
+      </CollapsiblePanel>
 
       <!-- Current row — where the user clicked. Suppressed when
            source === current (single-row case). -->
@@ -353,19 +357,18 @@ const sourceExplanation = computed(() => {
   border-left: 2px dashed var(--border-strong);
   padding-left: 0.7rem;
 }
-.op-prop-toggle {
-  display: flex; align-items: baseline; gap: 0.3rem;
-  background: transparent; border: 0; padding: 0.2rem 0;
+/* CollapsiblePanel renders the chevron + click affordance. Style the
+   header text inline with the previous "propagation" tone (uppercase,
+   muted, monospace) and indent the body. */
+.op-prop :deep(.cp-head) {
   font-family: ui-monospace, monospace;
   font-size: 0.78rem;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  cursor: pointer;
 }
-.op-prop-toggle:hover { color: var(--text-primary); }
-.op-prop-disclosure { width: 1ch; }
-.op-prop-list { list-style: none; padding: 0; margin: 0.25rem 0 0; }
+.op-prop :deep(.cp-body) { padding-top: 0.25rem; }
+.op-prop-list { list-style: none; padding: 0; margin: 0; }
 .op-prop-list .op-row {
   display: flex;
   gap: 0.5rem;

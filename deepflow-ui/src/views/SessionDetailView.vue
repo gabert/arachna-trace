@@ -42,6 +42,52 @@ function toggleTool(id: ToolId): void {
   activeTool.value = activeTool.value === id ? null : id;
 }
 
+// Tool-content panel width is user-resizable via a drag handle on its
+// left edge. Persisted to localStorage so the user's preferred width
+// survives reload (mirrors the Splitter's stateStorage="local" pattern
+// for the tree-vs-inspection divider).
+const TOOL_WIDTH_KEY = 'deepflow-tool-content-width';
+const TOOL_WIDTH_DEFAULT = 360;
+const TOOL_WIDTH_MIN = 220;
+const TOOL_WIDTH_MAX = 1100;
+function readStoredToolWidth(): number {
+  try {
+    const v = localStorage.getItem(TOOL_WIDTH_KEY);
+    if (!v) return TOOL_WIDTH_DEFAULT;
+    const n = parseInt(v, 10);
+    if (!Number.isFinite(n)) return TOOL_WIDTH_DEFAULT;
+    return Math.min(TOOL_WIDTH_MAX, Math.max(TOOL_WIDTH_MIN, n));
+  } catch { return TOOL_WIDTH_DEFAULT; }
+}
+const toolWidth = ref<number>(readStoredToolWidth());
+
+let dragStartX = 0;
+let dragStartWidth = 0;
+function onResizeMove(e: MouseEvent): void {
+  // Panel sits on the right; dragging the handle leftward should widen
+  // the panel, so subtract the cursor delta.
+  const delta = dragStartX - e.clientX;
+  const next = dragStartWidth + delta;
+  toolWidth.value = Math.min(TOOL_WIDTH_MAX, Math.max(TOOL_WIDTH_MIN, next));
+}
+function onResizeEnd(): void {
+  document.removeEventListener('mousemove', onResizeMove);
+  document.removeEventListener('mouseup', onResizeEnd);
+  document.body.style.userSelect = '';
+  document.body.style.cursor = '';
+  try { localStorage.setItem(TOOL_WIDTH_KEY, String(toolWidth.value)); } catch { /* quota / private mode */ }
+}
+function onResizeStart(e: MouseEvent): void {
+  dragStartX = e.clientX;
+  dragStartWidth = toolWidth.value;
+  document.addEventListener('mousemove', onResizeMove);
+  document.addEventListener('mouseup', onResizeEnd);
+  // Suppress text selection and lock the cursor so the drag feels like
+  // a UI gesture rather than a stray drag-select on the page content.
+  document.body.style.userSelect = 'none';
+  document.body.style.cursor = 'col-resize';
+}
+
 const selectedRequestId = ref<number | null>(null);
 
 const sessionIdRef = toRef(props, 'sessionId');
@@ -100,10 +146,9 @@ function togglePinCard(id: string): void {
   }
 }
 
-function toggleCardCollapsed(id: string): void {
+function setCardCollapsed(id: string, collapsed: boolean): void {
   const next = new Set(collapsedCards.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
+  if (collapsed) next.add(id); else next.delete(id);
   collapsedCards.value = next;
 }
 
@@ -383,7 +428,7 @@ watch(selectedRequestId, () => {
                                 @origin="setOrigin"
                                 @trace="setInspectedInstance"
                                 @pin-card="togglePinCard(c.call_id)"
-                                @toggle-collapsed="toggleCardCollapsed(c.call_id)" />
+                                @set-collapsed="(v) => setCardCollapsed(c.call_id, v)" />
             <div v-if="!currentCard && !pinnedCalls.length" class="inspection-placeholder">
               <p>Click a call on the left to inspect its TI / AR / AX / RE.</p>
               <p class="hint">Pin (📌) a card to keep it side-by-side with later selections.</p>
@@ -397,7 +442,12 @@ watch(selectedRequestId, () => {
            panels remain mounted via v-show so per-group / per-row
            expansion state survives expand/collapse. -->
       <aside class="tool-strip" :class="{ expanded: activeTool != null }">
-        <section v-if="activeTool != null" class="tool-content">
+        <section v-if="activeTool != null"
+                 class="tool-content"
+                 :style="{ width: toolWidth + 'px' }">
+          <div class="tool-resize-handle"
+               @mousedown.prevent="onResizeStart"
+               title="Drag to resize"></div>
           <header class="tool-header">
             <span class="tool-title">{{ activeToolLabel }}</span>
             <button class="tool-close" @click="activeTool = null" title="Collapse">×</button>
@@ -573,12 +623,32 @@ watch(selectedRequestId, () => {
   background: var(--bg-surface);
 }
 .tool-strip .tool-content {
-  width: 22rem;
+  /* Width is user-controlled via the drag handle; inline :style sets
+     it on the section element, persisted to localStorage. */
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
   background: var(--bg-base);
   min-height: 0;
+  position: relative;
+}
+
+/* Drag handle on the left edge of the tool-content panel. Wider hit
+   area (6px) than visible area (1px when idle, 3px on hover/drag) so
+   the user doesn't have to aim precisely. col-resize cursor signals
+   the gesture; the script handler manages width + persistence. */
+.tool-resize-handle {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  width: 6px;
+  margin-left: -3px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 2;
+}
+.tool-resize-handle:hover,
+.tool-resize-handle:active {
+  background: var(--accent-blue);
 }
 .tool-header {
   display: flex;

@@ -9,6 +9,7 @@ import type { AppearanceRow } from '../util/appearances';
 import { appearancesFor } from '../util/appearances';
 import { fmtTime, shortClass, shortSig } from '../util/format';
 import { HIGHLIGHT } from '../keys';
+import CollapsiblePanel from './CollapsiblePanel.vue';
 import DiffEntries from './DiffEntries.vue';
 import type { CallMeta, JumpAddress, Path, PayloadRow, Watch } from '../types';
 
@@ -26,9 +27,6 @@ const emit = defineEmits<{
 }>();
 
 const highlight = inject(HIGHLIGHT, ref(null));
-
-const collapsed = ref(false);
-function toggleCollapse(): void { collapsed.value = !collapsed.value; }
 
 const expandedRows = ref<Set<number>>(new Set());
 function isRowExpanded(j: number): boolean { return expandedRows.value.has(j); }
@@ -71,29 +69,23 @@ function onRowClick(r: AppearanceRow): void {
 </script>
 
 <template>
-  <div class="watch" :class="['watch-' + watch.kind]">
-    <header class="watch-head"
-            role="button"
-            :aria-expanded="!collapsed"
-            :title="collapsed ? 'expand' : 'collapse'"
-            @click="toggleCollapse">
-      <span class="watch-collapse" aria-hidden="true">{{ collapsed ? '▶' : '▼' }}</span>
+  <CollapsiblePanel class="watch" :class="['watch-' + watch.kind]">
+    <template #header>
       <div class="watch-title">
         <strong>{{ shortClass(watch.className) }}</strong>
         <code>#{{ watch.objectId }}</code>
         <code v-if="watch.kind === 'field'" class="watch-field">.{{ (watch.fieldPath || []).join('.') }}</code>
       </div>
-      <button class="watch-rm" @click.stop="emit('remove')" title="Remove watch">×</button>
-    </header>
-
-    <div class="watch-meta">
-      {{ rows.length }} appearances
-      · <span class="changes">{{ changedCount }}
-        {{ watch.kind === 'instance' ? 'own-state transitions' : 'value transitions' }}
+      <span class="watch-meta">
+        {{ rows.length }} appearances
+        · <span class="changes">{{ changedCount }}
+          {{ watch.kind === 'instance' ? 'own-state transitions' : 'value transitions' }}
+        </span>
       </span>
-    </div>
+      <button class="watch-rm" @click.stop="emit('remove')" title="Remove watch">×</button>
+    </template>
 
-    <table v-if="!collapsed" class="watch-results">
+    <table class="watch-results">
       <colgroup>
         <col class="c-time"><col class="c-kind"><col class="c-sig">
         <col :class="watch.kind === 'instance' ? 'c-hash' : 'c-value'">
@@ -125,37 +117,29 @@ function onRowClick(r: AppearanceRow): void {
         </template>
       </tbody>
     </table>
-  </div>
+  </CollapsiblePanel>
 </template>
 
 <style scoped>
 .watch {
   background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 4px;
-  padding: 0.5rem; margin-bottom: 0.75rem;
-}
-.watch-head {
-  display: flex; justify-content: flex-start; align-items: center; gap: 0.4rem;
-  margin-bottom: 0.15rem;
-  padding: 0.1rem 0.2rem;
-  border-radius: 3px;
-  cursor: pointer;                     /* whole header toggles — same affordance as FrameCard's row click */
-  user-select: none;
-}
-.watch-head:hover { background: var(--bg-hover); }
-.watch-head:hover .watch-collapse { color: var(--text-primary); }
-.watch-collapse {
-  color: var(--text-muted);
-  font-family: ui-monospace, monospace; font-size: var(--mono-size);
-  line-height: 1; flex-shrink: 0;
+  padding: 0.4rem 0.5rem; margin-bottom: 0.75rem;
 }
 .watch-title { display: flex; gap: 0.4rem; align-items: baseline; flex: 1; min-width: 0; overflow: hidden; }
 .watch-title strong { font-size: 0.9rem; color: var(--text-primary); }
 .watch-title code { font-family: ui-monospace, monospace; color: #c4b5fd; font-size: 0.8rem; }
 .watch-title .watch-field { color: var(--text-secondary); font-size: 0.9rem; }
-.watch-rm { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 1.05rem; line-height: 1; }
-.watch-rm:hover { color: var(--accent-red); }
-.watch-meta { color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.4rem; }
+.watch-meta { color: var(--text-muted); font-size: 0.75rem; flex-shrink: 0; }
 .watch-meta .changes { color: #fbbf24; }
+.watch-rm {
+  border: 0; background: transparent; color: var(--text-muted);
+  cursor: pointer; font-size: 1.05rem; line-height: 1;
+  flex-shrink: 0;
+}
+.watch-rm:hover { color: var(--accent-red); }
+/* CollapsiblePanel renders the body inside .cp-body — give the
+   results table breathing room from the header. */
+.watch :deep(.cp-body) { padding-top: 0.3rem; }
 
 .watch-results {
   width: 100%;

@@ -21,6 +21,7 @@ import { diffOwnState } from '../util/envelopeDiff';
 import { findByObjectId, findPathToObjectId } from '../util/envelope';
 import { shortClass, shortSig } from '../util/format';
 import { PAYLOADS_BY_CALL_ID } from '../keys';
+import CollapsiblePanel from './CollapsiblePanel.vue';
 import DiffEntries from './DiffEntries.vue';
 import type {
   DiffEntry,
@@ -53,11 +54,11 @@ const expanded = ref<Set<string>>(new Set());
 function groupKey(g: MutationGroup): string {
   return `${g.call_id}|${g.class}|${g.field_paths.map(p => p.path + ':' + p.kind).join(',')}`;
 }
-function isExpanded(g: MutationGroup): boolean { return expanded.value.has(groupKey(g)); }
-function toggleExpand(g: MutationGroup): void {
+function isCollapsed(g: MutationGroup): boolean { return !expanded.value.has(groupKey(g)); }
+function setCollapsed(g: MutationGroup, v: boolean): void {
   const k = groupKey(g);
   const next = new Set(expanded.value);
-  if (next.has(k)) next.delete(k); else next.add(k);
+  if (v) next.delete(k); else next.add(k);
   expanded.value = next;
 }
 
@@ -135,25 +136,31 @@ function jumpTo(callId: string, objectId: number): void {
           <DiffEntries :diffs="g.sampleDiff" />
         </div>
 
-        <button v-if="g.occurrences > 1" class="mp-expand" @click.stop="toggleExpand(g)">
-          {{ isExpanded(g)
-              ? '▼ collapse'
-              : '▶ show ' + (g.occurrences - 1) + ' more occurrence' + (g.occurrences > 2 ? 's' : '') }}
-        </button>
-
-        <ul v-if="isExpanded(g) && g.occurrences > 1" class="mp-members">
-          <template v-for="oid in g.object_ids" :key="oid">
-            <li v-if="oid !== g.sample.object_id"
-                class="mp-member"
-                @click="jumpTo(g.call_id, oid)">
-              <header class="mp-member-head">
-                <strong class="mp-class">{{ shortClass(g.class) }}</strong>
-                <code class="mp-id">#{{ oid }}</code>
-              </header>
-              <DiffEntries :diffs="memberDiff(g.call_id, oid) || []" />
-            </li>
+        <CollapsiblePanel v-if="g.occurrences > 1"
+                          class="mp-more"
+                          :collapsed="isCollapsed(g)"
+                          @update:collapsed="(v) => setCollapsed(g, v)">
+          <template #header="{ collapsed }">
+            <span class="mp-more-label">{{
+              collapsed
+                ? `show ${g.occurrences - 1} more occurrence${g.occurrences > 2 ? 's' : ''}`
+                : 'collapse'
+            }}</span>
           </template>
-        </ul>
+          <ul class="mp-members">
+            <template v-for="oid in g.object_ids" :key="oid">
+              <li v-if="oid !== g.sample.object_id"
+                  class="mp-member"
+                  @click="jumpTo(g.call_id, oid)">
+                <header class="mp-member-head">
+                  <strong class="mp-class">{{ shortClass(g.class) }}</strong>
+                  <code class="mp-id">#{{ oid }}</code>
+                </header>
+                <DiffEntries :diffs="memberDiff(g.call_id, oid) || []" />
+              </li>
+            </template>
+          </ul>
+        </CollapsiblePanel>
       </li>
     </ul>
   </aside>
@@ -215,12 +222,15 @@ function jumpTo(callId: string, objectId: number): void {
   padding: 0 0.4rem; border-radius: 3px; font-size: 0.75rem;
 }
 
-.mp-expand {
-  background: transparent; border: 0; padding: 0.3rem 0 0;
-  color: var(--accent-blue); font-family: ui-monospace, monospace;
-  font-size: var(--mono-size); cursor: pointer;
+/* CollapsiblePanel chrome — keep the previous accent-blue label tone
+   for the more-occurrences toggle so the affordance still pops. */
+.mp-more :deep(.cp-head) {
+  color: var(--accent-blue);
+  font-family: ui-monospace, monospace;
+  font-size: var(--mono-size);
+  padding-top: 0.3rem;
 }
-.mp-expand:hover { color: #93c5fd; }
+.mp-more :deep(.cp-head):hover .mp-more-label { color: #93c5fd; }
 
 .mp-members {
   list-style: none; padding: 0.4rem 0 0 0.7rem; margin: 0.4rem 0 0;
