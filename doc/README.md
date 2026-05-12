@@ -65,8 +65,10 @@ emitted, whether values are serialized at all, whether `this` is captured
 by reference or by content, and how large a single payload may grow before
 it is truncated. The agent records exactly what you need, nothing more.
 
-See [the agent's configuration reference](../deepflow-agent/docs/reference/configuration.md)
-for all options.
+See [the agent's configuration reference](../deepflow-agent/docs/reference/agent-config.md)
+for all options. Each server component (collector, processor,
+query) has its own config doc next to it under
+[../deepflow-agent/docs/reference/](../deepflow-agent/docs/reference/).
 
 ## Two modes of use
 
@@ -170,6 +172,6 @@ The agent's own documentation lives next to its source. See
 [deepflow-agent/docs/](../deepflow-agent/docs/) for:
 
 - [Getting Started](../deepflow-agent/docs/getting-started.md) -- build, attach, configure, read output
-- [Configuration Reference](../deepflow-agent/docs/reference/configuration.md) -- all config options
+- [Agent Configuration](../deepflow-agent/docs/reference/agent-config.md) -- the JVM agent's options (each server component has its own config doc next to it)
 - [Agent Architecture](../deepflow-agent/docs/architecture.md) -- agent-internal data flow, modules, design decisions
 - [Wire-format spec](../deepflow-agent/docs/spec/SPEC.md) -- the language-neutral protocol contract

@@ -221,7 +221,7 @@ The resulting payload is:
 ```
 {
   1: <object_id-of-the-array>,
-  2: "[Ljava.lang.Object;",            // CLASS_NAME of the array type
+  2: "java.lang.Object[]",             // CLASS_NAME — humanized form (ClassNameCache renders `[L...;` as `...[]`)
   3: [<envelope-of-arg0>, <envelope-of-arg1>, ...]   // VALUE = the args
 }
 ```
@@ -294,7 +294,162 @@ The envelope shape is stable as of wire-format `major=1`. Adding new
 field IDs in the 6–127 range is a **minor** change. Renaming or
 repurposing existing IDs (1–5) is a **major** change.
 
-## 10. Why CBOR
+## 10. Worked examples
+
+CBOR is shown here in **diagnostic notation** (RFC 8949 §8) —
+the human-readable form most CBOR libraries print. Bytes are
+illustrative; the contract is the structure, not the hex.
+
+### 10.1 A simple object
+
+Java:
+
+```java
+class Order {
+    long id = 42;
+    BigDecimal total = new BigDecimal("99.50");
+}
+```
+
+Captured as one ARGUMENTS element or one RETURN value:
+
+```
+{1: 17,                        / OBJECT_ID — assigned by the agent /
+ 2: "com.example.Order",       / CLASS_NAME — runtime type /
+ 3: {"id":    42,              / VALUE — map of user fields /
+     "total": "99.50"}}
+```
+
+The same instance reappearing on a later call (still in this
+agent-run) produces the **same** `OBJECT_ID: 17`. If its `total`
+field changes between calls, only the VALUE map changes —
+OBJECT_ID stays.
+
+### 10.2 An argument list (one ARGUMENTS record)
+
+Method:
+
+```java
+void processOrder(Order order, int retries);
+```
+
+Called with the order above and `retries=3`. The agent
+envelope-wraps the **argument array itself**, then each composite
+argument:
+
+```
+{1: 31,                                    / OBJECT_ID of the args array /
+ 2: "java.lang.Object[]",                  / CLASS_NAME — humanized form, not JVM-internal `[L...;` /
+ 3: [                                      / VALUE = the args, in order /
+   {1: 17,                                 / arg 0: envelope-wrapped Order /
+    2: "com.example.Order",
+    3: {"id": 42, "total": "99.50"}},
+   3                                       / arg 1: bare primitive (no envelope) /
+ ]}
+```
+
+Note arg 1 is a bare CBOR uint — primitives carry no instance
+identity (§5). The agent could equivalently emit the args as a
+bare array with no outer envelope; consumers must handle both
+shapes (§6 last paragraph).
+
+### 10.3 A cycle reference in context
+
+Java (bidirectional Author ⇌ Book — JPA-typical):
+
+```java
+class Author { String name; List<Book> books; }
+class Book   { String isbn; Author author; }
+```
+
+Captured when an `Author` with one `Book` is serialized. The
+agent encodes the Author, descends into `books[0]`, encodes the
+Book, then encounters `author` again — a cycle. It emits a
+cycle reference back to the Author's OBJECT_ID:
+
+```
+{1: 9,                                 / OBJECT_ID of Author #9 /
+ 2: "com.example.Author",
+ 3: {"name": "Tolkien",
+     "books": [
+        {1: 11,                        / OBJECT_ID of Book #11 /
+         2: "com.example.Book",
+         3: {"isbn":   "9780618...",
+             "author": {4: 9,          / REF_ID — back to Author #9 /
+                        5: true}}}     / CYCLE_REF — marker /
+     ]}}
+```
+
+The cycle reference is **not** an envelope: no OBJECT_ID, no
+CLASS_NAME, no VALUE. Just `{4: <ref>, 5: true}`. The consumer
+resolves `4: 9` by scanning previously emitted envelopes in the
+same record (or by global ID lookup).
+
+If the Author appeared again as the root of a *different* record
+(say, another method's argument), the agent would emit a fresh
+full envelope — cycle detection is scoped to one top-level
+captured value (§4).
+
+### 10.4 A truncation marker
+
+Same method, but the agent is configured `max_value_size=4096`
+and the Order has 50 KB of customer notes. The Order is replaced
+in the wire:
+
+```
+{1: 31,                                / args array, unchanged /
+ 2: "java.lang.Object[]",
+ 3: [
+   {"__truncated":   true,             / bare CBOR map, NOT an envelope /
+    "original_size": 51234},           / string keys, NOT integer field IDs /
+   3
+ ]}
+```
+
+Three things to notice:
+
+- **No envelope wrapper.** OBJECT_ID, CLASS_NAME, and VALUE are
+  gone. Identity is lost on truncated values — the consumer
+  can't follow them across calls.
+- **String keys.** `"__truncated"` and `"original_size"`, not
+  the integer field IDs of an envelope.
+- **The args array itself stays envelope-wrapped.** Only the
+  oversized element is replaced.
+
+The marker hashes like any other CBOR map (§5b); two truncated
+values with the same `original_size` hash identically. This is a
+known false-positive of mutation detection — use
+`max_value_size=0` if you need byte-accurate diffs.
+
+### 10.5 An exception with stacktrace
+
+Method throws `NullPointerException("order is null")`. The agent
+emits an EXCEPTION record carrying:
+
+```
+{1: 88,                                / OBJECT_ID of the exception instance /
+ 2: "java.lang.NullPointerException",  / CLASS_NAME — note: on the envelope, not in VALUE /
+ 3: {"message":    "order is null",
+     "stacktrace": [
+        "com.example.OrderService.process(OrderService.java:42)",
+        "com.example.OrderController.submit(OrderController.java:18)",
+        "...elided..."
+     ]}}
+```
+
+The exception's class name lives on the **envelope** (`CLASS_NAME`
+= field 2), **not** inside the VALUE map. A consumer rendering
+"java.lang.NullPointerException: order is null" reads them from
+two different places.
+
+### 10.6 Cross-reference
+
+For the binary frame that wraps each of these CBOR payloads
+(METHOD_START / ARGUMENTS / RETURN / EXCEPTION / etc.), see
+[WIRE-FORMAT.md §7](WIRE-FORMAT.md) for a pinned byte-level
+worked example.
+
+## 11. Why CBOR
 
 (Informative.) CBOR (RFC 8949) is chosen for:
 

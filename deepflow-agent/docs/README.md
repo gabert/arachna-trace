@@ -16,8 +16,16 @@ User-facing reference. Look here for "how do I configure X" or
 "how does feature Y work".
 
 - [Concepts](reference/concepts.md) — vocabulary that runs through every other doc (`object_id`, `own_hash`, `call_id`, `agent_run_id`, payload kinds, record types)
-- [Configuration](reference/configuration.md) — every `deepagent.cfg` option
-- [Deployment Modes](reference/deployment-modes.md) — file, HTTP, embedded, distributed
+- [Deployment Modes](reference/deployment-modes.md) — file, HTTP, embedded, distributed, plus the cross-component size-limit alignment contract
+
+### Component configuration
+
+DeepFlow ships four components; each has its own config file and its own reference doc:
+
+- [Agent Configuration](reference/agent-config.md) — every `deepagent.cfg` option (the JVM agent)
+- [Collector Configuration](reference/collector-config.md) — `deepserver.cfg` (Netty HTTP → Kafka relay)
+- [Processor Configuration](reference/processor-config.md) — `deepprocessor.cfg` (Kafka consumer → render → hash → ClickHouse)
+- [Query Server Configuration](reference/query-server-config.md) — `deepquery.cfg` (read-only HTTP API for the UI)
 - [Reading a Trace](reference/reading-a-trace.md) — interpreting `.dft` output
 - [Bug-Finding Workflow](reference/bug-finding.md) — `own_hash`, Mutations panel, diff walker, provenance, value search
 - [Mutation Detection](reference/mutation-detection.md) — detecting argument changes via AX

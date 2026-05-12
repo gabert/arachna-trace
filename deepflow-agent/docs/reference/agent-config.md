@@ -1,7 +1,18 @@
-# Configuration Reference
+# Agent Configuration
 
-All configuration is provided via `deepagent.cfg`, a properties file with
-`key=value` lines. Lines starting with `#` are comments.
+The Java agent's runtime knobs. Read via `-javaagent` from
+`deepagent.cfg` (a properties file with `key=value` lines;
+`#`-prefixed lines are comments).
+
+DeepFlow has four components, each with its own config:
+
+- **Agent** — this doc.
+- **Collector server** — [collector-config.md](collector-config.md).
+- **Processor server** — [processor-config.md](processor-config.md).
+- **Query server** — [query-server-config.md](query-server-config.md).
+
+For the cross-component size-limit alignment contract, see
+[deployment-modes.md](deployment-modes.md#size-limits-across-the-pipeline--alignment-contract).
 
 Config is passed to the agent via the `-javaagent` flag:
 

@@ -34,7 +34,7 @@ matchers_include=com\.example\.myapp\..*
 `matchers_include` is a comma-separated list of regexes matched against
 fully-qualified class names. Only matched classes are instrumented.
 
-See [Configuration Reference](configuration.md) for all options.
+See [Agent Configuration](reference/agent-config.md) for all options.
 
 ## Attach and run
 

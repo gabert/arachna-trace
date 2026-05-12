@@ -146,6 +146,97 @@ the system.
 The *query API surface* — the JSON contract the UI consumes — is the
 contract. Every mode must implement it; the UI does not change.
 
+## Size limits across the pipeline — alignment contract
+
+Trace payload size is bounded at every layer, with each layer
+imposing its own ceiling. **These caps are not independent.** A
+batch that fits at one layer but exceeds the next gets silently
+dropped, returns 413, or fails to insert. The deployment must
+align the chain top-to-bottom.
+
+### The chain (per captured value)
+
+For an argument, return value, or `this` payload:
+
+| Layer | Cap | Configured by | What happens at the cap |
+|---|---|---|---|
+| 1. Agent capture | `max_value_size` bytes per single CBOR-encoded value | `deepagent.cfg` (`0` = unlimited, default) | Replaced with `{"__truncated": true, "original_size": N}` marker. Intended; lossy by design. |
+| 2. CBOR encoding | No practical limit | — | CBOR lengths up to 2⁶⁴−1; never the bottleneck. |
+| 3. Wire frame `payload_len` | int32 ≈ 2 GiB per record frame | — | Producer hard-fails; nobody approaches this. |
+| 4. HTTP destination batch | `http_flush_threshold` bytes per POST | `deepagent.cfg` (default `65536`) | Flushes a POST once the buffer reaches the threshold; a single record larger than threshold still posts as one. |
+| 5. Collector HTTP body | `maxContentLength` of `HttpObjectAggregator` | `ServerConfig` (collector) | Exceeds → connection drop / 413; the batch never reaches Kafka. |
+| 6. Kafka `max.message.bytes` | per-record cap (broker setting) | Kafka broker / topic config (default 1 MiB) | Producer error; the batch is rejected. |
+| 7. ClickHouse `String` column | No hard limit | — | Effectively unbounded; column size grows. |
+
+### Synchronisation rule
+
+**The ceiling at any downstream layer must be ≥ the maximum
+output the previous layer can produce.** If layer 5's cap is
+below layer 4's, layer 4 will produce batches layer 5 silently
+rejects. Concretely: if the agent flushes at 256 KiB but the
+collector's `HttpObjectAggregator` caps at 128 KiB, every large
+batch is lost — and the only visible signal is a stack trace in
+the collector's stderr.
+
+Practical alignment when deploying the distributed mode:
+
+1. Decide the **maximum tolerable per-value payload size**.
+   This is your truncation budget.
+2. Set `max_value_size` on the **agent** to that value. Above
+   this, the truncation marker kicks in deliberately.
+3. Size `http_flush_threshold` to a small multiple of
+   `max_value_size` (one POST batches several records).
+4. Set `HttpObjectAggregator` `maxContentLength` on the
+   **collector** to **≥** `http_flush_threshold`.
+5. Set Kafka `max.message.bytes` (broker / topic) and the
+   collector's producer `max.request.size` to **≥** the
+   collector's `maxContentLength`.
+6. ClickHouse imposes no separate per-row size limit.
+
+A sane operating envelope for the reference defaults:
+
+```
+max_value_size       = 32768 bytes  (32 KiB per value, agent)
+http_flush_threshold = 65536 bytes  (64 KiB per POST, agent)
+collector body cap   = 1 MiB        (HttpObjectAggregator)
+Kafka max.message.bytes = 1 MiB     (broker)
+```
+
+~16× headroom above the agent's per-value cap at every
+downstream layer. Captures that approach `max_value_size`
+are truncated on the agent before any downstream layer sees
+them, so the marker — not the raw bytes — is what flows.
+
+### Separate structural cap: binary string fields
+
+The wire format's three binary string fields are bounded by the
+uint16 length prefix at **65 535 UTF-8 bytes**:
+
+- `sid` — session id text
+- `signature` — method signature text
+- `threadName` — executing thread / coroutine name
+
+This is structural, not data-size-driven, and applies to **every
+deployment mode**. These three fields never carry user payload —
+the spec routes large blobs through CBOR-payload records. In
+practice they sit well under 1 KiB; producers that exceed the
+limit here have an upstream bug. See
+[../spec/WIRE-FORMAT.md §9](../spec/WIRE-FORMAT.md).
+
+### Why this matters across components
+
+Today the agent and collector ship from the same codebase, so
+their defaults align by construction. The chain becomes a
+**multi-party contract** the moment a non-Java agent, a custom
+collector, a non-default Kafka broker, or a tightened CI ingress
+enters the picture — and a porter who sets
+`http_flush_threshold = 1 MiB` without telling the broker
+operator gets silent batch drops.
+
+Document the chosen ceiling in the deployment runbook, not just
+in agent config. The chain is only as wide as its narrowest
+layer.
+
 ## Choosing a mode
 
 | If you need... | Use |

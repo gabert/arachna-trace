@@ -50,7 +50,7 @@ java -javaagent:agent.jar="config=deepagent.cfg&serialize_values=false" -jar app
 ```
 
 For all configuration options, see
-[docs/reference/configuration.md](docs/reference/configuration.md). For SPI resolver setup, the
+[docs/reference/agent-config.md](docs/reference/agent-config.md). For SPI resolver setup, the
 Spring Boot demo, and reading traces, see
 [docs/getting-started.md](docs/getting-started.md).
 
@@ -98,7 +98,7 @@ The full normative tag specification is in [docs/spec/TAGS.md](docs/spec/TAGS.md
 Full agent documentation is in [docs/](docs/):
 
 - [Getting Started](docs/getting-started.md) -- build, attach, configure
-- [Configuration Reference](docs/reference/configuration.md) -- all options
+- [Agent Configuration](docs/reference/agent-config.md) -- all options for the JVM agent (collector / processor / query-server have their own configs under docs/reference/)
 - [Architecture](docs/architecture.md) -- agent data flow and modules
 - [Deployment Modes](docs/reference/deployment-modes.md) -- local, embedded, distributed
 - [Trace Format](docs/spec/TAGS.md) -- rendered tag-line specification

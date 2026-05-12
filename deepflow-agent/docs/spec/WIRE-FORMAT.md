@@ -368,6 +368,7 @@ Inputs:
 - requestId: `0x1112131415161718`
 - callId: `aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa`
 - parentCallId: `bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb`
+- seq (agent-observation ordinal): `0x0000000000000042`
 - timestamp (exit): same `0x0102030405060708` (same byte width)
 - void return
 
@@ -383,6 +384,9 @@ METHOD_START   01 | 00 00 00 3D | 00 01 53                              ; sid "S
                                   AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA   ; callId
                                   BB BB BB BB BB BB BB BB BB BB BB BB BB BB BB BB   ; parentCallId
 
+SEQUENCE       0A | 00 00 00 18 | AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA   ; callId (same as MS)
+                                  00 00 00 00 00 00 00 42                            ; seq
+
 METHOD_END     05 | 00 00 00 26 | 00 01 53                              ; sid "S"
                                   00 01 54                              ; thread "T"
                                   01 02 03 04 05 06 07 08               ; timestamp
@@ -393,7 +397,8 @@ RETURN (void)  03 | 00 00 00 00 |
 ```
 
 Decoded payload sizes: METHOD_START = 61 bytes (`0x3D` = `58 + 3`),
-METHOD_END = 38 bytes (`0x26` = `36 + 2`), RETURN = 0 bytes (void).
+SEQUENCE = 24 bytes (`0x18` = `16 + 8`), METHOD_END = 38 bytes
+(`0x26` = `36 + 2`), RETURN = 0 bytes (void).
 
 The reference test corpus at
 `core/record-format/src/test/java/.../recorder/WireFormatGoldenTest.java`
@@ -403,7 +408,78 @@ value, VERSION, plus null-sid variants). New-language implementors
 SHOULD validate their writers against these goldens before
 shipping.
 
-## 8. Limits & known constraints
+> **CBOR-payload frames.** ARGUMENTS, ARGUMENTS_EXIT, RETURN
+> (with a value), EXCEPTION, and THIS_INSTANCE all carry an
+> opaque CBOR blob inside their payload. The wire wraps those
+> bytes with the standard 5-byte header (`[type:1][len:4]`)
+> without further transformation — so a complete ARGUMENTS
+> frame is `02 | <4-byte length> | <CBOR bytes from
+> [CBOR-ENVELOPE.md §10](CBOR-ENVELOPE.md)>`. See §8 below for
+> a full stream-level view.
+
+## 8. A complete one-call byte stream
+
+Tying §7's per-frame layouts together with the §5 ordering
+rules, this is what a producer emits from "open the stream" to
+"one method invocation done" — for an instance method that
+captures `this` by reference, has two arguments, has SEQUENCE
+enabled (the wire-1.4 default), and returns a value.
+
+CBOR payload bodies are abbreviated as `<bytes — see ...>` —
+those bytes are whatever [CBOR-ENVELOPE.md §10](CBOR-ENVELOPE.md)
+produces for the captured value; the wire wraps them with the
+5-byte frame header verbatim, no transformation.
+
+```
+VERSION             09 | 00 00 00 04 | 00 01 00 04
+                                       │   │   │   └─ minor = 4
+                                       │   │   └───── (high byte of minor)
+                                       │   └───────── major = 1
+                                       └───────────── (high byte of major)
+
+METHOD_START        01 | 00 00 00 NN | <sid><signature><thread>
+                                       <ts_in><callerLine><requestId>
+                                       <callId><parentCallId>
+                                       (per-byte breakdown in §7)
+
+THIS_INSTANCE_REF   07 | 00 00 00 08 | 00 00 00 00 00 00 00 11
+                                       └────── int64 = 17, the receiver's
+                                               object_id (no envelope,
+                                               no class name)
+
+ARGUMENTS           02 | 00 00 00 NN | <CBOR bytes — see CBOR-ENVELOPE.md §10.2>
+
+SEQUENCE            0A | 00 00 00 18 | <callId — same 16 bytes as MS's callId>
+                                       <seq — int64 monotonic ordinal>
+
+METHOD_END          05 | 00 00 00 NN | <sid><thread><ts_out>
+                                       <requestId><callId>
+                                       (per-byte breakdown in §7)
+
+RETURN              03 | 00 00 00 NN | <CBOR bytes — envelope of the return value>
+```
+
+Notes:
+
+- **VERSION fires once per stream**, not once per call (§5).
+  This example starts a fresh stream; subsequent calls in the
+  same stream omit it.
+- **Nested calls slot between METHOD_START and METHOD_END.** If
+  call B is nested inside A, the wire sequence is: A's MS →
+  (A's THIS_INSTANCE_REF / ARGUMENTS / SEQUENCE) → B's full
+  frames (MS through ME + RETURN) → A's ME + RETURN. The
+  consumer pairs by `callId`, so even a producer that violates
+  strict LIFO doesn't corrupt the consumer's state.
+- **SEQUENCE position is flexible.** It MUST appear between its
+  MS and the matching ME, but its relative position to
+  ARGUMENTS / THIS_INSTANCE / nested calls is not constrained
+  (§4.10).
+- **ARGUMENTS_EXIT (0x08)**, when emitted, comes after RETURN —
+  per the agent's wire-emit order documented in §5.
+- **EXCEPTION (0x04)** replaces RETURN on an exceptional exit.
+  Same frame structure (CBOR payload), different record type.
+
+## 9. Limits & known constraints
 
 - Each string field is bounded by 65535 UTF-8 bytes (the uint16
   length prefix). In practice, signatures and thread names fit well

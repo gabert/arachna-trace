@@ -251,7 +251,7 @@ are always excluded to prevent recursion.
 Comma-separated list of trace tags the agent emits. Filters
 both what gets serialized and what appears in `.dft`. `MS` is
 forced; everything else is opt-in or opt-out. See
-[configuration.md](configuration.md).
+[agent-config.md](agent-config.md).
 
 ### SPIs
 

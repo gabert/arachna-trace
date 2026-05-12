@@ -225,7 +225,140 @@ runs (because IDs are agent-run-scoped) will have the same content
 hash — so cross-run identity is by hash, not by ID. This is a
 deliberate consequence of §3.1 of CBOR-ENVELOPE.md.
 
-## 9. Implementation notes (Informative)
+## 9. Worked example
+
+Two envelopes — an Author with one Book inside — taken end-to-end
+from CBOR through canonical JSON to the final transformed form
+with `__meta__` blocks. Every byte the canonicalizer emits matters;
+this example shows what changes at each step.
+
+### Step 1 — input CBOR envelope
+
+The agent emitted (diagnostic notation):
+
+```
+{1: 9,
+ 2: "com.example.Author",
+ 3: {"name":  "Tolkien",
+     "books": [{1: 11,
+                2: "com.example.Book",
+                3: {"isbn": "9780618"}}]}}
+```
+
+### Step 2 — humanize (§3)
+
+Decode CBOR and rename integer field IDs. The `VALUE` map's keys
+flatten as siblings of `object_id` and `class`:
+
+```
+{
+  "object_id": 9,
+  "class":     "com.example.Author",
+  "name":      "Tolkien",
+  "books":     [{"object_id": 11,
+                 "class":     "com.example.Book",
+                 "isbn":      "9780618"}]
+}
+```
+
+### Step 3 — walk + compute child hashes first
+
+The walker recurses depth-first. The inner Book envelope hashes first.
+
+Book's `hashInput` (user keys only — drop `object_id` and `class`):
+
+```
+{"isbn": "9780618"}
+```
+
+Canonical JSON (keys sorted, no whitespace):
+
+```
+{"isbn":"9780618"}
+```
+
+```
+md5("{\"isbn\":\"9780618\"}") = 6dd1e09c9d9e5b4f2e7e4d3aa9f4be8c   (illustrative)
+```
+
+So Book's `hashInput` value that propagates upward is the **hash
+string** `"6dd1e09c…"`, not its content.
+
+### Step 4 — Author's hashInput uses Book's hash, not Book's content
+
+Author's `hashInput` (user keys only, with each child envelope
+replaced by its hash string):
+
+```
+{
+  "name":  "Tolkien",
+  "books": ["6dd1e09c9d9e5b4f2e7e4d3aa9f4be8c"]
+}
+```
+
+Canonical JSON:
+
+```
+{"books":["6dd1e09c9d9e5b4f2e7e4d3aa9f4be8c"],"name":"Tolkien"}
+```
+
+Note `books` sorts before `name` alphabetically. Author's hash:
+
+```
+md5(...) = a3f72c1b3e2d8895f4c11d09e6b27a4d   (illustrative)
+```
+
+### Step 5 — the transformed output
+
+What lands in storage / what the UI consumes:
+
+```
+{
+  "__meta__": {"id": 9, "class": "com.example.Author",
+               "hash": "a3f72c1b3e2d8895f4c11d09e6b27a4d"},
+  "name":  "Tolkien",
+  "books": [
+    {"__meta__": {"id": 11, "class": "com.example.Book",
+                  "hash": "6dd1e09c9d9e5b4f2e7e4d3aa9f4be8c"},
+     "isbn": "9780618"}
+  ]
+}
+```
+
+### Step 6 — root hash
+
+For an envelope-rooted payload, the root hash equals the root
+envelope's `__meta__.hash` — Author's hash above. For an
+array-rooted payload (an ARGUMENTS record's outer array), the
+root hash is computed over the canonical JSON of the array's
+`hashInput` form (each element envelope replaced by its hash
+string). See §7.
+
+### The Merkle property in action
+
+Mutate Book's `isbn` to `"9780620"`:
+
+1. Book's `hashInput` → `{"isbn":"9780620"}` → different MD5,
+   say `7e54bb…`.
+2. Author's `hashInput` → `{"books":["7e54bb…"],"name":"Tolkien"}`
+   → different MD5.
+3. Author's `__meta__.hash` changes even though *Author's own
+   fields* didn't move. That's the Merkle propagation — the
+   reason the UI also exposes `own_hash` (a sibling hash that
+   ignores child content; see
+   [../reference/concepts.md](../reference/concepts.md) and
+   [../reference/bug-finding.md](../reference/bug-finding.md)).
+
+### A note on illustrative vs real bytes
+
+The MD5 values above are placeholders to show the *flow*. A
+real cross-implementation conformance test must compute the
+actual MD5 of the actual canonical JSON bytes — that is the
+whole point of the pinning in §5. Two implementations that
+produce different bytes from the same input differ before MD5,
+not after; debug by diffing the canonical-JSON outputs.
+
+## 10. Implementation notes (Informative)
 
 - The reference implementation lives at
   `core/codec/src/main/java/com/github/gabert/deepflow/codec/Hasher.java`.

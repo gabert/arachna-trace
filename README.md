@@ -257,7 +257,7 @@ Merkle hash through a deep object — in
   Boot demo.
 - **[deepflow-agent/docs/](deepflow-agent/docs/)** —
   [getting started](deepflow-agent/docs/getting-started.md),
-  [configuration](deepflow-agent/docs/reference/configuration.md),
+  [agent configuration](deepflow-agent/docs/reference/agent-config.md),
   [architecture](deepflow-agent/docs/architecture.md),
   [deployment modes](deepflow-agent/docs/reference/deployment-modes.md),
   reference, internals, and the

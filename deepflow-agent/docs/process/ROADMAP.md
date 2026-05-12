@@ -111,6 +111,131 @@ priority.
   interleaved writes that aren't guarded by a request boundary.
   Distinct from FR-2 (content trace by `(class, own_hash)`),
   which is identity-content driven, not concurrency driven.
+- **Align the size-limit defaults across the pipeline.** Today's
+  defaults are silently misaligned:
+
+  | Layer | Default | Issue |
+  |---|---|---|
+  | Agent `max_value_size` | `0` (unlimited) | A single captured value can exceed every downstream cap |
+  | Agent `http_flush_threshold` | 64 KiB | OK |
+  | Collector `max_content_length` | **10 MiB** | Far above Kafka |
+  | Kafka producer `max.request.size` | not set → 1 MiB (Kafka default) | **mismatch** |
+  | Kafka broker `max.message.bytes` | 1 MiB (Kafka default) | OK |
+
+  POSTs between 1–10 MiB are accepted by the collector and then
+  fail to forward to Kafka with a producer error in stderr —
+  silent batch loss from the user's perspective. The contract
+  (every downstream layer's cap must be ≥ the previous layer's
+  output) is documented at
+  [../reference/deployment-modes.md#size-limits-across-the-pipeline--alignment-contract](../reference/deployment-modes.md#size-limits-across-the-pipeline--alignment-contract).
+
+  Proposed fix (all four together):
+  - `AgentConfig.maxValueSize` default `0` → `32768` (32 KiB,
+    matching the existing recommended-starting-point in
+    `deepagent.cfg`'s comment). Captures of >32 KiB get the
+    truncation marker instead of producing oversized payloads.
+  - `ServerConfig.DEFAULT_MAX_CONTENT_LENGTH` `10 MiB` → `1 MiB`
+    (matches Kafka's default per-message cap).
+  - `KafkaRecordForwarder` constructor: explicitly set
+    `MAX_REQUEST_SIZE_CONFIG = config.getMaxContentLength()` so
+    the producer's per-request cap inherently tracks the
+    collector's body cap.
+  - `ServerConfigTest.defaultValues` assertion `10 MiB` → `1 MiB`.
+
+  Result: a fresh deployment with zero tuning has a coherent
+  pipeline — agent caps at 32 KiB per value, ~32× headroom up
+  to the 1 MiB collector / Kafka / broker ceiling. Operators
+  who need larger payloads raise all four together (the
+  alignment-contract section in deployment-modes.md is the
+  recipe).
+
+## Spec / wire-format evolution
+
+### Adopt JCS (RFC 8785) for hash canonicalization — **HIGH PRIORITY**
+
+**Status**: open. Triggers a wire-format **major bump** (1.x → 2.0).
+
+#### Motivation
+
+DeepFlow's hash inputs are produced by Jackson `ObjectMapper`
+with `ORDER_MAP_ENTRIES_BY_KEYS=true`. That's a *de facto*
+canonical form, not a portable spec. Java-specific quirks —
+notably `Double.toString()` formatting (`1.0` vs `1`, `1.0E-4`
+vs `0.0001`) — mean a Python / Go / .NET agent has to
+**mirror Jackson's exact byte output** to produce matching
+MD5s. Achievable but fragile (a Jackson upgrade or a porter's
+arithmetic difference one place can shift hashes).
+
+[RFC 8785 — JSON Canonicalization Scheme](https://datatracker.ietf.org/doc/html/rfc8785)
+is the IETF standard for byte-identical JSON serialization
+across implementations. Adopting it replaces an ad-hoc
+convention with a published, testable, language-neutral
+contract.
+
+#### Approach
+
+The agent doesn't change — it emits CBOR, doesn't hash.
+Replace `Hasher`'s Jackson serialization step with a JCS
+implementation (one library in each target language —
+`cyberphone/json-canonicalization` in Java, `jcs` on PyPI,
+similar elsewhere). MD5 algorithm is unchanged; only the
+bytes fed into it differ. ~50 lines in the processor.
+
+The wire-format spec (`HASHING.md` §5) gains a normative
+"canonicalization = JCS" clause; the current Jackson-quirk
+enumeration becomes informative / historical for v1 stores.
+
+#### Stored-data impact
+
+Every byte change to the hash input flips every MD5. Concretely:
+
+- `payloads.root_hash` — different value for the *same payload*.
+- `payloads.own_hashes[]` — different values.
+- `__meta__.hash` and `__meta__.own_hash` inside `payload_json`
+  — different values.
+
+Three migration paths to pick from at switch time:
+
+1. **Wait it out.** Default TTL is 30 days. Stop writing v1
+   data, start writing v2 data, in 30 days the store is
+   uniformly v2. Zero migration code. Loses
+   retain-flagged historical traces' hash queryability.
+2. **Re-hash in place.** Walk every `payloads` row,
+   re-canonicalize `payload_json` with JCS, recompute hashes,
+   UPDATE row. Possible because Jackson canonicalization is
+   deterministic so the raw payload still hashes-as-stored.
+   Cost: O(stored payloads) one-time CPU.
+3. **Version-bucket.** Add a `wire_format_version` column to
+   `payloads`; queries that compare hashes filter by version.
+   Cheap, but every consumer (UI, LLM tools, ad-hoc SQL) has
+   to know about the column.
+
+#### What stays working
+
+- The UI doesn't care — it renders hex strings.
+- Mutation detection inside one request / session / agent run
+  — fine, both sides are v2 within one run.
+- The CBOR envelope shape is unchanged (JCS only affects the
+  JSON serialization used as the MD5 pre-image).
+
+#### Trigger
+
+The doc's stance — *"v1 deliberately doesn't"* — holds until
+a second-language agent ships. Once Python / Go / .NET joins
+the ecosystem, two implementations have to agree on hashes to
+interoperate, and Jackson-mimicry costs more than the
+migration. That's the natural trigger — at which point this
+becomes the **first thing** to land in wire-format 2.0,
+because every other v2 change cascades through hashes.
+
+#### References
+
+- [docs/spec/HASHING.md §5](../spec/HASHING.md) — current
+  canonicalization with the Jackson-quirk enumeration that
+  this work replaces.
+- [docs/spec/PORTING-GUIDE.md](../spec/PORTING-GUIDE.md) —
+  the porter's-perspective doc that today has to warn about
+  byte-level Jackson mimicry.
 
 ---
 
