@@ -6,11 +6,15 @@ in-process recording pipeline, and how output reaches a server-side
 sink. The agent is the only Java-specific component in the system;
 everything below its output boundary (collector, Kafka, processor,
 ClickHouse) operates on the wire format alone and supports any
-source language that emits conformant bytes. For that
-language-agnostic system-wide picture, see
-[../../doc/architecture.md](../../doc/architecture.md). For
-solution-level positioning (what DeepFlow is and what problem it
-solves), see [../../doc/](../../doc/).
+source language that emits conformant bytes.
+
+> **Two architecture docs.** This one zooms into the **agent's**
+> internal data flow — the only language-specific piece. For the
+> system-wide pipeline view (agent → collector → Kafka →
+> processor → ClickHouse → UI, language-agnostic), see
+> [`doc/architecture.md`](../../doc/architecture.md) at the repo
+> root. For solution-level positioning, see
+> [`doc/README.md`](../../doc/).
 
 ## Data flow
 
@@ -278,8 +282,8 @@ framework version it actually runs against.
    or `jpa_proxy_resolver=…`).
 5. No agent rebuild.
 
-See [spi/session-resolver.md](spi/session-resolver.md) and
-[spi/jpa-proxy-resolver.md](spi/jpa-proxy-resolver.md) for the
+See [reference/session-resolver.md](reference/session-resolver.md) and
+[reference/jpa-proxy-resolver.md](reference/jpa-proxy-resolver.md) for the
 practical walkthroughs.
 
 ### Adding a new SPI interface

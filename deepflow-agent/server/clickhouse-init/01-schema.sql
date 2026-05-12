@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS deepflow.calls
     seq            UInt64 DEFAULT 0,
     -- Retention escape: rows with retain=true survive the TTL DELETE.
     -- Currently no agent/sink path sets this; flip via external SQL when
-    -- a debugging or audit need warrants long retention. See SCHEMA_DESIGN.md.
+    -- a debugging or audit need warrants long retention.
     retain         Bool DEFAULT false,
     inserted_at    DateTime DEFAULT now(),
 

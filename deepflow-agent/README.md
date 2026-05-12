@@ -50,7 +50,7 @@ java -javaagent:agent.jar="config=deepagent.cfg&serialize_values=false" -jar app
 ```
 
 For all configuration options, see
-[docs/configuration.md](docs/configuration.md). For SPI resolver setup, the
+[docs/reference/configuration.md](docs/reference/configuration.md). For SPI resolver setup, the
 Spring Boot demo, and reading traces, see
 [docs/getting-started.md](docs/getting-started.md).
 
@@ -98,9 +98,9 @@ The full normative tag specification is in [docs/spec/TAGS.md](docs/spec/TAGS.md
 Full agent documentation is in [docs/](docs/):
 
 - [Getting Started](docs/getting-started.md) -- build, attach, configure
-- [Configuration Reference](docs/configuration.md) -- all options
+- [Configuration Reference](docs/reference/configuration.md) -- all options
 - [Architecture](docs/architecture.md) -- agent data flow and modules
-- [Deployment Modes](docs/deployment-modes.md) -- local, embedded, distributed
+- [Deployment Modes](docs/reference/deployment-modes.md) -- local, embedded, distributed
 - [Trace Format](docs/spec/TAGS.md) -- rendered tag-line specification
 - [Wire-format spec](docs/spec/SPEC.md) -- the language-neutral protocol contract
 
@@ -112,10 +112,10 @@ described there.
 
 Apache License 2.0. See [LICENSE](../LICENSE) at the repository root.
 
-Features: [Request ID](docs/features/request-id.md) |
-[Truncation](docs/features/truncation.md) |
-[Mutation Detection](docs/features/mutation-detection.md) |
-[Serialize Modes](docs/features/serialize-modes.md)
+Features: [Request ID](docs/reference/request-id.md) |
+[Truncation](docs/reference/truncation.md) |
+[Mutation Detection](docs/reference/mutation-detection.md) |
+[Serialize Modes](docs/reference/serialize-modes.md)
 
 ## Project structure
 

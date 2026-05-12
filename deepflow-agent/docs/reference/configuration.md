@@ -75,7 +75,7 @@ Controls serialization of arguments, return values, and exceptions.
 When `false`, only structural records are emitted (MS, TN, RI, TS, CL, TE).
 Use this for dead code detection.
 
-See [Serialize Modes](features/serialize-modes.md).
+See [Serialize Modes](serialize-modes.md).
 
 ```properties
 serialize_values=true
@@ -113,7 +113,7 @@ a truncation marker:
 
 Recommended starting points: `8192` (8 KB) or `32768` (32 KB).
 
-See [Truncation](features/truncation.md).
+See [Truncation](truncation.md).
 
 ```properties
 max_value_size=0
@@ -129,19 +129,53 @@ every call must be identifiable by signature. Every other tag, including
 When a tag is disabled, the agent skips both serialization and output -- no
 runtime cost for disabled tags.
 
-Available tags: `SI`, `TN`, `RI`, `TS`, `CL`, `CI`, `PI`, `TI`, `AR`, `RT`, `RE`, `TE`, `AX`.
+Available tags: `SI`, `TN`, `RI`, `TS`, `CL`, `CI`, `PI`, `TI`, `AR`, `RT`, `RE`, `TE`, `AX`, `SQ`.
 
-See [Trace Format](spec/TAGS.md) for tag descriptions.
+`SQ` carries an agent-observed monotonic ordinal per agent run.
+It's the canonical ordering primitive — sub-millisecond `ts_in`
+ties are disambiguated by `SQ`. Costs 24 bytes per call on the
+wire. Drop only if minimising payload size matters more than
+stable ordering.
+
+`CI` and `PI` always live on the binary wire regardless of this
+setting — the processor uses them to pair MS↔ME and link the call
+tree without stack reconstruction. Filtering them out only
+suppresses them from the rendered `.dft` text.
+
+See [Trace Format](../spec/TAGS.md) for tag descriptions.
 
 ```properties
-# Default (no AX)
-emit_tags=SI,TN,RI,TS,CL,TI,AR,RT,RE,TE
+# Default — matches AgentConfig.DEFAULT_EMIT_TAGS:
+emit_tags=SI,TN,RI,TS,CL,TI,AR,RT,RE,TE,SQ
 
-# With mutation detection and call-id pairing
-emit_tags=SI,TN,RI,TS,CL,CI,PI,TI,AR,RT,RE,TE,AX
+# Mutation detection mode (add AX to see args before and after):
+emit_tags=SI,TN,RI,TS,CL,TI,AR,RT,RE,TE,SQ,AX
 
-# Minimal structural trace
-emit_tags=TN,RI,TS,CL,TE
+# Default + render call IDs (useful for manual MS↔ME pairing in .dft):
+emit_tags=SI,TN,RI,TS,CL,CI,PI,TI,AR,RT,RE,TE,SQ
+
+# Minimal structural trace (no values, just call tree):
+emit_tags=TN,RI,TS,CL,TE,SQ
+```
+
+### parameter_names
+
+Controls how AR/AX argument keys are encoded.
+
+| Value | Description |
+|-------|-------------|
+| `true` | Real parameter names (e.g. `{"isbn":"...", "year":1937}`) when the target was compiled with `-parameters` *or* with debug info (`-g`, default in Maven/Gradle); falls back to integer keys per method if neither attribute is available |
+| `false` | Skip the resolver entirely. Every method emits integer keys (`{"0":"...", "1":1937}`); no class bytes read, no cache entries created |
+
+Default: `true`.
+
+When `true`, names are resolved per method and cached per-Class.
+Methods on stripped jars fall back to integer keys and are not
+cached. See [Argument Names](argument-names.md) for the resolution
+order and fallback rules.
+
+```properties
+parameter_names=true
 ```
 
 ### propagate_request_id
@@ -169,7 +203,7 @@ must match the `name()` of a resolver on the classpath.
 | `spring-session` | Reads HTTP session ID from ThreadLocal |
 | (not set) | No session tracking |
 
-See [Session Resolver SPI](spi/session-resolver.md).
+See [Session Resolver SPI](session-resolver.md).
 
 ```properties
 session_resolver=config
@@ -195,10 +229,39 @@ must match the `name()` of a resolver on the classpath.
 | `hibernate` | Unwraps Hibernate entity proxies and collection wrappers |
 | (not set) | Proxies appear as `<proxy>` in output |
 
-See [JPA Proxy Resolver SPI](spi/jpa-proxy-resolver.md).
+See [JPA Proxy Resolver SPI](jpa-proxy-resolver.md).
 
 ```properties
 jpa_proxy_resolver=hibernate
+```
+
+### code_version
+
+Application build / version identifier. Carried as transport-layer
+metadata (HTTP / Kafka header for `destination=http`, `run.json`
+sidecar for `destination=file`) so traces can be attributed to a
+specific deploy. Typical values: a git SHA, a release tag, a CI
+build number.
+
+Optional. If absent, the `agent_runs.code_version` ClickHouse
+column ends up empty.
+
+```properties
+code_version=git-abc12345
+```
+
+### env
+
+Environment label (`prod`, `staging`, `dev`, `local`, …). Free-form
+string carried as transport-layer metadata alongside `code_version`.
+Useful for filtering traces by deployment tier when multiple
+environments share a trace store.
+
+Optional. If absent, the `agent_runs.env` ClickHouse column ends
+up empty.
+
+```properties
+env=local
 ```
 
 ### http_server_url

@@ -68,7 +68,7 @@ on each value, so the envelope captures the actual runtime
 
 The codec exposes a static slot, `Codec.setJpaProxyResolver(...)`,
 that the agent populates on first instrumented method entry from the
-`JpaProxyResolver` SPI (see [SPI docs](../spi/jpa-proxy-resolver.md)).
+`JpaProxyResolver` SPI (see [SPI docs](../reference/jpa-proxy-resolver.md)).
 
 `EnvelopeSerializer` calls the resolver before falling back to the
 generic proxy-detection check. If the resolver unwraps the proxy, the

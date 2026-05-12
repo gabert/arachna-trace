@@ -6,6 +6,15 @@ together. For *what DeepFlow is and why* you'd reach for it, start at
 [the overview](README.md) or the
 [parent README](../README.md). This doc assumes you've been there.
 
+> **Two architecture docs.** This one (`doc/architecture.md`) is the
+> system-wide view — language-agnostic, the whole agent →
+> collector → Kafka → processor → ClickHouse → UI pipeline. The
+> sibling doc at
+> [`deepflow-agent/docs/architecture.md`](../deepflow-agent/docs/architecture.md)
+> zooms into the **agent's** internal data flow — the only
+> language-specific piece. Read this one for the end-to-end
+> picture; read that one for what happens inside the JVM.
+
 ---
 
 ## The pipeline at a glance

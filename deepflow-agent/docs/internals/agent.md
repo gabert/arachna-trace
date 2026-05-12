@@ -129,7 +129,7 @@ single behaviour: if `max_value_size > 0` and the encoded payload
 exceeds it, replace the payload with a fixed-shape truncation marker
 via a second `Codec.encode()` call. The agent always pays the cost of
 the original encoding — truncation saves I/O and storage, not CPU. See
-[Truncation](../features/truncation.md).
+[Truncation](../reference/truncation.md).
 
 ## SpiBootstrap
 

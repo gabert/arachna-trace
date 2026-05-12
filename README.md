@@ -49,23 +49,120 @@ schema-migration path.
 
 ## What we built this for
 
-Five use cases drove the design — same data captured for each, read for
-different reasons.
+Five use cases drove the design. They all read the same data — a
+recording of every captured method's inputs, outputs, and
+mutations — for different reasons.
 
-- **Observability for AI-generated code.** CI shows the structure
-  compiled; a trace shows the data actually flowed correctly.
-- **Debugging silent data errors.** HTTP 200 with the wrong number —
-  no stack trace, but every value is in the trace.
-- **Forensics in regulated systems.** A queryable record of what a JVM
-  did during a session, attributed to host / build / env.
-- **Understanding code you didn't write.** The actual call tree on a
-  representative request, not what static analysis claims.
-- **Regression detection.** Capture a baseline, run after the change,
-  diff by content hash.
+### Observability for AI-generated code
 
-Full case studies in [Use cases](deepflow-agent/docs/use-cases.md).
-DeepFlow also changes the *shape* of a debugging session — see
-[How DeepFlow changes debugging](deepflow-agent/docs/why-deepflow.md).
+AI coding tools (Claude, Cursor, Copilot, agent-style pipelines) are
+now in heavy day-to-day use, and the volume of code they produce can
+easily outpace what reviewers can deeply read. CI passing and a
+reviewer's approval show that the structure compiles and the unit
+tests cover the inputs someone anticipated. Neither shows that the
+data actually flowed correctly through the new code under realistic
+conditions.
+
+Run the feature with the agent attached and capture what happened
+end-to-end. A reviewer can read the trace for the changed paths, or
+an LLM can query the trace store — for example, *"find every call
+where `Order.total` was set to a value that doesn't equal the sum of
+its line items"*. The result is runtime evidence of correctness,
+alongside the unit tests' evidence of expected behaviour.
+
+### Debugging silent data errors
+
+Crashes give you a stack trace; data errors don't. The application
+returns HTTP 200, commits to the database, and the result is wrong —
+a price miscalculated, a permission check passing on the wrong path.
+By the time someone notices, the runtime state that produced the bug
+is gone, and reproducing it usually means another redeploy-and-
+print-statement cycle.
+
+Reproduce once with the agent attached and read the resulting trace.
+Every argument, return value, and mutation is there, in the order it
+happened.
+
+### Forensics and audit for regulated systems
+
+When an application's behaviour needs to be reconstructed after the
+fact — an incident review, a regulatory inquiry, a customer complaint
+about a wrong calculation — standard application logs are usually
+too narrow. Logs capture what the developer chose to log, not the
+full data flow that produced the result. In financial services,
+healthcare, and other regulated domains, this gap tends to show up
+at the worst possible moments.
+
+A DeepFlow trace records how data moved through the instrumented
+code during a session, attributed to a specific JVM run, host, build
+version, and environment. Traces of interest can be flagged
+retain-forever in the trace store to survive the default 30-day TTL.
+
+### Understanding code you didn't write
+
+Inheriting a complex codebase with thin docs, or onboarding onto a
+service someone else built. Static analysis can show what the code
+*can* do; what you usually want is a quick map of what it *actually*
+does on a representative request.
+
+Instrument the relevant packages, trigger one user flow, read the
+trace. The result is the actual call tree, the actual values that
+flowed, and the actual exceptions caught — useful for orientation
+before changing anything.
+
+### Regression detection across releases
+
+Unit tests check that expected behaviour is preserved across
+changes. They don't catch regressions in the actual data flow: a
+refactor can pass every test while silently changing which method
+receives which intermediate value, or what gets mutated along the
+way.
+
+Capture a verified trace as a baseline, run the same scenario after
+the change, and compare. Each captured value carries a content
+hash, so the diff points at exactly which method received different
+arguments, returned a different result, or mutated something it
+didn't before.
+
+## How DeepFlow changes debugging
+
+Experienced developers tend to converge on the same procedure when
+chasing a bug: reproduce, characterize, localize, hypothesize,
+probe, fix, root-cause. Each step exists because **observation is
+expensive** — the developer cannot see what the program did, so they
+reproduce to get another chance to look, localize to spend their
+limited observation budget wisely, and hypothesize because guessing
+is cheaper than measuring.
+
+A DeepFlow trace turns the program's behaviour — within the recorded
+scope — from something the developer must reconstruct into a
+queryable artifact. That collapses the seven classical steps into
+three phases:
+
+1. **Orientation.** The developer arrives with a symptom and a
+   trace. Build a mental model of what the program actually did:
+   where execution went, which objects were involved, the rough
+   shape of the call tree.
+2. **Narrowing.** Locate the anomaly through *selection* over the
+   trace rather than *experiment* on the program: filter to a
+   single `object_id`, find where a value first became wrong, diff
+   arguments at entry and exit, compare against a known-good run.
+   Each step is cheap and reversible.
+3. **Explanation.** Once the bad event is found, leave the trace
+   and return to the source to understand *why*. The trace tells
+   you what happened with high fidelity; understanding the cause
+   still belongs to the human.
+
+Hypothesize-and-verify doesn't go away, but it gets cheaper — try
+ten hypotheses in a minute, because verification is just another
+selection.
+
+For AI-assisted debugging, the same primitives — selection by
+`object_id`, request correlation, content-hash diffs — are exactly
+what an LLM agent needs to drive an investigation. Trace data
+converts unobservable program state into ground truth: the agent is
+not guessing what the program did, it is querying a record. One
+supplies *what* happened; the other reasons about *why*.
 
 ## Capabilities
 
@@ -76,7 +173,7 @@ DeepFlow also changes the *shape* of a debugging session — see
   when the target was compiled with `-parameters` *or* with debug info
   (`-g`, the Maven / Gradle default); falls back to `arg0..argN` for
   stripped jars. See
-  [Argument names](deepflow-agent/docs/features/argument-names.md).
+  [Argument names](deepflow-agent/docs/reference/argument-names.md).
 
 - **Object identity tracking.** Every object instance receives a stable unique
   ID. When the same `Order` passes through `validate`, `calculateTax`, and
@@ -150,7 +247,7 @@ A cross-thread mutation bug or a deeply-nested change shows up as a
 pair of `AR` / `AX` blocks the eye can scan. See three worked
 examples — a calculation bug, a cross-thread mutation, and walking a
 Merkle hash through a deep object — in
-[Reading a trace](deepflow-agent/docs/reading-a-trace.md).
+[Reading a trace](deepflow-agent/docs/reference/reading-a-trace.md).
 
 ## Going deeper
 
@@ -160,10 +257,10 @@ Merkle hash through a deep object — in
   Boot demo.
 - **[deepflow-agent/docs/](deepflow-agent/docs/)** —
   [getting started](deepflow-agent/docs/getting-started.md),
-  [configuration](deepflow-agent/docs/configuration.md),
+  [configuration](deepflow-agent/docs/reference/configuration.md),
   [architecture](deepflow-agent/docs/architecture.md),
-  [deployment modes](deepflow-agent/docs/deployment-modes.md), features,
-  internals, SPI, and the
+  [deployment modes](deepflow-agent/docs/reference/deployment-modes.md),
+  reference, internals, and the
   [language-neutral wire-format spec](deepflow-agent/docs/spec/SPEC.md).
 
 ## License

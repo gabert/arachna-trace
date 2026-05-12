@@ -26,13 +26,26 @@ The maintainers' active work is on the **distributed deployment mode**
 - AI-era observability at fleet scale
 - The hosted SaaS path
 
-See [docs/deployment-modes.md](docs/deployment-modes.md) for the full
+See [docs/reference/deployment-modes.md](docs/reference/deployment-modes.md) for the full
 positioning of each mode.
 
 ## Where contribution is most welcome
 
-The agent's clean separation of capture, transport, storage, and query
-layers makes several deliverables tractable independent projects.
+If you're looking for a specific concrete starting point, two places
+to scan first:
+
+- **[docs/process/ROADMAP.md](docs/process/ROADMAP.md)** — open work
+  with motivation and approach sketches. The "Bug-finding UX
+  backlog" (B2–B6) items and the FR-1..FR-5 user-facing feature
+  ideas are good entry points for someone new to the codebase.
+- **[docs/process/KNOWN_BUGS.md](docs/process/KNOWN_BUGS.md)** — bug
+  catalog with stable IDs. Items marked `Status: OPEN` are
+  candidates; `ACCEPTED` are intentional trade-offs, don't touch
+  without discussion.
+
+Beyond those, the agent's clean separation of capture, transport,
+storage, and query layers makes several deliverables tractable
+independent projects.
 
 ### 1. Local mode — single-JAR / IDE plugin viewer
 

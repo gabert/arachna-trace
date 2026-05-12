@@ -65,7 +65,7 @@ emitted, whether values are serialized at all, whether `this` is captured
 by reference or by content, and how large a single payload may grow before
 it is truncated. The agent records exactly what you need, nothing more.
 
-See [the agent's configuration reference](../deepflow-agent/docs/configuration.md)
+See [the agent's configuration reference](../deepflow-agent/docs/reference/configuration.md)
 for all options.
 
 ## Two modes of use
@@ -147,31 +147,11 @@ object identity tracking with zero code changes.
 
 ## Use cases
 
-**Debugging data errors.** Reproduce the scenario, read the trace. See
-where the correct value goes in and the wrong one comes out. Move forward
-and backward through the recording without restarting the application --
-the full execution is already captured.
-
-**Regression detection.** Record a verified flow as a baseline. After a
-code change, run the same scenario and compare traces. If the data flow
-diverged -- different arguments, different return values, a mutation that
-wasn't there before -- you see exactly which method changed.
-
-**Understanding unfamiliar code.** Instrument the packages, trigger a user
-flow, read the trace. Real execution with real data.
-
-**Detecting mutations.** Capture arguments at both method entry and exit
-and compare them. Find which method changed the list, the map, the entity.
-
-**Finding dead code.** Run the test suite in structural-only mode.
-Methods not in the trace were never called.
-
-**Verifying AI-generated code.** Run the feature, read the trace yourself
-or feed it to an AI reviewer. Confirm the data flows correctly without
-relying solely on tests.
-
-**Auditing data flows.** Capture traces during test runs. Hand them to
-compliance or security reviewers as evidence.
+The five use cases that drove the design — *Observability for
+AI-generated code*, *Debugging silent data errors*, *Forensics
+and audit for regulated systems*, *Understanding code you didn't
+write*, *Regression detection across releases* — are written up
+on the [repo root README](../README.md#what-we-built-this-for).
 
 ## Components
 
@@ -190,6 +170,6 @@ The agent's own documentation lives next to its source. See
 [deepflow-agent/docs/](../deepflow-agent/docs/) for:
 
 - [Getting Started](../deepflow-agent/docs/getting-started.md) -- build, attach, configure, read output
-- [Configuration Reference](../deepflow-agent/docs/configuration.md) -- all config options
+- [Configuration Reference](../deepflow-agent/docs/reference/configuration.md) -- all config options
 - [Agent Architecture](../deepflow-agent/docs/architecture.md) -- agent-internal data flow, modules, design decisions
 - [Wire-format spec](../deepflow-agent/docs/spec/SPEC.md) -- the language-neutral protocol contract

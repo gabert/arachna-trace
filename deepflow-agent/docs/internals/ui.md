@@ -228,7 +228,7 @@ All endpoints return JSON; the browser holds no SQL and no DB credentials.
 flowspy/
   deepflow-agent/
     server/record-query-server/   Read API (Netty + ClickHouse HTTP)
-    docs/ui-design.md             ← this file
+    docs/internals/ui.md          ← this file
   deepflow-ui/                    Vite + Vue 3 + PrimeVue + Pinia
 ```
 
@@ -239,10 +239,10 @@ See `deepflow-ui/README.md` for the dev loop. The Vite dev server proxies
 
 ---
 
-## Current architecture (snapshot 2026-05-05)
+## Current architecture
 
-This section reflects the implementation, not the original sketch. Update
-when shape changes.
+This section reflects the implementation. Update when the shape
+changes.
 
 ### Navigation: one reactive address
 
@@ -305,15 +305,52 @@ comparison naturally collapses cycle refs to ids.
 
 - **U-02** — Watch-row click correctly applies the `.flashed` class
   but the left pane sometimes doesn't scroll the target into view.
-  See `docs/temporal/KNOWN_BUGS.md → U-02` for the suspected causes
+  See `docs/process/KNOWN_BUGS.md → U-02` for the suspected causes
   and what to try next.
 
 ### Map of the components
 
+Three views (top-level routed pages) plus seventeen components.
+Components are grouped here by role; the navigation primitive
+described above flows through the ones marked **(nav)**.
+
+**Views (`src/views/`)**
+
 | File | Responsibility |
 |---|---|
-| `views/SessionDetailView.vue` | Top-level page. Provides `highlight`, `navTick`, `payloadsByCallId`, `childrenByParent`, expansion state. Hosts `goto`. |
+| `App.vue` | Router outlet. Mounts the active view; no domain logic. |
+| `views/SessionsView.vue` | Sessions list. Two-pane preview: pick a session on the left, see its requests + rollups (exceptions, mutations, duration) on the right before opening. |
+| `views/SessionDetailView.vue` | **(nav)** Top-level page for one session. Provides `highlight`, `navTick`, `payloadsByCallId`, `childrenByParent`, expansion state. Hosts `goto({callId, kind, path})`. |
+| `views/ObjectHistoryView.vue` | Per-`object_id` timeline across the session. Vertical history keyed off own_hash transitions; reuses the diff renderer. |
+
+**Structural panels — left pane of the session view**
+
+| File | Responsibility |
+|---|---|
+| `components/CallTreePanel.vue` | **(nav)** Owns the call-tree recursive layout, expand/collapse, and the canonical `highlightCall(callId)` primitive that every other panel routes through to land on a call (BOX + EXPAND ancestors + SCROLL into view). |
+| `components/RequestNode.vue` | Per-request header inside the tree (entry signature, badges, exception tint). |
 | `components/FrameCard.vue` | One call's row + body. Recursive — its body contains nested FrameCards between entry and exit payloads. |
-| `components/PayloadViewer.vue` | One payload (TI/AR/AX/RE). Owns its tree's expansion `Set<pathKey>`. Expands path prefixes when its local highlight is set. |
-| `components/JsonTree.vue` | Recursive renderer. Stateless beyond what its props describe. Computes `isMatch`, applies `.flashed`, scrolls itself into view on match. |
-| `components/WatchPanel.vue` | Right pane. Pinned watches, two-column hash display, marks the row whose address matches the global highlight. |
+| `components/FrameChildrenGroup.vue` | Groups consecutive child FrameCards under a parent for visual nesting. |
+| `components/PayloadViewer.vue` | **(nav)** One payload (TI/AR/AX/RE). Owns its tree's expansion `Set<pathKey>`. Expands path prefixes when its local highlight is set. |
+| `components/JsonTree.vue` | **(nav)** Recursive renderer for one JSON envelope. Stateless beyond what its props describe. Computes `isMatch`, applies `.flashed`, scrolls itself into view on match. |
+
+**Inspection panels — right pane (the lens)**
+
+| File | Responsibility |
+|---|---|
+| `components/CallInspectionCard.vue` | Pinned/transient inspection of one call. Sections for TI/AR/AX/RE with chips (`ExceptionChip`, mutation count). Has a ↙ "reveal in tree" button that calls back into `CallTreePanel.highlightCall`. |
+| `components/WatchPanel.vue` | **(nav)** Pinned watches over time. Two-column hash display (deep / own_hash); marks the row whose address matches the global highlight. |
+| `components/WatchItem.vue` | One pinned-watch row in `WatchPanel`. Renders the appearance list, hash transitions, and the row-click → `goto` wiring. |
+| `components/MutationsPanel.vue` | Within-request mutations view. AR↔AX own_hash diff, grouped per `(call, class, changed-field-set)`. See [../reference/bug-finding.md](../reference/bug-finding.md). |
+| `components/OriginPanel.vue` | Field provenance / origin chain. Source / propagation / next-mutation cards per appearance. |
+| `components/SearchPanel.vue` | Value search across the loaded session/request. Calls `/api/analysis/value-search`; click a hit → `goto` jumps to the JsonTree node. |
+| `components/DiffEntries.vue` | Field-level diff rows used by `MutationsPanel` and `OriginPanel`. Shared renderer. |
+
+**Chrome**
+
+| File | Responsibility |
+|---|---|
+| `components/CollapsiblePanel.vue` | Generic show/hide wrapper used by the right-pane tabs. |
+| `components/NavOverlay.vue` | The ↑/↓ navigator overlay shown above the workspace header (e.g. exception nav across the session). |
+| `components/ExceptionChip.vue` | Red ⚠ chip on rows / cards with `return_type=EXCEPTION`. |
+| `components/StatusBar.vue` | Bottom status bar: session id, request id, loading indicators, exception counters. |

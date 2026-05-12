@@ -58,8 +58,9 @@ To produce a usable trace stream you need:
    set `parent_call_id = top.call_id` and the exit hook can pop.
 
 That is the entire MVP. Skip configuration files, sampling, mutation
-tracking (`ARGUMENTS_EXIT`), session-id resolution, and JPA-proxy
-unwrapping for v1.
+tracking (`ARGUMENTS_EXIT`), the `SEQUENCE` record (causal ordering —
+see step 10 below), session-id resolution, and JPA-proxy unwrapping
+for v1.
 
 ## 3. The recommended build order
 
@@ -124,6 +125,16 @@ the call tree breaks.
 **Step 9 — `ARGUMENTS_EXIT` (mutation capture):** re-serialize
 arguments at exit so the processor's hash compare can detect
 mutations. Optional but high-value.
+
+**Step 10 — `SEQUENCE` (causal ordering):** emit one `SEQUENCE`
+record per method invocation, carrying the call's UUID and a
+per-agent-run monotonic ordinal. The consumer uses it to
+disambiguate sub-millisecond `ts_in` ties — without `SEQUENCE`,
+calls with the same millisecond timestamp end up in undefined
+order, which breaks narrative reading of dense request traces.
+Costs 24 bytes per call on the wire. Optional but recommended;
+the reference Java agent emits it by default
+([TAGS.md §SQ](TAGS.md)).
 
 ## 4. CBOR encoding — what the envelope looks like in code
 
@@ -265,6 +276,9 @@ If you only have a weekend:
 - Per-call identity (Strategy B from IDENTITY-MODEL.md), no
   cross-call ID stability.
 - One thread; no async propagation.
+- No SEQUENCE record. Ordering will fall back to ms-resolution
+  `ts_in`; ms-tied calls land in undefined order. Acceptable for
+  smoke testing.
 - No EXCEPTION record. Wrap your interception in your language's
   try/finally so a thrown error still emits METHOD_END (with no
   RETURN) — the consumer treats that as a void exit. **Do not** let

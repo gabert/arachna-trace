@@ -9,9 +9,6 @@ identity; it is **always** at the transport layer.
 
 ## 1. Why transport-layer
 
-(Informative — for the full rationale see `docs/temporal/SCHEMA_DESIGN.md`,
-Phase 4 narrative.)
-
 If agent-run identity were inside each record, a single dropped or
 delayed "agent header" record would orphan every subsequent call. By
 putting identity on the transport (HTTP headers, Kafka headers, or a
