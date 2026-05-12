@@ -33,6 +33,14 @@ By ID — see `KNOWN_BUGS.md` for the full description.
   `DateTime64(3)`.
 - **D-04** — `ALTER TABLE UPDATE retain` async race with TTL.
 - **D-05** — `payload_size` is JSON byte count, misleading name.
+- **D-10** — **HIGH SEVERITY**. Truncation marker drops the
+  envelope wrapper, breaking identity tracking, mutation
+  detection, and object-tree walk at the truncated node.
+  Directly collides with DeepFlow's core feature claims. Mitigation
+  today is `max_value_size=0` (agent default), but anyone setting
+  a non-zero cap silently opts out of identity / mutation
+  semantics for clipped values. Fix in three flavours, ordered by
+  effort × parity-with-current — see KNOWN_BUGS for the analysis.
 - **U-02** — Watch-row click highlights the JsonTree node but the
   left pane doesn't scroll it into view. Visual-only.
 
@@ -81,6 +89,20 @@ priority.
   first-time users, this hides the only mechanism the UI offers
   for inspection. Make it always visible on rows that can be
   pinned. Loses ~6px; gains "users actually find it."
+- **Tag-vocabulary help affordance in the instance inspector.**
+  First-time users hit a hump on the two-letter wire tags
+  (`TI` / `AR` / `AX` / `RE` / `TS` / `TE` / `SQ` / `RT` / `CI`
+  / `PI` / `SI` / `RI` / `TN` / `CL`). The codes are the right
+  primary label — they're shorter than the English they
+  replace, unify with the wire-format spec, and stay legible
+  once learned. But they need a *first-five-minutes*
+  affordance. Add a small `?` icon at the **component
+  level** of `CallInspectionCard.vue` (one icon, not per
+  section header) that pops a tooltip / inline panel mapping
+  each code to its full name + one-line meaning. Single source
+  of truth — no per-chip duplication. Surfaced after a
+  colleague review (2026-05-12): codes felt arcane on first
+  glance, fine after one tooltip read.
 
 ## Server / agent follow-ups
 
@@ -741,3 +763,127 @@ The `← was "..."` annotation is itself clickable. Behaviour:
   amber row in JsonTree (which envelope), inline `← was ...` at
   the leaf (which field, before/after). The user can read at
   whichever resolution they need without changing tool.
+
+---
+
+## FR-6 · Infra-only compose mode for external agents
+
+**Status**: open
+
+### Motivation
+
+Today's quickstart `release/compose.yml` is "everything in one
+shot": Kafka + ClickHouse + collector + processor + query + UI
++ **demo Spring Boot app** + **traffic generator**. Perfect for
+the 60-second "see what this thing does" first impression —
+visitor opens `http://localhost:8080` and the UI is already
+populated with the demo's intentional silent-mutation bug.
+
+But for a developer whose next question is *"OK, now I want to
+try this on **my** app"* the full stack is more than they need:
+
+- The demo Spring Boot container runs and generates traffic
+  they don't care about (and that pollutes the UI with demo
+  sessions).
+- They want to attach the agent to **their** JVM and see
+  **their** traces only.
+- The current path — edit `compose.yml`, comment out
+  demo-spring-boot + demo-traffic, expose the collector port,
+  figure out the agent config — is more steps than "try it on
+  my app" should take.
+
+The gap is the doc/demo funnel's natural second step: *wow →
+hook → instrument*. The first compose covers wow + hook
+(see [project_first_setup_funnel.md](https://github.com/gabert/deepflow)
+in memory). FR-6 fills the third.
+
+### Approach sketch
+
+A second compose file at `release/compose-infra.yml` (or
+`compose-byoa.yml` — naming TBD). Same services as
+`compose.yml` **minus** `demo-spring-boot` and `demo-traffic`,
+**plus** the collector port (`8099`) exposed to the host so an
+agent running outside the docker network can POST to it.
+
+Developer workflow becomes:
+
+```bash
+mkdir deepflow && cd deepflow
+curl -fsSLO https://raw.githubusercontent.com/gabert/deepflow/main/release/compose-infra.yml
+docker compose -f compose-infra.yml up
+```
+
+Open `http://localhost:8080` — UI is up, empty.
+
+Configure their app's agent (the typical `deepagent.cfg`):
+
+```properties
+destination=http
+http_server_url=http://localhost:8099/records
+matchers_include=com\.theirapp\..*
+session_resolver=spring-session     # or whatever fits
+```
+
+Attach to their JVM:
+
+```bash
+java -javaagent:path/to/deepflow-agent.jar=config=deepagent.cfg -jar their-app.jar
+```
+
+Refresh the UI — their session(s) appear with their traces.
+
+### Edge cases
+
+- **Where does the agent JAR come from?** The first developer
+  trying this won't have the source. Two options:
+  - Document `git clone + mvn clean install` (extra step but
+    self-contained — no third party).
+  - Publish the agent JAR to GitHub Releases (preferable; the
+    60-second framing wants zero JDK setup just to start
+    capturing).
+- **Cross-network agent reach.** `localhost:8099` works if the
+  app runs on the same host as the compose stack. If the dev's
+  app runs in another docker network, they need
+  `host.docker.internal` (Docker Desktop) or the host's bridge
+  IP (Linux). Worth a short troubleshooting section.
+- **`code_version` / `env` attribution.** When the dev's
+  traces and demo traces coexist in the same ClickHouse
+  (because they ran `compose.yml` first, then `compose-infra.yml`
+  later, against the same volume), the UI needs to disambiguate.
+  Already supported via `agent_runs.code_version` / `env`; doc
+  should call out setting these.
+- **No auth on the exposed collector.** Localhost-only is the
+  safe default (which is what `0.0.0.0:8099` from docker amounts
+  to on a personal machine). Anyone considering a non-local
+  collector exposure has stepped into production-deployment
+  territory and should re-read `deployment-modes.md`.
+- **Compose file maintenance.** The two compose files share
+  ~80% of lines. Could be implemented as one base + one
+  override, or as two slightly-divergent files. Pick whichever
+  is clearer at the time; both are fine.
+
+### Side-effect wins
+
+- **Doubles as the right production shape.** No one runs the
+  demo Spring Boot in production — production *is* "infra only,
+  bring your own apps". This compose file is what an operator
+  copies as a starting point, with auth + TLS + network policy
+  layered on top.
+- **Lowers the bar for the "instrument-your-app" doc** that
+  currently exists only conceptually (per
+  `project_first_setup_funnel.md` memory). FR-6's recipe IS
+  the doc.
+- **Makes the demo file's role explicit.** Today `compose.yml`
+  is the only option; users assume "this is how deepflow runs."
+  With two files side-by-side it's clear that the demo
+  container is teaching scaffolding, not part of the product.
+
+### Naming
+
+- `compose.yml` keeps the "everything, including the demo"
+  role (the GHCR quickstart link in the root README continues
+  to point here).
+- `compose-infra.yml` (or `-byoa.yml`) is the new
+  bring-your-own-app file.
+- The two appear together in `release/README.md` with a clear
+  "pick one" header.

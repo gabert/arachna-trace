@@ -37,18 +37,35 @@ produced by decoding the CBOR envelope and replacing integer field
 IDs with names — see §3 below).
 
 **Output** — the same tree transformed so each envelope carries a
-`__meta__` block containing `id`, `class`, and a content **`hash`**:
+`__meta__` block containing `id`, `class`, and **two** content
+hashes:
 
 ```
 {
-  "__meta__": {"id": <object_id>, "class": "<class.name>", "hash": "<hex>"},
+  "__meta__": {
+    "id":       <object_id>,
+    "class":    "<class.name>",
+    "hash":     "<hex>",      // Merkle deep hash — see §6
+    "own_hash": "<hex>"       // per-envelope own-state hash — see §7
+  },
   ...userFields
 }
 ```
 
+- **`hash`** is a **Merkle deep hash**: the envelope's own scalar
+  content *plus* the hashes of its children. Changes anywhere in
+  the subtree propagate upward. Right for tree-drilling
+  ("something changed somewhere; walk down to find it"). Full
+  construction in §6.
+- **`own_hash`** is the envelope's **own-state hash**: scalars
+  plus child *ids* (not child content). Changes only when this
+  object's own fields change; invariant under cycle-entry
+  direction. Right for flat row inspection ("did this object's
+  own data move"). Full construction in §7.
+
 The processor MUST also expose a single **root hash** for the entire
 tree (used to populate the `payloads.root_hash` ClickHouse column).
-Root hash semantics depend on the tree's shape — see §6.
+Root hash semantics depend on the tree's shape — see §8.
 
 ## 3. Humanization (Informative)
 
@@ -189,7 +206,96 @@ arrays in element order.
 
 `transformed = hashInput = the scalar itself`.
 
-## 7. Root hash semantics
+## 7. `own_hash` — per-envelope own-state hash
+
+A second hash, computed alongside `hash` and emitted on the same
+`__meta__` block. Same MD5 algorithm, same canonical-JSON
+encoding (§5), different input tree.
+
+Where `hash` propagates child content upward (Merkle), `own_hash`
+collapses every child envelope to its **id only**, so child
+content does NOT enter the parent's own-state hash.
+
+### 7.1 Why two hashes
+
+| Question the reader is asking | Right hash to compare |
+|---|---|
+| "Did anything anywhere in this subtree change?" | `hash` (Merkle) |
+| "Did **this** object's own fields change?" | `own_hash` |
+| "Same object seen from two sides of a cycle — same value?" | `own_hash` (invariant) |
+| "Same envelope, different agent runs — content match?" | `hash` (cross-run content-equivalent) |
+
+Without `own_hash`, a row reader inspecting an `Author` whose
+`books[i].isbn` was rewritten by another method sees the `Author`
+row's `hash` shift — even though the author itself didn't change.
+`own_hash` cleanly separates the two questions. See
+[../reference/bug-finding.md](../reference/bug-finding.md) for
+the user-facing workflow that uses it.
+
+### 7.2 Algorithm
+
+For an envelope `E` at the root of its own-hash walk (i.e. the
+envelope whose `own_hash` is being computed):
+
+1. **Strip `object_id` and `class`** from the input. Envelope
+   identity is *not* part of the own-hash input. Two same-class
+   instances with identical scalar fields therefore **collide**
+   on `own_hash`. That collision is intentional — `own_hash`
+   answers *"did this object's own data move"*, and the
+   adjacent `object_id` is the stable identity at envelope
+   boundaries.
+2. **Walk every remaining (user) key** with the rules below.
+3. **Compute** `own_hash_hex = md5(canonicalJson(processed_tree))`
+   using the same canonical JSON as §5.
+
+Walk rules:
+
+- **Scalar** → keep as-is.
+- **Plain map** (not envelope, not cycle ref) → recurse into
+  every value with the same rules; rebuild the map.
+- **List** → recurse into every element; rebuild the list in
+  order.
+- **Child envelope** (a map with both `object_id` and `class`,
+  encountered below the root) → collapse to
+  `{"__ref__": <child.object_id>}`. Child content does NOT
+  propagate. This is the key difference from the Merkle walk
+  in §6.
+- **Cycle reference** (a map containing `ref_id`) → collapse to
+  `{"__ref__": <ref_id>}`. **Same shape** as a collapsed child
+  envelope. This is why `own_hash` is invariant under
+  cycle-entry direction: a JPA bidirectional `Author ⇌ Book`
+  serialized from either side produces the same `own_hash` for
+  both, because the back-reference always reduces to the same
+  `__ref__` shape.
+
+The collapse shape `{"__ref__": <id>}` is **private to own-hash
+input**. It does NOT appear in the rendered output that lands
+in `payload_json`; it exists only inside the bytes fed to MD5.
+
+### 7.3 What this enables
+
+- **Per-row mutation detection** in the UI's WatchPanel — bands
+  flip on `own_hash` transitions, not on `hash` drift caused by
+  child mutations.
+- **Cycle-direction invariance** — sidesteps the false positives
+  catalogued in [process/KNOWN_BUGS.md → D-09](../process/KNOWN_BUGS.md).
+- **Indexed cross-call lookup** — `payloads.own_hashes` is a
+  `LowCardinality(String)` array column with a bloom-filter
+  index, so `WHERE has(own_hashes, '<hex>')` finds every call
+  where some envelope had this exact own-state — across the
+  session, the request, or (subject to retention) the trace
+  store.
+
+### 7.4 Reference implementation
+
+The reference Java implementation is `Hasher.ownHashInput(node,
+atRoot)` in
+`core/codec/src/main/java/com/github/gabert/deepflow/codec/Hasher.java`.
+A non-Java processor produces byte-identical `own_hash` values
+by implementing the same algorithm plus the same canonical JSON
+(§5).
+
+## 8. Root hash semantics
 
 The root hash for a record's payload depends on the root node:
 
@@ -207,7 +313,7 @@ The root hash for a record's payload depends on the root node:
 A processor MUST produce the same root hash for two payloads whose
 `hashInput` forms are bytewise-equal canonical JSON.
 
-## 8. What this enables (Informative)
+## 9. What this enables (Informative)
 
 - Comparing two `ARGUMENTS_EXIT` records' root hashes against the
   matching `ARGUMENTS` record's root hash → **mutation present?**
@@ -225,7 +331,7 @@ runs (because IDs are agent-run-scoped) will have the same content
 hash — so cross-run identity is by hash, not by ID. This is a
 deliberate consequence of §3.1 of CBOR-ENVELOPE.md.
 
-## 9. Worked example
+## 10. Worked example
 
 Two envelopes — an Author with one Book inside — taken end-to-end
 from CBOR through canonical JSON to the final transformed form
@@ -332,7 +438,7 @@ envelope's `__meta__.hash` — Author's hash above. For an
 array-rooted payload (an ARGUMENTS record's outer array), the
 root hash is computed over the canonical JSON of the array's
 `hashInput` form (each element envelope replaced by its hash
-string). See §7.
+string). See §8.
 
 ### The Merkle property in action
 
@@ -358,7 +464,7 @@ whole point of the pinning in §5. Two implementations that
 produce different bytes from the same input differ before MD5,
 not after; debug by diffing the canonical-JSON outputs.
 
-## 10. Implementation notes (Informative)
+## 11. Implementation notes (Informative)
 
 - The reference implementation lives at
   `core/codec/src/main/java/com/github/gabert/deepflow/codec/Hasher.java`.

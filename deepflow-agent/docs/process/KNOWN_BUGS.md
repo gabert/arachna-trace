@@ -46,6 +46,7 @@ For *open* items and what to do about them, see `ROADMAP.md`.
 | D-07 | Low      | ACCEPTED | Cosmic-ray  | UUID collision overwrites `openCalls` entry |
 | D-08 | Low      | ACCEPTED | Subtle      | `runScoped` body sees swapped stack — caller's outer call invisible |
 | D-09 | Low      | ACCEPTED | Data quality | Cyclic graphs hash differently depending on traversal entry |
+| D-10 | High     | OPEN     | Data quality | Truncation marker drops envelope — breaks identity, mutation detection, object-tree walk |
 | U-01 | Medium   | FIXED    | UI          | Tree pane stops responding after several watch-row navigations |
 | U-02 | Low      | OPEN     | UI          | Watch-row click highlights the JsonTree node but the left pane does not scroll it into view |
 | A-01 | —        | ACCEPTED | Pre-existing | `new Thread(r).start()` without instrumentation: no propagation |
@@ -487,6 +488,104 @@ decomposed as the cross product of **two cycle entry directions ×
 two real ISBN states** (`978-0-618-39111-3` → `9780618391113`,
 stripped by `LibraryDAO.normalizeIsbns`). Two of the four
 transitions were honest signal; two were cycle-direction noise.
+
+---
+
+### D-10 — Truncation marker drops envelope — breaks identity, mutation detection, object-tree walk
+
+**Status:** OPEN. Severity High — collides with core product features.
+**Where:** `ValueEncoder.truncationMarker(int)` (`core/agent`) +
+the marker shape defined in
+[../spec/CBOR-ENVELOPE.md §5b](../spec/CBOR-ENVELOPE.md).
+
+**Trigger:** Any captured value (`TI` / `AR` / `AX` / `RE` /
+`EXCEPTION`) whose CBOR-encoded size exceeds `max_value_size`
+(when set > 0).
+
+**Symptom:** The truncation marker
+`{"__truncated": true, "original_size": N}` is emitted as a
+**bare CBOR map** with no envelope wrapper. Consequences:
+
+- **Identity lost.** No `OBJECT_ID` on the marker → the consumer
+  cannot link this value to other appearances of the same
+  instance. The same `Order #42` seen full in one call and
+  truncated in another can't be paired across calls.
+- **Class lost.** No `CLASS_NAME` → the UI can render "something
+  was truncated" but not "this `Order` was truncated". Type
+  context disappears from the trace.
+- **Mutation detection broken.** Two truncation markers with
+  equal `original_size` hash identically, even if the underlying
+  object changed across `AR`↔`AX`. False negative.
+- **Conversely**: two markers with different `original_size`
+  hash differently even if the underlying object didn't change
+  (e.g. an unrelated transient field's size shifted). False
+  positive.
+- **Object-tree walk dies at this node.** The consumer can't
+  recurse into a truncated value — the subtree is opaque.
+  Provenance, value-search, and field-level diffs all stop here.
+
+These consequences directly conflict with DeepFlow's core
+claim: *"every object has stable identity, mutations are
+detectable, the same instance is tracked across calls."*
+Truncation as currently shaped opts out of all three for the
+clipped value.
+
+**Mitigation today:** Set `max_value_size=0` (the agent
+default). Pay storage / network for accurate identity tracking.
+Documented in [CBOR-ENVELOPE.md §5b](../spec/CBOR-ENVELOPE.md)
+as "known false-positive" — that framing was wrong; this is a
+bug, not an accepted trade-off.
+
+**Possible fixes** (ordered by effort × parity-with-current):
+
+1. **Envelope-wrap the marker.** Keep the truncation marker but
+   put it inside the standard envelope:
+
+   ```
+   {1: <object_id>,
+    2: "<class.name>",
+    3: {"__truncated": true, "original_size": N}}
+   ```
+
+   Identity preserved. Class preserved. Cross-call tracking
+   restored. Mutation detection still false-negatives within
+   one `(AR, AX)` pair if both sides truncate to the same size,
+   but identity-level use cases (watch this instance across the
+   request, find every appearance of `Order #42`) work again.
+   Smallest change; backward-compatible if we accept either
+   shape in the consumer.
+
+2. **Field-level truncation.** Walk the CBOR tree before
+   encoding; replace only the over-sized children/fields with
+   per-field markers, preserving the parent envelope and the
+   non-oversized siblings. The consumer sees *which specific
+   field* was too large — "`Order.notes` truncated, everything
+   else intact". Most expressive; significantly larger change
+   to `ValueEncoder` / `Codec`.
+
+3. **Content hash on the marker.** Add a CBOR-level hash of the
+   *would-have-been* encoded bytes inside the marker so two
+   markers compare on hash, not just size. Restores mutation
+   detection at the cost of hashing on the agent's hot path
+   (we currently hash on the processor; agent-side hashing was
+   the original design and was deliberately moved off the hot
+   path).
+
+**Lean:** ship (1) as a minor wire-format bump (consumers
+accept either the legacy flat marker or the new envelope-
+wrapped form during the transition window). Defer (2) and (3)
+as later refinements; (2) is the eventual right answer but the
+implementation cost is non-trivial.
+
+**Docs that need updating when this lands:**
+
+- `docs/spec/CBOR-ENVELOPE.md §5b` — rewrite the marker shape;
+  drop the "known false-positive" framing.
+- `docs/spec/WIRE-FORMAT.md` — note the new wire-version
+  (likely 1.5 if backward-compat, 2.0 if hard-cutover combined
+  with the JCS migration in the spec-evolution roadmap entry).
+- `docs/reference/truncation.md` — describe the new shape and
+  what it preserves.
 
 ---
 

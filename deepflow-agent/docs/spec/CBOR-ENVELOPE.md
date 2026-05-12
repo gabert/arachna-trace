@@ -163,6 +163,16 @@ envelope-wrapped object.
 
 ## 5b. Truncation marker
 
+> **Known bug.** The shape described in this section drops the
+> envelope wrapper, which kills identity tracking, mutation
+> detection, and object-tree walking at the truncated node — see
+> [process/KNOWN_BUGS.md → D-10](../process/KNOWN_BUGS.md). The
+> current shape is normative for wire-format 1.4; a future
+> minor or major bump will envelope-wrap the marker (or replace
+> it with per-field truncation). Until then, set
+> `max_value_size=0` (the agent default) if you need accurate
+> identity / mutation semantics.
+
 When a producer is configured with a per-value size cap (the
 reference Java agent's `max_value_size` config; `0` = unlimited),
 any CBOR-encoded value whose serialized length exceeds the cap
