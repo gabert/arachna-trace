@@ -272,7 +272,54 @@ The collapse shape `{"__ref__": <id>}` is **private to own-hash
 input**. It does NOT appear in the rendered output that lands
 in `payload_json`; it exists only inside the bytes fed to MD5.
 
-### 7.3 What this enables
+### 7.3 What changes `own_hash`, what doesn't
+
+Falls out of §7.2's rules, but worth enumerating because the
+behaviour is the whole reason `own_hash` is useful.
+
+`own_hash` is sensitive to the envelope's own scalars **plus**
+the **identity** and **structural placement** of any child
+envelopes it references — never the children's content.
+
+**Changes `own_hash`:**
+
+- A scalar field on the envelope itself changes
+  (`Author.name: "Tolkien" → "JRR"`).
+- A child instance is **added** (a new Book appended to
+  `Author.books`).
+- A child instance is **removed**.
+- A child instance is **replaced by a different instance** with
+  a different `object_id` (Book #11 → Book #99 in the same
+  slot — replacement, not mutation).
+- The **order** of children changes (list reorder; list order
+  is part of canonicalization per §5 rule 2).
+- A child reference moves between fields (`primary` slot vs.
+  `secondary` slot of the same parent).
+
+**Does NOT change `own_hash`:**
+
+- A child instance's **content** is mutated, same `object_id`
+  (Book #11's `isbn` rewritten in place). That mutation shifts
+  the child's own `own_hash` and propagates into the parent's
+  Merkle `hash` — but the parent's `own_hash` is unchanged.
+  This is the central difference from `hash`.
+- The graph is traversed from a different side of a cycle.
+  The cycle marker collapses to the same `__ref__` shape as a
+  non-root envelope, so both traversal directions produce the
+  same `own_hash`. (This is the mitigation for the cyclic-graph
+  false positives catalogued in
+  [process/KNOWN_BUGS.md → D-09](../process/KNOWN_BUGS.md).)
+- The envelope's `object_id` or `class` is renumbered between
+  agent runs (those keys are stripped from the own-hash input
+  at root, per §7.2 step 1).
+
+Reader's mental model: `own_hash` answers *"is this object,
+right now, the same object I saw last time"* — where *the same
+object* means **same own scalars** + **same set/positions of
+children by id**. Mutations one level down are the next
+envelope's problem.
+
+### 7.4 What this enables
 
 - **Per-row mutation detection** in the UI's WatchPanel — bands
   flip on `own_hash` transitions, not on `hash` drift caused by
@@ -286,7 +333,7 @@ in `payload_json`; it exists only inside the bytes fed to MD5.
   session, the request, or (subject to retention) the trace
   store.
 
-### 7.4 Reference implementation
+### 7.5 Reference implementation
 
 The reference Java implementation is `Hasher.ownHashInput(node,
 atRoot)` in
