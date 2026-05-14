@@ -13,5 +13,9 @@ README.md
 TASKS.md
 LICENSE
 doc/
-arachna-trace-agent/docs/
+spec/
+arachna-trace-agents/docs/
+arachna-trace-agents/jvm/docs/
+arachna-trace-infra/docs/
 arachna-trace-ui/dist/
+arachna-trace-ui/docs/

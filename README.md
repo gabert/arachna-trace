@@ -47,6 +47,28 @@ boot. To keep existing session data across an upgrade, see
 [release/README.md → Upgrading](release/README.md#upgrading) for the
 schema-migration path.
 
+## Why this exists
+
+The deepest reason this product exists is verifying what
+**AI-written code actually does at runtime**. LLM self-verification
+is one of the genuinely unresolved problems in current AI: a model
+that wrote a piece of code is unreliable at telling you whether
+it's correct, and asking it to critique its own work is unreliable
+on a regular basis — the same reasoning that produced a bug usually
+rationalises it. Unit tests only cover the cases someone thought to
+check, and AI-generated code multiplies the unanticipated ones.
+
+The missing piece is **runtime evidence** — the actual values that
+flowed through the code as it ran, not a model's belief about them.
+Arachna Trace captures that evidence: every instrumented method call
+with its arguments, return values, mutations, and exceptions,
+identified by stable object IDs and Merkle content hashes. That
+turns *"I think the code is correct"* into *"here is what it
+actually did,"* giving any verification loop — human reviewer or
+LLM agent — something to land on other than guesses. The five use
+cases below all read the same trace data; this is the deepest
+reason the product is shaped the way it is.
+
 ## What we built this for
 
 Five use cases drove the design. They all read the same data — a
@@ -173,7 +195,7 @@ supplies *what* happened; the other reasons about *why*.
   when the target was compiled with `-parameters` *or* with debug info
   (`-g`, the Maven / Gradle default); falls back to `arg0..argN` for
   stripped jars. See
-  [Argument names](arachna-trace-agent/docs/reference/argument-names.md).
+  [Argument names](arachna-trace-agents/docs/argument-names.md).
 
 - **Object identity tracking.** Every object instance receives a stable unique
   ID. When the same `Order` passes through `validate`, `calculateTax`, and
@@ -219,7 +241,7 @@ supplies *what* happened; the other reasons about *why*.
 ## Quick start
 
 ```bash
-cd arachna-trace-agent && mvn clean install
+cd arachna-trace-agents/jvm && mvn clean install
 # Produces core/agent/target/arachna-trace-agent.jar.
 ```
 
@@ -238,7 +260,7 @@ java -javaagent:path/to/arachna-trace-agent.jar="config=path/to/arachna-agent.cf
 ```
 
 Full setup (Spring Boot, SPI resolvers, all config options) in the
-[getting-started guide](arachna-trace-agent/docs/getting-started.md).
+[getting-started guide](arachna-trace-agents/jvm/docs/getting-started.md).
 
 ## Reading a trace
 
@@ -247,24 +269,35 @@ A cross-thread mutation bug or a deeply-nested change shows up as a
 pair of `AR` / `AX` blocks the eye can scan. See three worked
 examples — a calculation bug, a cross-thread mutation, and walking a
 Merkle hash through a deep object — in
-[Reading a trace](arachna-trace-agent/docs/reference/reading-a-trace.md).
+[Reading a trace](arachna-trace-agents/docs/reading-a-trace.md).
 
 ## Going deeper
 
-- **[arachna-trace-agent/](arachna-trace-agent/)** — Java multi-module project: the
-  bytecode-instrumentation agent, the Netty collector, the Kafka-fed
-  processor, the ClickHouse schema, the wire-format spec, and a Spring
-  Boot demo.
-- **[arachna-trace-agent/docs/](arachna-trace-agent/docs/)** —
-  [getting started](arachna-trace-agent/docs/getting-started.md),
-  [agent configuration](arachna-trace-agent/docs/reference/agent-config.md),
-  [architecture](arachna-trace-agent/docs/architecture.md),
-  [deployment modes](arachna-trace-agent/docs/reference/deployment-modes.md),
-  reference, internals, and the
-  [language-neutral wire-format spec](arachna-trace-agent/docs/spec/SPEC.md).
+The repo splits into four logical pieces, each with its own docs:
+
+- **[arachna-trace-agents/](arachna-trace-agents/)** — language-specific
+  runtime instrumentation. Today: `jvm/` (the JVM agent). Generic
+  any-agent concepts (mutation detection, request-id propagation,
+  truncation contract, identity model) live at
+  [arachna-trace-agents/docs/](arachna-trace-agents/docs/); the JVM
+  agent's quickstart, config, and internals live at
+  [arachna-trace-agents/jvm/docs/](arachna-trace-agents/jvm/docs/).
+- **[arachna-trace-infra/](arachna-trace-infra/)** — language-neutral
+  server-side pipeline: Netty collector, Kafka-fed processor, query
+  HTTP API, ClickHouse schema. Docs at
+  [arachna-trace-infra/docs/](arachna-trace-infra/docs/) cover
+  [deployment modes](arachna-trace-infra/docs/reference/deployment-modes.md)
+  and per-component config.
+- **[arachna-trace-ui/](arachna-trace-ui/)** — Vue/PrimeVue UI.
+- **[spec/](spec/)** — language-neutral wire-format contract, the
+  load-bearing interface between agents and infra. Start at
+  [spec/SPEC.md](spec/SPEC.md).
+
+Sample apps with the agent attached live under
+[arachna-trace-demos/](arachna-trace-demos/) (today: `jvm/`).
 
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE). Contributions welcome —
-see [CONTRIBUTING.md](arachna-trace-agent/CONTRIBUTING.md) for extension
-points and contribution guidelines.
+see [CONTRIBUTING.md](CONTRIBUTING.md) for extension points and
+contribution guidelines.

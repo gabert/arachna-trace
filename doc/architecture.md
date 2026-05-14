@@ -10,7 +10,7 @@ together. For *what Arachna Trace is and why* you'd reach for it, start at
 > system-wide view — language-agnostic, the whole agent →
 > collector → Kafka → processor → ClickHouse → UI pipeline. The
 > sibling doc at
-> [`arachna-trace-agent/docs/architecture.md`](../arachna-trace-agent/docs/architecture.md)
+> [`arachna-trace-agents/jvm/docs/architecture.md`](../arachna-trace-agents/jvm/docs/architecture.md)
 > zooms into the **agent's** internal data flow — the only
 > language-specific piece. Read this one for the end-to-end
 > picture; read that one for what happens inside the JVM.
@@ -114,8 +114,8 @@ logic, storage schema, query, UI) is built once and reused across
 every source language.
 
 The contract that makes this work is the wire-format spec at
-[arachna-trace-agent/docs/spec/SPEC.md](../arachna-trace-agent/docs/spec/SPEC.md).
-[PORTING-GUIDE.md](../arachna-trace-agent/docs/spec/PORTING-GUIDE.md) is
+[spec/SPEC.md](../spec/SPEC.md).
+[PORTING-GUIDE.md](../spec/PORTING-GUIDE.md) is
 the practical walkthrough for writing an agent in another language.
 
 ---
@@ -208,7 +208,7 @@ of TTL via a `retain` flag for long-lived debug or audit data.
 ### The wire-format spec
 
 Not a runtime component — a contract. Lives at
-[arachna-trace-agent/docs/spec/](../arachna-trace-agent/docs/spec/SPEC.md). It
+[spec/](../spec/SPEC.md). It
 defines the binary frame layout, the CBOR identity envelope, the
 Merkle hashing construction, the rendered tag-line view, and the
 HTTP/Kafka/file transports that carry agent-run identity.
@@ -230,10 +230,10 @@ to honour.
 
 - **The wire format** — binary frame layout, CBOR envelope shape,
   Merkle hash construction. Versioned (`major.minor`); breaking
-  changes bump the major. Defined in `docs/spec/`.
+  changes bump the major. Defined in `spec/`.
 - **The transport** — HTTP POST with `X-Arachna-Trace-*` headers, Kafka
   records with the same headers copied through, a `run.json` sidecar
-  for the file destination. Defined in `docs/spec/TRANSPORT.md`.
+  for the file destination. Defined in `spec/TRANSPORT.md`.
 - **The ClickHouse schema** — column names and types in
   `arachna_trace.calls` / `payloads` / `agent_runs`. Anyone querying the
   trace store relies on these.
@@ -363,15 +363,15 @@ materially different product.
 
 - **Evaluating Arachna Trace.** [overview](README.md) for the value
   proposition and the comparison table.
-  [getting-started](../arachna-trace-agent/docs/getting-started.md) for
+  [getting-started](../arachna-trace-agents/jvm/docs/getting-started.md) for
   build + attach.
 - **Integrating a non-Java agent.**
-  [docs/spec/SPEC.md](../arachna-trace-agent/docs/spec/SPEC.md) is the
-  contract; [PORTING-GUIDE.md](../arachna-trace-agent/docs/spec/PORTING-GUIDE.md)
+  [spec/SPEC.md](../spec/SPEC.md) is the
+  contract; [PORTING-GUIDE.md](../spec/PORTING-GUIDE.md)
   walks through the build order.
 - **Operating the pipeline.** [Agent
-  Architecture](../arachna-trace-agent/docs/architecture.md) for
-  agent-internal mechanics; [TRANSPORT.md](../arachna-trace-agent/docs/spec/TRANSPORT.md)
+  Architecture](../arachna-trace-agents/jvm/docs/architecture.md) for
+  agent-internal mechanics; [TRANSPORT.md](../spec/TRANSPORT.md)
   for the carriage of agent-run identity across HTTP / Kafka /
   files.
 - **Building or hiring.** This doc is your map.

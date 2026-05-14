@@ -187,7 +187,9 @@ fi
 [[ -f "$REPO_ROOT/release/Dockerfile"            ]] || die "missing release/Dockerfile"
 [[ -f "$REPO_ROOT/release/Dockerfile.ui"         ]] || die "missing release/Dockerfile.ui"
 [[ -f "$REPO_ROOT/release/Dockerfile.clickhouse" ]] || die "missing release/Dockerfile.clickhouse"
-[[ -d "$REPO_ROOT/arachna-trace-agent"                ]] || die "missing arachna-trace-agent/ source"
+[[ -d "$REPO_ROOT/arachna-trace-agents/jvm"           ]] || die "missing arachna-trace-agents/jvm/ source"
+[[ -d "$REPO_ROOT/arachna-trace-infra"                ]] || die "missing arachna-trace-infra/ source"
+[[ -d "$REPO_ROOT/arachna-trace-demos/jvm"            ]] || die "missing arachna-trace-demos/jvm/ source"
 [[ -d "$REPO_ROOT/arachna-trace-ui"                   ]] || die "missing arachna-trace-ui/ source"
 
 green "    environment OK"

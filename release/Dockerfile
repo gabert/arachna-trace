@@ -7,8 +7,8 @@
 #   - demo-spring-boot     (Spring Boot demo with the agent baked in)
 #
 # Build context: repo root.
-# Builder stage compiles the entire reactor once; each runtime stage
-# COPYs only its own jar(s) so layers stay small.
+# Builder stage compiles the agent reactor first (publishes shared libs
+# to the in-image m2 cache), then infra and demos on top.
 
 # -------------------------------------------------------------------
 # Builder
@@ -16,13 +16,19 @@
 FROM maven:3.9-eclipse-temurin-17@sha256:036d1a6f2965e4368157bb87f02cd31652a96918a26f7eb5ae45a0aa33f2cb8e AS builder
 WORKDIR /src
 
-# Copy the whole agent reactor and build everything in one pass.
-# The reactor is cohesive — building only one module forces -am to
-# compile most of the rest anyway, so the simpler approach is best.
-COPY arachna-trace-agent/ ./arachna-trace-agent/
+COPY arachna-trace-agents/ ./arachna-trace-agents/
+COPY arachna-trace-infra/  ./arachna-trace-infra/
+COPY arachna-trace-demos/  ./arachna-trace-demos/
 
-WORKDIR /src/arachna-trace-agent
+# Build JVM agent first — installs codec / record-format / serializer /
+# agent jars into the in-image m2 cache so infra and demos can resolve
+# them as plain Maven dependencies.
 RUN --mount=type=cache,target=/root/.m2/repository \
+    cd /src/arachna-trace-agents/jvm && \
+    mvn -B -DskipTests install && \
+    cd /src/arachna-trace-infra && \
+    mvn -B -DskipTests package && \
+    cd /src/arachna-trace-demos/jvm && \
     mvn -B -DskipTests package
 
 # -------------------------------------------------------------------
@@ -37,7 +43,7 @@ USER arachna-trace
 # Collector
 # -------------------------------------------------------------------
 FROM jre-base AS collector
-COPY --from=builder /src/arachna-trace-agent/server/record-collector-server/target/record-collector-server.jar /app/app.jar
+COPY --from=builder /src/arachna-trace-infra/record-collector-server/target/record-collector-server.jar /app/app.jar
 COPY release/configs/collector.cfg /app/config.cfg
 EXPOSE 8099
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
@@ -47,7 +53,7 @@ CMD ["config=/app/config.cfg"]
 # Processor
 # -------------------------------------------------------------------
 FROM jre-base AS processor
-COPY --from=builder /src/arachna-trace-agent/server/record-processor-server/target/record-processor-server.jar /app/app.jar
+COPY --from=builder /src/arachna-trace-infra/record-processor-server/target/record-processor-server.jar /app/app.jar
 COPY release/configs/processor.cfg /app/config.cfg
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 CMD ["config=/app/config.cfg"]
@@ -56,7 +62,7 @@ CMD ["config=/app/config.cfg"]
 # Query (HTTP API for UI)
 # -------------------------------------------------------------------
 FROM jre-base AS query
-COPY --from=builder /src/arachna-trace-agent/server/record-query-server/target/record-query-server.jar /app/app.jar
+COPY --from=builder /src/arachna-trace-infra/record-query-server/target/record-query-server.jar /app/app.jar
 COPY release/configs/query.cfg /app/config.cfg
 EXPOSE 8082
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
@@ -66,8 +72,8 @@ CMD ["config=/app/config.cfg"]
 # Demo Spring Boot (agent baked in)
 # -------------------------------------------------------------------
 FROM jre-base AS demo-spring-boot
-COPY --from=builder /src/arachna-trace-agent/core/agent/target/arachna-trace-agent.jar /app/agent.jar
-COPY --from=builder /src/arachna-trace-agent/demos/demo-spring-boot/target/ArachnaTraceDemoSpringBoot-0.0.1-SNAPSHOT.jar /app/app.jar
+COPY --from=builder /src/arachna-trace-agents/jvm/core/agent/target/arachna-trace-agent.jar /app/agent.jar
+COPY --from=builder /src/arachna-trace-demos/jvm/demo-spring-boot/target/ArachnaTraceDemoSpringBoot-0.0.1-SNAPSHOT.jar /app/app.jar
 COPY release/configs/demo-agent.cfg /app/agent.cfg
 EXPOSE 8080
 ENTRYPOINT ["java", "-javaagent:/app/agent.jar=config=/app/agent.cfg", "-jar", "/app/app.jar"]

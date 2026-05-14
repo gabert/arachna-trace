@@ -65,10 +65,10 @@ emitted, whether values are serialized at all, whether `this` is captured
 by reference or by content, and how large a single payload may grow before
 it is truncated. The agent records exactly what you need, nothing more.
 
-See [the agent's configuration reference](../arachna-trace-agent/docs/reference/agent-config.md)
+See [the agent's configuration reference](../arachna-trace-agents/jvm/docs/reference/agent-config.md)
 for all options. Each server component (collector, processor,
 query) has its own config doc next to it under
-[../arachna-trace-agent/docs/reference/](../arachna-trace-agent/docs/reference/).
+[../arachna-trace-infra/docs/reference/](../arachna-trace-infra/docs/reference/).
 
 ## Two modes of use
 
@@ -111,13 +111,34 @@ When it's finally discovered, nobody knows what the data looked like when
 it flowed through the system. With Arachna Trace attached, the answer is in
 the trace -- locally in `.dft` files or centrally in ClickHouse.
 
-**AI agents write a lot of code.** Tools like Claude Code, Cursor, and
-Copilot are generating significant portions of application code. It
-compiles, tests pass, CI is green. But does the data actually flow
-correctly? Unit tests verify the cases someone anticipated. They can't
-cover every path through a complex system. Arachna Trace lets you run the
-scenario and see exactly what happened -- what values arrived at each
-method, what transformations occurred, what came back.
+**AI agents write a lot of code, and LLMs can't reliably verify it.**
+Tools like Claude Code, Cursor, and Copilot generate significant
+portions of application code. It compiles, tests pass, CI is green.
+But does the data actually flow correctly? Self-verification — "is
+my own code correct?" — is one of the genuinely unresolved problems
+with current LLMs. Models are confidently wrong on a regular basis,
+and asking a model to critique its own work is unreliable: the same
+reasoning that produced the bug usually rationalises it. Unit tests
+only cover the cases someone anticipated, and AI-written code
+multiplies the unanticipated cases.
+
+The missing piece is **evidence** — the actual values that flowed
+through the code at runtime, not a model's belief about them.
+Arachna Trace captures that evidence: every instrumented method
+call with its arguments, return values, mutations, and exceptions,
+identified by stable object IDs and Merkle content hashes. That
+turns "I think this is correct" into "here is what it actually
+did," which is the substrate any verification loop — whether the
+reviewer is a human or another LLM — needs to land on truth instead
+of on guesses.
+
+This is the deepest reason Arachna Trace exists. The other use cases
+(silent data bugs, audit substrates, debugging code you didn't
+write) are real and important, but the one that most clearly is
+not addressed by anything else today is: **giving AI-era development
+a substrate of runtime evidence**, so the work produced by AI agents
+can be verified against what the program actually does — not against
+what it appears to do or what its author claims it does.
 
 **Regulated industries can't just trust the tests.** In financial services,
 defence, and healthcare, "it passes the tests" isn't enough. Auditors and
@@ -157,21 +178,35 @@ on the [repo root README](../README.md#what-we-built-this-for).
 
 ## Components
 
-- **arachna-trace-agent/** -- Java Maven project. Contains the bytecode
-  agent itself plus the rest of the producer-side pipeline: the Netty
-  collector that ingests POSTs from agents, the Kafka-fed processor
-  that renders, hashes and inserts into ClickHouse, the ClickHouse
-  schema, and a Spring Boot demo. The wire-format spec also lives here.
+- **arachna-trace-agents/** -- parent dir for language-specific agents.
+  Today contains only `jvm/` (the JVM agent: ByteBuddy-based bytecode
+  instrumentation). Generic any-agent docs (concepts, mutation
+  detection, request-id propagation) live under
+  [`arachna-trace-agents/docs/`](../arachna-trace-agents/docs/).
+- **arachna-trace-infra/** -- language-neutral server-side pipeline:
+  Netty collector, Kafka-fed processor, query HTTP API, ClickHouse
+  schema, and a docker-compose for local development. Consumes any
+  conformant agent in any language via the wire format.
+- **arachna-trace-ui/** -- Vue / TypeScript UI; talks to the query
+  HTTP API.
+- **arachna-trace-demos/** -- sample apps with the agent attached
+  (today: `jvm/demo-plain`, `jvm/demo-spring-boot`).
+- **spec/** -- the language-neutral wire-format contract between
+  agents and infra.
 
 ## Further reading
 
 - [System Architecture](architecture.md) -- the full pipeline at a
   glance: components, contracts, design choices, what Arachna Trace is NOT
 
-The agent's own documentation lives next to its source. See
-[arachna-trace-agent/docs/](../arachna-trace-agent/docs/) for:
+The JVM agent's own documentation lives next to its source:
 
-- [Getting Started](../arachna-trace-agent/docs/getting-started.md) -- build, attach, configure, read output
-- [Agent Configuration](../arachna-trace-agent/docs/reference/agent-config.md) -- the JVM agent's options (each server component has its own config doc next to it)
-- [Agent Architecture](../arachna-trace-agent/docs/architecture.md) -- agent-internal data flow, modules, design decisions
-- [Wire-format spec](../arachna-trace-agent/docs/spec/SPEC.md) -- the language-neutral protocol contract
+- [Getting Started](../arachna-trace-agents/jvm/docs/getting-started.md) -- build, attach, configure, read output
+- [Agent Configuration](../arachna-trace-agents/jvm/docs/reference/agent-config.md) -- the JVM agent's options
+- [Agent Architecture](../arachna-trace-agents/jvm/docs/architecture.md) -- JVM-internal data flow, modules, design decisions
+
+Generic and infra docs:
+
+- [Generic agent concepts](../arachna-trace-agents/docs/concepts.md) -- terminology any agent in any language must implement
+- [Wire-format spec](../spec/SPEC.md) -- the language-neutral protocol contract
+- [Infra deployment modes](../arachna-trace-infra/docs/reference/deployment-modes.md)
