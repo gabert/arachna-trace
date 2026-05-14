@@ -36,3 +36,6 @@ env/
 CLAUDE.md
 TASKS.md
 .claude/
+
+# Local dev-only overrides
+release/compose.uidev.yml
