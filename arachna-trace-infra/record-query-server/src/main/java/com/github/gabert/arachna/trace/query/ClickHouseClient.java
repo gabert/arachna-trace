@@ -27,9 +27,9 @@ public class ClickHouseClient {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final URI baseUri;
-    private final String basicAuth;
-    private final HttpClient http;
+    private URI baseUri;
+    private String basicAuth;
+    private HttpClient http;
 
     public ClickHouseClient(QueryServerConfig config) {
         this.baseUri = URI.create(config.getClickhouseUrl());
@@ -39,6 +39,9 @@ public class ClickHouseClient {
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
+    }
+
+    ClickHouseClient() {
     }
 
     /**
@@ -60,6 +63,16 @@ public class ClickHouseClient {
      */
     public List<Map<String, Object>> query(String sql, Map<String, String> params)
             throws IOException, InterruptedException {
+        HttpRequest request = buildRequest(sql, params);
+        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() / 100 != 2) {
+            throw new IOException("ClickHouse query failed: HTTP " + response.statusCode()
+                    + " — " + response.body());
+        }
+        return parseJsonEachRow(response.body());
+    }
+
+    HttpRequest buildRequest(String sql, Map<String, String> params) {
         String body = sql + "\nFORMAT JSONEachRow";
         StringBuilder uri = new StringBuilder("/?database=")
                 .append(URLEncoder.encode("arachna_trace", StandardCharsets.UTF_8));
@@ -69,23 +82,16 @@ public class ClickHouseClient {
                     .append("=")
                     .append(URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8));
         }
-        HttpRequest request = HttpRequest.newBuilder()
+        return HttpRequest.newBuilder()
                 .uri(baseUri.resolve(uri.toString()))
                 .timeout(Duration.ofSeconds(15))
                 .header("Authorization", basicAuth)
                 .header("Content-Type", "text/plain; charset=UTF-8")
                 .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                 .build();
-
-        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() / 100 != 2) {
-            throw new IOException("ClickHouse query failed: HTTP " + response.statusCode()
-                    + " — " + response.body());
-        }
-        return parseJsonEachRow(response.body());
     }
 
-    private static List<Map<String, Object>> parseJsonEachRow(String body) throws IOException {
+    static List<Map<String, Object>> parseJsonEachRow(String body) throws IOException {
         java.util.ArrayList<Map<String, Object>> rows = new java.util.ArrayList<>();
         for (String line : body.split("\\r?\\n")) {
             if (line.isBlank()) continue;
