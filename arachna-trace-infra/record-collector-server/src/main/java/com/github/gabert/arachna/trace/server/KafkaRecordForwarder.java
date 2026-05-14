@@ -12,8 +12,8 @@ import java.util.Map;
 import java.util.Properties;
 
 public class KafkaRecordForwarder {
-    private final KafkaProducer<String, byte[]> producer;
-    private final String topic;
+    private KafkaProducer<String, byte[]> producer;
+    private String topic;
 
     public KafkaRecordForwarder(ServerConfig config) {
         this.topic = config.getKafkaTopic();
@@ -26,6 +26,9 @@ public class KafkaRecordForwarder {
         props.put(ProducerConfig.BATCH_SIZE_CONFIG, 64 * 1024);
 
         this.producer = new KafkaProducer<>(props);
+    }
+
+    KafkaRecordForwarder() {
     }
 
     /**
