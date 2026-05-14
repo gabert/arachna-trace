@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# ClickHouse with the DeepFlow schema baked into the image so the
+# ClickHouse with the ArachnaTrace schema baked into the image so the
 # database initializes itself on first start with no host-side mount.
 # Build context: repo root.
 
@@ -8,8 +8,8 @@ FROM clickhouse/clickhouse-server:24.12@sha256:a65ca89ddbe8e04a05036dd7d7110a203
 
 # Schema is loaded on first start by ClickHouse's docker-entrypoint.
 # Subsequent starts keep the existing data volume and skip init.
-COPY deepflow-agent/server/clickhouse-init/01-schema.sql /docker-entrypoint-initdb.d/01-schema.sql
+COPY arachna-trace-agent/server/clickhouse-init/01-schema.sql /docker-entrypoint-initdb.d/01-schema.sql
 
-ENV CLICKHOUSE_DB=deepflow \
-    CLICKHOUSE_USER=deepflow \
-    CLICKHOUSE_PASSWORD=deepflow
+ENV CLICKHOUSE_DB=arachna_trace \
+    CLICKHOUSE_USER=arachna_trace \
+    CLICKHOUSE_PASSWORD=arachna_trace

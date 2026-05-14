@@ -13,5 +13,5 @@ README.md
 TASKS.md
 LICENSE
 doc/
-deepflow-agent/docs/
-deepflow-ui/dist/
+arachna-trace-agent/docs/
+arachna-trace-ui/dist/

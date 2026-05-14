@@ -10,11 +10,11 @@ FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb836
 WORKDIR /src
 
 # Cache dependencies on package.json changes only.
-COPY deepflow-ui/package.json deepflow-ui/package-lock.json ./
+COPY arachna-trace-ui/package.json arachna-trace-ui/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
     npm ci
 
-COPY deepflow-ui/ ./
+COPY arachna-trace-ui/ ./
 RUN npm run build
 
 # -------------------------------------------------------------------

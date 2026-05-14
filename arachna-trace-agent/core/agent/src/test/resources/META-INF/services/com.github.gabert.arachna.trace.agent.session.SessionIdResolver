@@ -1,0 +1,3 @@
+com.github.gabert.arachna.trace.agent.TestSessionIdResolverAlpha
+com.github.gabert.arachna.trace.agent.TestSessionIdResolver
+com.github.gabert.arachna.trace.agent.TestSessionIdResolverGamma

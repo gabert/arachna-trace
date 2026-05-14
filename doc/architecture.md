@@ -1,8 +1,8 @@
-# DeepFlow — System Architecture
+# Arachna Trace — System Architecture
 
-This document maps the full DeepFlow pipeline: which components produce
+This document maps the full Arachna Trace pipeline: which components produce
 what, what they hand off to whom, and the contracts that hold them
-together. For *what DeepFlow is and why* you'd reach for it, start at
+together. For *what Arachna Trace is and why* you'd reach for it, start at
 [the overview](README.md) or the
 [parent README](../README.md). This doc assumes you've been there.
 
@@ -10,7 +10,7 @@ together. For *what DeepFlow is and why* you'd reach for it, start at
 > system-wide view — language-agnostic, the whole agent →
 > collector → Kafka → processor → ClickHouse → UI pipeline. The
 > sibling doc at
-> [`deepflow-agent/docs/architecture.md`](../deepflow-agent/docs/architecture.md)
+> [`arachna-trace-agent/docs/architecture.md`](../arachna-trace-agent/docs/architecture.md)
 > zooms into the **agent's** internal data flow — the only
 > language-specific piece. Read this one for the end-to-end
 > picture; read that one for what happens inside the JVM.
@@ -24,7 +24,7 @@ together. For *what DeepFlow is and why* you'd reach for it, start at
             │   Your Java application JVM                             │
             │                                                         │
             │   +--------------------+         +-----------------+    │
-            │   |  application code  |  call   |  DeepFlow       |    │
+            │   |  application code  |  call   |  Arachna Trace       |    │
             │   |  (instrumented at  |◄------► |  agent          |    │
             │   |  -javaagent time)  |         |  (in-process)   |    │
             │   +--------------------+         +-----------------+    │
@@ -45,7 +45,7 @@ together. For *what DeepFlow is and why* you'd reach for it, start at
                                                                            ▼
                                                               ┌──────────────────────────┐
                                                               │   Kafka                  │
-                                                              │   topic: deepflow-       │
+                                                              │   topic: arachna-trace-       │
                                                               │   records (short-        │
                                                               │   retention burst        │
                                                               │   buffer)                │
@@ -77,7 +77,7 @@ land and who reads them.
 
 ## The language boundary lives at the agent's output
 
-DeepFlow has exactly one language-specific component: **the agent**.
+Arachna Trace has exactly one language-specific component: **the agent**.
 Everything below the binary-record boundary — the collector, Kafka,
 the processor, ClickHouse — operates on wire bytes alone. A Python
 agent, a Go agent, a Rust agent, a .NET agent producing the same
@@ -87,7 +87,7 @@ bytes is a first-class citizen of the same pipeline.
 ┌────────────────────────────────────┐
 │   LANGUAGE-SPECIFIC                │  ◄── only this side knows
 │                                    │      what language the
-│   DeepFlow agent                   │      application is in.
+│   Arachna Trace agent                   │      application is in.
 │   (Java is the reference;          │      Bytecode instrumentation,
 │    any host language possible)     │      object-graph traversal,
 │                                    │      identity tracking — all
@@ -107,15 +107,15 @@ bytes is a first-class citizen of the same pipeline.
 
 This boundary is positioned **as early as possible by design**. If
 it were any later — say at the Kafka topic or at the processor —
-those layers would be Java-specific too, and adopting DeepFlow would
+those layers would be Java-specific too, and adopting Arachna Trace would
 mean adopting the JVM end-to-end. By making the wire format itself
 the boundary, every infrastructure-heavy piece (queue, processor
 logic, storage schema, query, UI) is built once and reused across
 every source language.
 
 The contract that makes this work is the wire-format spec at
-[deepflow-agent/docs/spec/SPEC.md](../deepflow-agent/docs/spec/SPEC.md).
-[PORTING-GUIDE.md](../deepflow-agent/docs/spec/PORTING-GUIDE.md) is
+[arachna-trace-agent/docs/spec/SPEC.md](../arachna-trace-agent/docs/spec/SPEC.md).
+[PORTING-GUIDE.md](../arachna-trace-agent/docs/spec/PORTING-GUIDE.md) is
 the practical walkthrough for writing an agent in another language.
 
 ---
@@ -153,12 +153,12 @@ path.
 
 ### Kafka
 
-A burst absorber, not a system of record. The `deepflow-records`
+A burst absorber, not a system of record. The `arachna-trace-records`
 topic holds binary frames for as long as it takes the processor to
 chew through them — typically minutes, not days. If the processor
 goes down, frames pile up; when it comes back, they drain.
 
-DeepFlow's storage of record is ClickHouse, not Kafka. Kafka exists
+Arachna Trace's storage of record is ClickHouse, not Kafka. Kafka exists
 because the processor is non-trivial work (CBOR decode, Merkle hash
 walk, JSON canonicalisation, INSERT batching), and trace traffic is
 spiky. A queue between collector and processor decouples them.
@@ -208,7 +208,7 @@ of TTL via a `retain` flag for long-lived debug or audit data.
 ### The wire-format spec
 
 Not a runtime component — a contract. Lives at
-[deepflow-agent/docs/spec/](../deepflow-agent/docs/spec/SPEC.md). It
+[arachna-trace-agent/docs/spec/](../arachna-trace-agent/docs/spec/SPEC.md). It
 defines the binary frame layout, the CBOR identity envelope, the
 Merkle hashing construction, the rendered tag-line view, and the
 HTTP/Kafka/file transports that carry agent-run identity.
@@ -231,11 +231,11 @@ to honour.
 - **The wire format** — binary frame layout, CBOR envelope shape,
   Merkle hash construction. Versioned (`major.minor`); breaking
   changes bump the major. Defined in `docs/spec/`.
-- **The transport** — HTTP POST with `X-Deepflow-*` headers, Kafka
+- **The transport** — HTTP POST with `X-Arachna-Trace-*` headers, Kafka
   records with the same headers copied through, a `run.json` sidecar
   for the file destination. Defined in `docs/spec/TRANSPORT.md`.
 - **The ClickHouse schema** — column names and types in
-  `deepflow.calls` / `payloads` / `agent_runs`. Anyone querying the
+  `arachna_trace.calls` / `payloads` / `agent_runs`. Anyone querying the
   trace store relies on these.
 
 ### Swappable
@@ -255,7 +255,7 @@ to honour.
 
 ### Configuration
 
-The agent is reconfigurable per run via `deepagent.cfg`: which
+The agent is reconfigurable per run via `arachna-agent.cfg`: which
 classes to instrument, which tags to emit, whether to capture
 arguments at all, how large a single value can grow before
 truncation. None of this leaves the agent JVM.
@@ -339,18 +339,18 @@ materially different product.
 
 ---
 
-## What DeepFlow is NOT
+## What Arachna Trace is NOT
 
 - **Not an APM.** OpenTelemetry, Datadog, New Relic capture spans at
-  service boundaries (HTTP requests, DB calls). DeepFlow captures
+  service boundaries (HTTP requests, DB calls). Arachna Trace captures
   every method the agent is configured to instrument, including the
   values that flowed through. The two are complementary, not
   alternatives.
 - **Not a profiler.** No sampling, no flame graphs, no CPU/memory
-  attribution. DeepFlow records what the code did with data, not
+  attribution. Arachna Trace records what the code did with data, not
   where the time went.
 - **Not structured logs at scale.** Logs require explicit
-  instrumentation (`log.info(...)` calls); DeepFlow needs no source
+  instrumentation (`log.info(...)` calls); Arachna Trace needs no source
   changes. Logs survive forever; traces have a 30-day TTL by default.
 - **Not zero-cost.** Capturing every value flowing through every
   matched method has overhead. Production use is realistic with a
@@ -361,17 +361,17 @@ materially different product.
 
 ## Where to go next
 
-- **Evaluating DeepFlow.** [overview](README.md) for the value
+- **Evaluating Arachna Trace.** [overview](README.md) for the value
   proposition and the comparison table.
-  [getting-started](../deepflow-agent/docs/getting-started.md) for
+  [getting-started](../arachna-trace-agent/docs/getting-started.md) for
   build + attach.
 - **Integrating a non-Java agent.**
-  [docs/spec/SPEC.md](../deepflow-agent/docs/spec/SPEC.md) is the
-  contract; [PORTING-GUIDE.md](../deepflow-agent/docs/spec/PORTING-GUIDE.md)
+  [docs/spec/SPEC.md](../arachna-trace-agent/docs/spec/SPEC.md) is the
+  contract; [PORTING-GUIDE.md](../arachna-trace-agent/docs/spec/PORTING-GUIDE.md)
   walks through the build order.
 - **Operating the pipeline.** [Agent
-  Architecture](../deepflow-agent/docs/architecture.md) for
-  agent-internal mechanics; [TRANSPORT.md](../deepflow-agent/docs/spec/TRANSPORT.md)
+  Architecture](../arachna-trace-agent/docs/architecture.md) for
+  agent-internal mechanics; [TRANSPORT.md](../arachna-trace-agent/docs/spec/TRANSPORT.md)
   for the carriage of agent-run identity across HTTP / Kafka /
   files.
 - **Building or hiring.** This doc is your map.

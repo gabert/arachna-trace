@@ -19,9 +19,9 @@ WORKDIR /src
 # Copy the whole agent reactor and build everything in one pass.
 # The reactor is cohesive — building only one module forces -am to
 # compile most of the rest anyway, so the simpler approach is best.
-COPY deepflow-agent/ ./deepflow-agent/
+COPY arachna-trace-agent/ ./arachna-trace-agent/
 
-WORKDIR /src/deepflow-agent
+WORKDIR /src/arachna-trace-agent
 RUN --mount=type=cache,target=/root/.m2/repository \
     mvn -B -DskipTests package
 
@@ -29,15 +29,15 @@ RUN --mount=type=cache,target=/root/.m2/repository \
 # Common JRE base for runtime stages
 # -------------------------------------------------------------------
 FROM bellsoft/liberica-runtime-container:jre-17-musl@sha256:dc909359d7077eb7f98c6f0bdcd020399641a159db5dbf22de9735955efb3388 AS jre-base
-RUN addgroup -S deepflow && adduser -S -G deepflow deepflow
+RUN addgroup -S arachna-trace && adduser -S -G arachna-trace arachna-trace
 WORKDIR /app
-USER deepflow
+USER arachna-trace
 
 # -------------------------------------------------------------------
 # Collector
 # -------------------------------------------------------------------
 FROM jre-base AS collector
-COPY --from=builder /src/deepflow-agent/server/record-collector-server/target/record-collector-server.jar /app/app.jar
+COPY --from=builder /src/arachna-trace-agent/server/record-collector-server/target/record-collector-server.jar /app/app.jar
 COPY release/configs/collector.cfg /app/config.cfg
 EXPOSE 8099
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
@@ -47,7 +47,7 @@ CMD ["config=/app/config.cfg"]
 # Processor
 # -------------------------------------------------------------------
 FROM jre-base AS processor
-COPY --from=builder /src/deepflow-agent/server/record-processor-server/target/record-processor-server.jar /app/app.jar
+COPY --from=builder /src/arachna-trace-agent/server/record-processor-server/target/record-processor-server.jar /app/app.jar
 COPY release/configs/processor.cfg /app/config.cfg
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 CMD ["config=/app/config.cfg"]
@@ -56,7 +56,7 @@ CMD ["config=/app/config.cfg"]
 # Query (HTTP API for UI)
 # -------------------------------------------------------------------
 FROM jre-base AS query
-COPY --from=builder /src/deepflow-agent/server/record-query-server/target/record-query-server.jar /app/app.jar
+COPY --from=builder /src/arachna-trace-agent/server/record-query-server/target/record-query-server.jar /app/app.jar
 COPY release/configs/query.cfg /app/config.cfg
 EXPOSE 8082
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
@@ -66,8 +66,8 @@ CMD ["config=/app/config.cfg"]
 # Demo Spring Boot (agent baked in)
 # -------------------------------------------------------------------
 FROM jre-base AS demo-spring-boot
-COPY --from=builder /src/deepflow-agent/core/agent/target/deepflow-agent.jar /app/agent.jar
-COPY --from=builder /src/deepflow-agent/demos/demo-spring-boot/target/DeepFlowDemoSpringBoot-0.0.1-SNAPSHOT.jar /app/app.jar
+COPY --from=builder /src/arachna-trace-agent/core/agent/target/arachna-trace-agent.jar /app/agent.jar
+COPY --from=builder /src/arachna-trace-agent/demos/demo-spring-boot/target/ArachnaTraceDemoSpringBoot-0.0.1-SNAPSHOT.jar /app/app.jar
 COPY release/configs/demo-agent.cfg /app/agent.cfg
 EXPOSE 8080
 ENTRYPOINT ["java", "-javaagent:/app/agent.jar=config=/app/agent.cfg", "-jar", "/app/app.jar"]

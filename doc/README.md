@@ -1,4 +1,4 @@
-# DeepFlow Overview
+# Arachna Trace Overview
 
 ## The problem
 
@@ -24,9 +24,9 @@ redeploy, reproduce, read the output, repeat. For a simple bug that's just
 annoying. For a production issue in a bank or a defence system, it's a
 serious problem.
 
-## What DeepFlow does
+## What Arachna Trace does
 
-DeepFlow is a Java agent that records what your code actually does with
+Arachna Trace is a Java agent that records what your code actually does with
 data at runtime. Attach it via `-javaagent`, point it at your packages, run
 the application. For every instrumented method it captures:
 
@@ -65,14 +65,14 @@ emitted, whether values are serialized at all, whether `this` is captured
 by reference or by content, and how large a single payload may grow before
 it is truncated. The agent records exactly what you need, nothing more.
 
-See [the agent's configuration reference](../deepflow-agent/docs/reference/agent-config.md)
+See [the agent's configuration reference](../arachna-trace-agent/docs/reference/agent-config.md)
 for all options. Each server component (collector, processor,
 query) has its own config doc next to it under
-[../deepflow-agent/docs/reference/](../deepflow-agent/docs/reference/).
+[../arachna-trace-agent/docs/reference/](../arachna-trace-agent/docs/reference/).
 
 ## Two modes of use
 
-DeepFlow is designed to work in two modes. Both use the same agent and
+Arachna Trace is designed to work in two modes. Both use the same agent and
 produce the same trace data -- the difference is who reads them.
 
 **Human mode.** A developer attaches the agent, reproduces the scenario,
@@ -108,14 +108,14 @@ nothing reaches an LLM unless you choose to send it.
 **Data bugs are expensive.** A null pointer is found in minutes. A wrong
 calculation that produces plausible results can go undetected for months.
 When it's finally discovered, nobody knows what the data looked like when
-it flowed through the system. With DeepFlow attached, the answer is in
+it flowed through the system. With Arachna Trace attached, the answer is in
 the trace -- locally in `.dft` files or centrally in ClickHouse.
 
 **AI agents write a lot of code.** Tools like Claude Code, Cursor, and
 Copilot are generating significant portions of application code. It
 compiles, tests pass, CI is green. But does the data actually flow
 correctly? Unit tests verify the cases someone anticipated. They can't
-cover every path through a complex system. DeepFlow lets you run the
+cover every path through a complex system. Arachna Trace lets you run the
 scenario and see exactly what happened -- what values arrived at each
 method, what transformations occurred, what came back.
 
@@ -124,17 +124,17 @@ defence, and healthcare, "it passes the tests" isn't enough. Auditors and
 compliance teams need to verify that data flows correctly -- that a price
 was calculated from the right inputs, that classified data stayed in the
 right code path, that patient records were accessed only by authorized
-services. DeepFlow captures every method call with its actual data. It's
+services. Arachna Trace captures every method call with its actual data. It's
 not sampling, not probabilistic -- it's a complete record that can serve
 as evidence.
 
 ## How it compares
 
 Most tracing tools capture structure (which methods were called, how long
-they took). DeepFlow captures data (what values went in, what came out,
+they took). Arachna Trace captures data (what values went in, what came out,
 what changed).
 
-| | OpenTelemetry / APM | Profilers | DeepFlow |
+| | OpenTelemetry / APM | Profilers | Arachna Trace |
 |---|---|---|---|
 | Granularity | Service boundaries | Sampled methods | Every instrumented method |
 | Argument capture | Manual | No | Automatic |
@@ -157,7 +157,7 @@ on the [repo root README](../README.md#what-we-built-this-for).
 
 ## Components
 
-- **deepflow-agent/** -- Java Maven project. Contains the bytecode
+- **arachna-trace-agent/** -- Java Maven project. Contains the bytecode
   agent itself plus the rest of the producer-side pipeline: the Netty
   collector that ingests POSTs from agents, the Kafka-fed processor
   that renders, hashes and inserts into ClickHouse, the ClickHouse
@@ -166,12 +166,12 @@ on the [repo root README](../README.md#what-we-built-this-for).
 ## Further reading
 
 - [System Architecture](architecture.md) -- the full pipeline at a
-  glance: components, contracts, design choices, what DeepFlow is NOT
+  glance: components, contracts, design choices, what Arachna Trace is NOT
 
 The agent's own documentation lives next to its source. See
-[deepflow-agent/docs/](../deepflow-agent/docs/) for:
+[arachna-trace-agent/docs/](../arachna-trace-agent/docs/) for:
 
-- [Getting Started](../deepflow-agent/docs/getting-started.md) -- build, attach, configure, read output
-- [Agent Configuration](../deepflow-agent/docs/reference/agent-config.md) -- the JVM agent's options (each server component has its own config doc next to it)
-- [Agent Architecture](../deepflow-agent/docs/architecture.md) -- agent-internal data flow, modules, design decisions
-- [Wire-format spec](../deepflow-agent/docs/spec/SPEC.md) -- the language-neutral protocol contract
+- [Getting Started](../arachna-trace-agent/docs/getting-started.md) -- build, attach, configure, read output
+- [Agent Configuration](../arachna-trace-agent/docs/reference/agent-config.md) -- the JVM agent's options (each server component has its own config doc next to it)
+- [Agent Architecture](../arachna-trace-agent/docs/architecture.md) -- agent-internal data flow, modules, design decisions
+- [Wire-format spec](../arachna-trace-agent/docs/spec/SPEC.md) -- the language-neutral protocol contract

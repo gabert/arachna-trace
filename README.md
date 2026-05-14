@@ -1,4 +1,4 @@
-# DeepFlow
+# Arachna Trace
 
 A Java application tracing tool that captures the complete runtime data flow
 of your application -- method arguments, return values, exceptions, object
@@ -22,8 +22,8 @@ fires a small traffic burst on boot, and lands you on populated
 traces.
 
 ```bash
-mkdir deepflow && cd deepflow
-curl -fsSLO https://raw.githubusercontent.com/gabert/deepflow/main/release/compose.yml
+mkdir arachna-trace && cd arachna-trace
+curl -fsSLO https://raw.githubusercontent.com/gabert/arachna-trace/main/release/compose.yml
 docker-compose up
 ```
 
@@ -32,11 +32,11 @@ release process) in [`release/`](release/README.md).
 
 ## Upgrading
 
-To pull a newer release into the same `deepflow/` directory:
+To pull a newer release into the same `arachna-trace/` directory:
 
 ```bash
 docker-compose down -v
-curl -fsSLO https://raw.githubusercontent.com/gabert/deepflow/main/release/compose.yml
+curl -fsSLO https://raw.githubusercontent.com/gabert/arachna-trace/main/release/compose.yml
 docker-compose pull
 docker-compose up
 ```
@@ -93,7 +93,7 @@ full data flow that produced the result. In financial services,
 healthcare, and other regulated domains, this gap tends to show up
 at the worst possible moments.
 
-A DeepFlow trace records how data moved through the instrumented
+A Arachna Trace trace records how data moved through the instrumented
 code during a session, attributed to a specific JVM run, host, build
 version, and environment. Traces of interest can be flagged
 retain-forever in the trace store to survive the default 30-day TTL.
@@ -124,7 +124,7 @@ hash, so the diff points at exactly which method received different
 arguments, returned a different result, or mutated something it
 didn't before.
 
-## How DeepFlow changes debugging
+## How Arachna Trace changes debugging
 
 Experienced developers tend to converge on the same procedure when
 chasing a bug: reproduce, characterize, localize, hypothesize,
@@ -134,7 +134,7 @@ reproduce to get another chance to look, localize to spend their
 limited observation budget wisely, and hypothesize because guessing
 is cheaper than measuring.
 
-A DeepFlow trace turns the program's behaviour — within the recorded
+A Arachna Trace trace turns the program's behaviour — within the recorded
 scope — from something the developer must reconstruct into a
 queryable artifact. That collapses the seven classical steps into
 three phases:
@@ -173,7 +173,7 @@ supplies *what* happened; the other reasons about *why*.
   when the target was compiled with `-parameters` *or* with debug info
   (`-g`, the Maven / Gradle default); falls back to `arg0..argN` for
   stripped jars. See
-  [Argument names](deepflow-agent/docs/reference/argument-names.md).
+  [Argument names](arachna-trace-agent/docs/reference/argument-names.md).
 
 - **Object identity tracking.** Every object instance receives a stable unique
   ID. When the same `Order` passes through `validate`, `calculateTax`, and
@@ -204,13 +204,13 @@ supplies *what* happened; the other reasons about *why*.
 
 - **Zero application dependencies.** Self-contained fat JAR.
 
-## What DeepFlow is NOT
+## What Arachna Trace is NOT
 
-- **Not an APM.** APM tells you a request took 200 ms; DeepFlow tells you
+- **Not an APM.** APM tells you a request took 200 ms; Arachna Trace tells you
   the discount was applied to the wrong line item.
-- **Not a profiler.** No flame graphs, no CPU/memory attribution. DeepFlow
+- **Not a profiler.** No flame graphs, no CPU/memory attribution. Arachna Trace
   records what happened to *data*, not where time went.
-- **Not structured logs.** Logs need anticipation (`log.info(...)`); DeepFlow
+- **Not structured logs.** Logs need anticipation (`log.info(...)`); Arachna Trace
   captures values whether or not anyone thought to log them. Logs survive
   forever; traces have a 30-day TTL by default.
 - **Not zero-cost.** Realistic in production with a narrow `matchers_include`;
@@ -219,11 +219,11 @@ supplies *what* happened; the other reasons about *why*.
 ## Quick start
 
 ```bash
-cd deepflow-agent && mvn clean install
-# Produces core/agent/target/deepflow-agent.jar.
+cd arachna-trace-agent && mvn clean install
+# Produces core/agent/target/arachna-trace-agent.jar.
 ```
 
-Minimal config (`deepagent.cfg`):
+Minimal config (`arachna-agent.cfg`):
 
 ```properties
 session_dump_location=/tmp
@@ -233,12 +233,12 @@ matchers_include=com\.example\.myapp\..*
 Attach and run:
 
 ```bash
-java -javaagent:path/to/deepflow-agent.jar="config=path/to/deepagent.cfg" \
+java -javaagent:path/to/arachna-trace-agent.jar="config=path/to/arachna-agent.cfg" \
      -jar your-app.jar
 ```
 
 Full setup (Spring Boot, SPI resolvers, all config options) in the
-[getting-started guide](deepflow-agent/docs/getting-started.md).
+[getting-started guide](arachna-trace-agent/docs/getting-started.md).
 
 ## Reading a trace
 
@@ -247,24 +247,24 @@ A cross-thread mutation bug or a deeply-nested change shows up as a
 pair of `AR` / `AX` blocks the eye can scan. See three worked
 examples — a calculation bug, a cross-thread mutation, and walking a
 Merkle hash through a deep object — in
-[Reading a trace](deepflow-agent/docs/reference/reading-a-trace.md).
+[Reading a trace](arachna-trace-agent/docs/reference/reading-a-trace.md).
 
 ## Going deeper
 
-- **[deepflow-agent/](deepflow-agent/)** — Java multi-module project: the
+- **[arachna-trace-agent/](arachna-trace-agent/)** — Java multi-module project: the
   bytecode-instrumentation agent, the Netty collector, the Kafka-fed
   processor, the ClickHouse schema, the wire-format spec, and a Spring
   Boot demo.
-- **[deepflow-agent/docs/](deepflow-agent/docs/)** —
-  [getting started](deepflow-agent/docs/getting-started.md),
-  [agent configuration](deepflow-agent/docs/reference/agent-config.md),
-  [architecture](deepflow-agent/docs/architecture.md),
-  [deployment modes](deepflow-agent/docs/reference/deployment-modes.md),
+- **[arachna-trace-agent/docs/](arachna-trace-agent/docs/)** —
+  [getting started](arachna-trace-agent/docs/getting-started.md),
+  [agent configuration](arachna-trace-agent/docs/reference/agent-config.md),
+  [architecture](arachna-trace-agent/docs/architecture.md),
+  [deployment modes](arachna-trace-agent/docs/reference/deployment-modes.md),
   reference, internals, and the
-  [language-neutral wire-format spec](deepflow-agent/docs/spec/SPEC.md).
+  [language-neutral wire-format spec](arachna-trace-agent/docs/spec/SPEC.md).
 
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE). Contributions welcome —
-see [CONTRIBUTING.md](deepflow-agent/CONTRIBUTING.md) for extension
+see [CONTRIBUTING.md](arachna-trace-agent/CONTRIBUTING.md) for extension
 points and contribution guidelines.

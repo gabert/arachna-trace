@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Manual release: build all DeepFlow release images for amd64+arm64
+# Manual release: build all ArachnaTrace release images for amd64+arm64
 # and push them to GHCR. No CI involved — you run this on your machine.
 #
 # Usage:
@@ -13,7 +13,7 @@
 #   1. Verify local environment (docker daemon, buildx, repo layout,
 #      and — only when pushing — multi-arch builder + GHCR auth).
 #   2. Build all six images.
-#   3. Push to ghcr.io/gabert/deepflow-* (or --load locally with --no-push).
+#   3. Push to ghcr.io/gabert/arachna-trace-* (or --load locally with --no-push).
 #
 # First-time-per-image-name follow-up (one-shot per package, in GitHub UI):
 #   GitHub → your profile → Packages → click the package → Package settings
@@ -55,16 +55,16 @@ cd "$REPO_ROOT"
 REGISTRY="ghcr.io"
 NAMESPACE="gabert"
 MULTIARCH_PLATFORMS="linux/amd64,linux/arm64"
-BUILDER_NAME="deepflow-builder"
+BUILDER_NAME="arachna-trace-builder"
 
 # image-name : dockerfile : target (empty = no target)
 IMAGES=(
-    "deepflow-collector:release/Dockerfile:collector"
-    "deepflow-processor:release/Dockerfile:processor"
-    "deepflow-query:release/Dockerfile:query"
-    "deepflow-demo-spring-boot:release/Dockerfile:demo-spring-boot"
-    "deepflow-clickhouse:release/Dockerfile.clickhouse:"
-    "deepflow-ui:release/Dockerfile.ui:"
+    "arachna-trace-collector:release/Dockerfile:collector"
+    "arachna-trace-processor:release/Dockerfile:processor"
+    "arachna-trace-query:release/Dockerfile:query"
+    "arachna-trace-demo-spring-boot:release/Dockerfile:demo-spring-boot"
+    "arachna-trace-clickhouse:release/Dockerfile.clickhouse:"
+    "arachna-trace-ui:release/Dockerfile.ui:"
 )
 
 # ---------------------------------------------------------------- phase 1: verify env
@@ -187,8 +187,8 @@ fi
 [[ -f "$REPO_ROOT/release/Dockerfile"            ]] || die "missing release/Dockerfile"
 [[ -f "$REPO_ROOT/release/Dockerfile.ui"         ]] || die "missing release/Dockerfile.ui"
 [[ -f "$REPO_ROOT/release/Dockerfile.clickhouse" ]] || die "missing release/Dockerfile.clickhouse"
-[[ -d "$REPO_ROOT/deepflow-agent"                ]] || die "missing deepflow-agent/ source"
-[[ -d "$REPO_ROOT/deepflow-ui"                   ]] || die "missing deepflow-ui/ source"
+[[ -d "$REPO_ROOT/arachna-trace-agent"                ]] || die "missing arachna-trace-agent/ source"
+[[ -d "$REPO_ROOT/arachna-trace-ui"                   ]] || die "missing arachna-trace-ui/ source"
 
 green "    environment OK"
 
@@ -275,8 +275,8 @@ from \`docker compose up\` will fail until you flip them to public:
 
 Or via gh CLI:
 
-  for n in deepflow-collector deepflow-processor deepflow-query \\
-           deepflow-demo-spring-boot deepflow-clickhouse deepflow-ui; do
+  for n in arachna-trace-collector arachna-trace-processor arachna-trace-query \\
+           arachna-trace-demo-spring-boot arachna-trace-clickhouse arachna-trace-ui; do
     gh api -X PATCH /user/packages/container/\$n -f visibility=public
   done
 

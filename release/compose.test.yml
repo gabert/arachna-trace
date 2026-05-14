@@ -4,8 +4,8 @@
 #
 # Usage:
 #   ./release/release.sh v0.0.3 --no-push --yes      # build images locally
-#   docker compose -p deepflow-smoke -f release/compose.yml -f release/compose.test.yml down -v
-#   docker compose -p deepflow-test  -f release/compose.yml -f release/compose.test.yml up -d
+#   docker compose -p arachna-trace-smoke -f release/compose.yml -f release/compose.test.yml down -v
+#   docker compose -p arachna-trace-test  -f release/compose.yml -f release/compose.test.yml up -d
 #   open http://localhost:8080
 #
 # When the test passes:
@@ -17,14 +17,14 @@
 
 services:
   clickhouse:
-    image: ghcr.io/gabert/deepflow-clickhouse:v0.0.3
+    image: ghcr.io/gabert/arachna-trace-clickhouse:v0.0.4
   collector:
-    image: ghcr.io/gabert/deepflow-collector:v0.0.3
+    image: ghcr.io/gabert/arachna-trace-collector:v0.0.4
   processor:
-    image: ghcr.io/gabert/deepflow-processor:v0.0.3
+    image: ghcr.io/gabert/arachna-trace-processor:v0.0.4
   query:
-    image: ghcr.io/gabert/deepflow-query:v0.0.3
+    image: ghcr.io/gabert/arachna-trace-query:v0.0.4
   ui:
-    image: ghcr.io/gabert/deepflow-ui:v0.0.3
+    image: ghcr.io/gabert/arachna-trace-ui:v0.0.4
   demo-spring-boot:
-    image: ghcr.io/gabert/deepflow-demo-spring-boot:v0.0.3
+    image: ghcr.io/gabert/arachna-trace-demo-spring-boot:v0.0.4
