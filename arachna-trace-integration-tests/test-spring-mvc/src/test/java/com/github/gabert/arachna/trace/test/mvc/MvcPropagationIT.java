@@ -116,6 +116,32 @@ class MvcPropagationIT {
         Set<String> threads = traces.threadsForRequestId(ri);
         assertTrue(threads.size() > 1,
                 "@Async should span threads, got: " + threads);
+
+        // Pin that doHeavyWork (the @Async body's nested call) actually inherited
+        // this RI. threads>1 alone would still pass if some unrelated library
+        // touched a second thread while doHeavyWork ran with a fresh RI.
+        assertTrue(traces.methodsForRequestId(ri).stream()
+                        .anyMatch(m -> m.contains("WorkService.doHeavyWork")),
+                "doHeavyWork must share this RI");
+    }
+
+    @Test
+    void asyncRunsOnConfiguredAsyncExecutorPool() {
+        // Pin pool identity: the @Async path must execute on AsyncConfig's
+        // bean ("async-" thread-name prefix), not on an http-nio thread or
+        // Spring's SimpleAsyncTaskExecutor default. If @EnableAsync stopped
+        // honouring the configured executor (e.g. bean qualifier broke),
+        // threads>1 would still pass while the work ran on the wrong pool.
+        Set<Long> ids = traces.requestIdsForMethod("TestController.asyncFireAndForget");
+        assertFalse(ids.isEmpty());
+
+        long ri = ids.iterator().next();
+        Set<String> asyncThreads = traces.threadsForRequestId(ri).stream()
+                .filter(t -> t != null && t.startsWith("async-"))
+                .collect(java.util.stream.Collectors.toSet());
+        assertFalse(asyncThreads.isEmpty(),
+                "@Async work must run on a thread from the configured async- pool; "
+                        + "RI threads were: " + traces.threadsForRequestId(ri));
     }
 
     // ==================== Scenario 12: Fan-out ====================

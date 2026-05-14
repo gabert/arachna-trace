@@ -9,4 +9,8 @@ public class Work {
     public String compute(String input) {
         return "computed:" + input;
     }
+
+    public String failingCompute(String input) {
+        throw new IllegalStateException("failing:" + input);
+    }
 }

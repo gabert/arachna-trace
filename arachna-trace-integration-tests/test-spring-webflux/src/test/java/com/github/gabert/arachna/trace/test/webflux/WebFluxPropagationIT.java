@@ -20,17 +20,18 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * WebFlux integration tests for request ID propagation.
  *
- * <p>WebFlux uses Reactor schedulers (boundedElastic, parallel) which internally
- * use ScheduledThreadPoolExecutor — a subclass of ThreadPoolExecutor. Our
- * ExecutorAdvice should intercept these submissions and wrap tasks with
- * PropagatingRunnable.</p>
+ * <p>WebFlux uses Reactor schedulers (boundedElastic, parallel) which do not
+ * always submit tasks via {@code ThreadPoolExecutor.execute(Runnable)} —
+ * Reactor's own dispatching layer routes around the JDK executor surface that
+ * the agent's {@code ExecutorAdvice} instruments. As a result, the handler's
+ * request ID does NOT propagate to the scheduler worker threads. Only the
+ * synchronous {@code /mono} case shares the RI between handler and service
+ * because both run on the event-loop thread without an executor hop.</p>
  *
- * <p>CAVEAT: In reactive code, the handler method returns a Mono/Flux and exits
- * before the reactive pipeline executes. The request ID ThreadLocal retains
- * its value on the event loop thread (not cleared on handler exit), so single-
- * request sequential tests work. Under concurrent load, the stale ThreadLocal
- * can pick up a different request's ID — Reactor context propagation would be
- * needed for production correctness.</p>
+ * <p>Until Reactor context bridging is wired up, these tests can only pin
+ * trace-existence on the scheduler paths — i.e. that the agent did capture
+ * MS/TS/TE records for both the handler and the service call, regardless of
+ * whether they share an RI.</p>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -91,31 +92,30 @@ class WebFluxPropagationIT {
     // ==================== Scenario 15: boundedElastic ====================
 
     @Test
-    void blocking_serviceCallIsTraced() {
-        Set<Long> serviceIds = traces.requestIdsForMethod("ReactiveWorkService.blockingQuery");
-        assertFalse(serviceIds.isEmpty(),
-                "blockingQuery should be traced on the elastic thread");
-    }
-
-    @Test
-    void blocking_handlerIsTraced() {
-        Set<Long> handlerIds = traces.requestIdsForMethod("TestHandler.blocking");
-        assertFalse(handlerIds.isEmpty(),
-                "blocking handler should be traced on the event loop thread");
+    void blocking_handlerAndServiceAreBothTraced() {
+        // Trace-existence pin only — RI propagation across boundedElastic is
+        // NOT honoured (see class JavaDoc). Asserting same-RI here would fail
+        // until Reactor context bridging is implemented; until then we pin
+        // that the agent captures records for BOTH ends of the hop so the
+        // call still appears in the trace, even if disconnected from the
+        // handler's RI.
+        assertFalse(traces.requestIdsForMethod("TestHandler.blocking").isEmpty(),
+                "blocking handler must be traced");
+        assertFalse(traces.requestIdsForMethod("ReactiveWorkService.blockingQuery").isEmpty(),
+                "blockingQuery on boundedElastic must be traced");
     }
 
     // ==================== Scenario 16: Flux with publishOn ====================
 
     @Test
-    void flux_transformCallsAreTraced() {
-        Set<Long> ids = traces.requestIdsForMethod("ReactiveWorkService.transform");
-        assertFalse(ids.isEmpty(), "transform() calls should be traced");
-    }
-
-    @Test
-    void flux_handlerIsTraced() {
-        Set<Long> ids = traces.requestIdsForMethod("TestHandler.flux");
-        assertFalse(ids.isEmpty(), "flux handler should be traced");
+    void flux_handlerAndTransformAreBothTraced() {
+        // Same reasoning as the /blocking pin: publishOn(parallel) hops onto
+        // the parallel Scheduler's worker via Reactor's own dispatch, so the
+        // handler RI does not propagate. We pin trace existence on both ends.
+        assertFalse(traces.requestIdsForMethod("TestHandler.flux").isEmpty(),
+                "flux handler must be traced");
+        assertFalse(traces.requestIdsForMethod("ReactiveWorkService.transform").isEmpty(),
+                "transform on parallel scheduler must be traced");
     }
 
     // ==================== Scenario 17: Reactive chain ====================
@@ -127,13 +127,23 @@ class WebFluxPropagationIT {
     }
 
     @Test
-    void chain_bothBlockingCallsAreTraced() {
-        List<String> allMethods = traces.entries().stream()
+    void chain_bothBlockingStagesAreTraced() {
+        // Replaces the old chain_bothBlockingCallsAreTraced (which counted
+        // blockingQuery globally and would have passed if /chain never ran).
+        // Filter by the AR tag to attribute blockingQuery entries to /chain
+        // specifically — the only endpoint that passes "chain-1"/"chain-2".
+        // Same-RI cannot be asserted: Reactor schedulers bypass the executor
+        // instrumentation surface, so each stage runs with its own thread's
+        // (stale or zero) RI rather than the /chain handler's RI.
+        List<String> chainCallArgs = traces.entries().stream()
                 .filter(b -> b.method() != null
                         && b.method().contains("ReactiveWorkService.blockingQuery"))
                 .map(b -> b.tags().getOrDefault("AR", ""))
+                .filter(ar -> ar.contains("chain-"))
                 .toList();
-        assertTrue(allMethods.size() >= 2,
-                "Should find multiple blockingQuery calls across endpoints");
+        assertTrue(chainCallArgs.size() >= 2,
+                "Expected ≥2 blockingQuery entries attributable to /chain "
+                        + "(chain-1 + chain-2); got " + chainCallArgs.size()
+                        + ": " + chainCallArgs);
     }
 }

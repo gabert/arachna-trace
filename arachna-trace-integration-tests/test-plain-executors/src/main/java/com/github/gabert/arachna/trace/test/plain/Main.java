@@ -17,6 +17,7 @@ public class Main {
         s.completableFutureChain();
         s.forkJoinSubmit();
         s.nestedExecutors();
+        s.supplyAsyncThrowing();
 
         // Scenario 7: sequential roots on the same thread
         s.sequentialRoot1();

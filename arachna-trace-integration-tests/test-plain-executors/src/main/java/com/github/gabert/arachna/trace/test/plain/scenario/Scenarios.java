@@ -2,6 +2,7 @@ package com.github.gabert.arachna.trace.test.plain.scenario;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
@@ -90,6 +91,21 @@ public class Scenarios {
         done.await(10, TimeUnit.SECONDS);
         outer.shutdown();
         inner.shutdown();
+    }
+
+    // --- Scenario 6b: supplyAsync where the supplier throws ---
+
+    public void supplyAsyncThrowing() throws Exception {
+        work.doWork("root");
+        CompletableFuture<String> f = CompletableFuture.supplyAsync(
+                () -> work.failingCompute("boom"));
+        try {
+            f.get(5, TimeUnit.SECONDS);
+        } catch (ExecutionException expected) {
+            // Supplier throwing is the point of the scenario — propagation
+            // must still hold on the exception path. Caller swallows so the
+            // runner doesn't crash before subsequent scenarios.
+        }
     }
 
     // --- Scenario 7: Sequential roots (same thread, different request IDs) ---

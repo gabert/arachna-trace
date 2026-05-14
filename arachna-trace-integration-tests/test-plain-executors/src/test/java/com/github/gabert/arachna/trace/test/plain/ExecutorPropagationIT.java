@@ -54,11 +54,16 @@ class ExecutorPropagationIT {
 
     @Test
     void threadPoolExecute_allCallsShareRequestId() {
+        // Pin: both Work.doWork("root") on main AND Work.doWork("in-pool")
+        // share this RI. anyMatch would pass even if propagation broke
+        // (the main-thread root would still match alone) — counting forces
+        // the in-pool call to actually have inherited the RI.
         long ri = singleRiFor("Scenarios.threadPoolExecute");
-
-        List<String> methods = traces.methodsForRequestId(ri);
-        assertTrue(methods.stream().anyMatch(m -> m.contains("Work.doWork")),
-                "Work.doWork should appear within the same request ID");
+        long workCount = traces.methodsForRequestId(ri).stream()
+                .filter(m -> m.contains("Work.doWork"))
+                .count();
+        assertEquals(2, workCount,
+                "Both root and in-pool Work.doWork must share this RI; got " + workCount);
     }
 
     @Test
@@ -126,6 +131,37 @@ class ExecutorPropagationIT {
         Set<String> threads = traces.threadsForRequestId(ri);
         assertTrue(threads.size() >= 3,
                 "Should span main + outer pool + inner pool, got: " + threads);
+    }
+
+    // ==================== Scenario 6b: Exception path ====================
+
+    @Test
+    void supplyAsyncThrowing_exceptionStillPropagatesRequestId() {
+        // Happy-path propagation is covered by Scenarios 1-6. The exception
+        // half of the contract is independent: PropagatingCallable must enter
+        // the same RequestContext on the supplier thread even when that
+        // supplier throws, and the agent must still emit the EXIT record
+        // (TE + RT=EXCEPTION) — otherwise failure-path traces silently lose
+        // their RI link to the root and the call appears orphaned.
+        long ri = singleRiFor("Scenarios.supplyAsyncThrowing");
+
+        Set<String> threads = traces.threadsForRequestId(ri);
+        assertTrue(threads.size() > 1,
+                "Exception path must propagate RI to the pool thread, got: " + threads);
+
+        // EXIT blocks carry RI but not MS (method name is only emitted at
+        // entry). The throwing call chain produces exactly one EXIT with
+        // RT=EXCEPTION under this RI: Work.failingCompute. Anything more
+        // means a regression broadened the exception scope; anything less
+        // means the agent dropped the exception EXIT entirely.
+        long exceptionExits = traces.blocks().stream()
+                .filter(b -> "EXIT".equals(b.type()))
+                .filter(b -> b.requestId() == ri)
+                .filter(b -> "EXCEPTION".equals(b.tags().get("RT")))
+                .count();
+        assertEquals(1, exceptionExits,
+                "Expected exactly one RT=EXCEPTION exit under RI=" + ri
+                        + " (Work.failingCompute); got " + exceptionExits);
     }
 
     // ==================== Scenario 7: Sequential roots ====================
