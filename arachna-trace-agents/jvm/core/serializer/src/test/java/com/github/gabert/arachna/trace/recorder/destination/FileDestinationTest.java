@@ -1,6 +1,9 @@
 package com.github.gabert.arachna.trace.recorder.destination;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.gabert.arachna.trace.codec.Codec;
+import com.github.gabert.arachna.trace.recorder.AgentRun;
 import com.github.gabert.arachna.trace.recorder.record.RecordWriter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -168,6 +171,98 @@ class FileDestinationTest {
             assertEquals(0, dirs.count());
         }
     }
+
+    // --- setAgentRun writes a run.json sidecar ---
+
+    @Test
+    void setAgentRunWritesRunJsonSidecar(@TempDir Path tempDir) throws Exception {
+        // The sidecar is how downstream tools (and the file-based UI) associate
+        // a SESSION-<ts>/ directory with the agent run that produced it. If the
+        // sidecar is missing or corrupt, those tools can't read the traces.
+        FileDestination dest = createDestination(tempDir);
+
+        UUID runId = UUID.randomUUID();
+        AgentRun run = new AgentRun(runId, "host-x", "1.2.3", "abc", "prod", 4242L, 9_000_000L);
+        dest.setAgentRun(run);
+        dest.close();
+
+        Path sessionDir = findSessionDir(tempDir);
+        Path sidecar = sessionDir.resolve("run.json");
+        assertTrue(Files.exists(sidecar), "run.json sidecar must be written");
+
+        JsonNode json = new ObjectMapper().readTree(sidecar.toFile());
+        assertEquals(runId.toString(), json.get("agentRunId").asText());
+        assertEquals("host-x", json.get("hostname").asText());
+        assertEquals("1.2.3", json.get("agentVersion").asText());
+        assertEquals("abc", json.get("codeVersion").asText());
+        assertEquals("prod", json.get("env").asText());
+        assertEquals(4242L, json.get("jvmPid").asLong());
+        assertEquals(9_000_000L, json.get("startedAtMillis").asLong());
+    }
+
+    // --- VR record buffered and prepended to every per-thread file ---
+
+    @Test
+    void versionRecordIsPrependedToEveryThreadFile(@TempDir Path tempDir) throws Exception {
+        // VR carries no thread name; FileDestination must stash it in
+        // `pendingHeader` and write it as the FIRST line of every per-thread
+        // .dft file as those threads come online. Untested before Round 3 —
+        // a refactor breaking pendingHeader would lose the wire-format banner
+        // from every output file.
+        FileDestination dest = createDestination(tempDir);
+
+        byte[] vr = RecordWriter.version((short) 1, (short) 4);
+        byte[] entryMain = RecordWriter.logEntry(null, SIGNATURE, "main", 1000L, 0, 0L,
+                null, null, null, Codec.encode(new Object[]{}));
+        byte[] entryWorker = RecordWriter.logEntry(null, SIGNATURE, "worker-1", 1500L, 0, 0L,
+                null, null, null, Codec.encode(new Object[]{}));
+
+        dest.accept(vr);             // buffered as pending header
+        dest.accept(entryMain);      // main file gets VR line first
+        dest.accept(entryWorker);    // worker file gets VR line first
+        dest.close();
+
+        Path sessionDir = findSessionDir(tempDir);
+        List<Path> files = listDftFiles(sessionDir);
+        assertEquals(2, files.size());
+        for (Path dft : files) {
+            String first = Files.readAllLines(dft).get(0);
+            assertEquals("VR;1.4", first,
+                    "every .dft must start with the VR banner; offender: " + dft.getFileName());
+        }
+    }
+
+    // --- emit_tags filter is honoured ---
+
+    @Test
+    void customEmitTagsFiltersOutput(@TempDir Path tempDir) throws Exception {
+        // FileDestination passes its config emit_tags through to RecordRenderer.
+        // Locking the wiring: a user who restricts emit_tags to MS+TE only
+        // must see the file contain only MS and TE (no AR, no TS, no SI).
+        FileDestination dest = new FileDestination(Map.of(
+                "session_dump_location", tempDir.toString(),
+                "emit_tags", "MS,TE"));
+
+        byte[] entry = RecordWriter.logEntry(SESSION_ID, SIGNATURE, "main", 1000L, 10, 5L,
+                null, null, null, Codec.encode(new Object[]{"x"}));
+        byte[] exit = RecordWriter.logExit(SESSION_ID, "main", 2000L, 5L, null, null, true);
+
+        dest.accept(entry);
+        dest.accept(exit);
+        dest.close();
+
+        Path sessionDir = findSessionDir(tempDir);
+        List<String> lines = Files.readAllLines(
+                listDftFiles(sessionDir).get(0));
+
+        assertTrue(lines.stream().anyMatch(l -> l.startsWith("MS;")));
+        assertTrue(lines.stream().anyMatch(l -> l.startsWith("TE;")));
+        assertFalse(lines.stream().anyMatch(l -> l.startsWith("AR;")), "AR must be filtered");
+        assertFalse(lines.stream().anyMatch(l -> l.startsWith("TS;")), "TS must be filtered");
+        assertFalse(lines.stream().anyMatch(l -> l.startsWith("SI;")), "SI must be filtered");
+    }
+
+    private static final String SESSION_ID = "sess-1";
 
     // --- Utilities ---
 

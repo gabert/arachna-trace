@@ -195,64 +195,6 @@ class RecordWriterReaderTest {
         assertEquals(0L, endMeta.requestId());
     }
 
-    @Test
-    void nestedMethodTraceRoundtrip() throws Exception {
-        String sigOuter = "com.example::Service.handle() -> void [public]";
-        String sigInner = "com.example::Dao.save(java.lang::String) -> int [public]";
-        long ts1 = 1000L;
-        long ts2 = 2000L;
-        long ts3 = 3000L;
-        long ts4 = 4000L;
-        byte[] outerArgs = Codec.encode(new Object[]{});
-        byte[] innerArgs = Codec.encode(new Object[]{"data"});
-        byte[] innerRet = Codec.encode(1);
-
-        byte[] entryOuter = RecordWriter.logEntry(SESSION, sigOuter, "http-handler-1", ts1, 10, 0L, null, null, null, outerArgs);
-        byte[] entryInner = RecordWriter.logEntry(SESSION, sigInner, "http-handler-1", ts2, 20, 1L, null, null, null, innerArgs);
-        byte[] exitInner = RecordWriter.logExit(SESSION, "http-handler-1", ts3, 0L, null, innerRet, false);
-        byte[] exitOuter = RecordWriter.logExit(SESSION, "http-handler-1", ts4, 0L, null, null, true);
-
-        byte[] stream = concat(entryOuter, entryInner, exitInner, exitOuter);
-
-        List<TraceRecord> records = RecordReader.readAll(stream);
-        assertEquals(8, records.size());
-
-        // entry outer: METHOD_START + ARGUMENTS
-        MethodStartRecord outer = assertInstanceOf(MethodStartRecord.class, records.get(0));
-        assertInstanceOf(ArgumentsRecord.class, records.get(1));
-        // entry inner: METHOD_START + ARGUMENTS
-        MethodStartRecord inner = assertInstanceOf(MethodStartRecord.class, records.get(2));
-        assertInstanceOf(ArgumentsRecord.class, records.get(3));
-        // exit inner: METHOD_END + RETURN
-        MethodEndRecord innerEnd = assertInstanceOf(MethodEndRecord.class, records.get(4));
-        ReturnRecord innerRetRecord = assertInstanceOf(ReturnRecord.class, records.get(5));
-        // exit outer: METHOD_END + RETURN (void)
-        MethodEndRecord outerEnd = assertInstanceOf(MethodEndRecord.class, records.get(6));
-        ReturnRecord outerRetRecord = assertInstanceOf(ReturnRecord.class, records.get(7));
-
-        // Session ID on all start/end frames
-        assertEquals(SESSION, outer.sessionId());
-        assertEquals(SESSION, inner.sessionId());
-        assertEquals(SESSION, innerEnd.sessionId());
-        assertEquals(SESSION, outerEnd.sessionId());
-
-        // Signatures, threads, request IDs, timestamps
-        assertEquals(sigOuter, outer.signature());
-        assertEquals(sigInner, inner.signature());
-        assertEquals("http-handler-1", outer.threadName());
-        assertEquals("http-handler-1", inner.threadName());
-        assertEquals(0L, outer.requestId());
-        assertEquals(1L, inner.requestId());
-        assertEquals(ts1, outer.timestamp());
-        assertEquals(ts2, inner.timestamp());
-        assertEquals(ts3, innerEnd.timestamp());
-        assertEquals(ts4, outerEnd.timestamp());
-
-        // Inner return has payload, outer return is void
-        assertFalse(innerRetRecord.isVoid());
-        assertTrue(outerRetRecord.isVoid());
-    }
-
     // --- RecordReader edge cases ---
 
     @Test
@@ -272,9 +214,34 @@ class RecordWriterReaderTest {
 
     @Test
     void truncatedFrameThrows() throws Exception {
+        // Chops 1 byte off the END so the header parses (declares length N)
+        // but the payload is N-1 bytes — exercises the payload-truncation
+        // branch. The header-truncation case (data shorter than 5 bytes)
+        // is intentionally silent: see headerTruncationIsSilent.
         byte[] data = RecordWriter.logEntry(null, SIGNATURE, THREAD, 1000L, 1, 0L, null, null, null, Codec.encode(new Object[]{"x"}));
         byte[] chopped = Arrays.copyOf(data, data.length - 1);
         assertThrows(IllegalArgumentException.class, () -> RecordReader.readAll(chopped));
+    }
+
+    @Test
+    void headerTruncationIsSilent() {
+        // A stream ending mid-header (less than 5 bytes remaining) is
+        // treated as clean end-of-stream — the reader stops at whatever
+        // it has parsed. Documents the asymmetry vs. payload truncation.
+        List<TraceRecord> records = RecordReader.readAll(new byte[]{0x01, 0x00});
+        assertTrue(records.isEmpty());
+    }
+
+    @Test
+    void negativeLengthFrameThrows() {
+        // Hand-crafted 5-byte header with a negative payload length.
+        // Guards against a frame that would otherwise allocate a huge
+        // copyOfRange or wrap around in arithmetic.
+        byte[] data = new byte[]{
+                0x01,                                   // type METHOD_START
+                (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF  // length = -1
+        };
+        assertThrows(IllegalArgumentException.class, () -> RecordReader.readAll(data));
     }
 
     @Test
@@ -313,6 +280,68 @@ class RecordWriterReaderTest {
         SequenceRecord seq = assertInstanceOf(SequenceRecord.class,
                 RecordReader.readAll(data).get(0));
         assertEquals(Long.MAX_VALUE, seq.seq());
+    }
+
+    // --- String length boundary (fixes the silent (short)-truncation bug) ---
+
+    @Test
+    void signatureOver65kBytesThrowsLoud() {
+        // Before the fix: putShort((short) len) silently truncated lengths
+        // >= 65536 modulo 65536, producing a frame the reader misparsed
+        // into a tiny string + garbage. Now the encoder fails fast with
+        // IAE so a callable with a huge generic signature is impossible
+        // to silently corrupt.
+        char[] huge = new char[70_000];
+        Arrays.fill(huge, 'A');
+        String hugeSig = new String(huge);
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> RecordWriter.logEntrySimple(null, hugeSig, THREAD, 1000L, 1, 0L, null, null));
+        assertTrue(ex.getMessage().contains("65535"),
+                "error message must point at the 64 KiB limit");
+    }
+
+    @Test
+    void signatureAt65535BytesRoundTrips() {
+        // The exact-max-length boundary: must succeed, not throw.
+        char[] max = new char[65_535];
+        Arrays.fill(max, 'B');
+        String maxSig = new String(max);
+
+        byte[] data = RecordWriter.logEntrySimple(null, maxSig, THREAD, 0L, 0, 0L, null, null);
+        MethodStartRecord ms = (MethodStartRecord) RecordReader.readAll(data).get(0);
+        assertEquals(maxSig, ms.signature());
+    }
+
+    @Test
+    void signatureWithNonAsciiUtf8RoundTrips() {
+        // The length prefix counts UTF-8 BYTES, not chars. Locks the
+        // contract: a string whose char-count fits but byte-count doesn't
+        // (or vice versa) round-trips correctly.
+        String sig = "Service.handle(λ→μ, 日本語) → Optional<结果>";
+        byte[] data = RecordWriter.logEntrySimple(null, sig, THREAD, 0L, 0, 0L, null, null);
+        MethodStartRecord ms = (MethodStartRecord) RecordReader.readAll(data).get(0);
+        assertEquals(sig, ms.signature());
+    }
+
+    @Test
+    void callerLineNegativeRoundTrips() {
+        // The agent uses -1 to mark "unknown caller line." Putters/getters
+        // must preserve sign across the int encoding.
+        byte[] data = RecordWriter.logEntrySimple(null, SIGNATURE, THREAD, 0L, -1, 0L, null, null);
+        MethodStartRecord ms = (MethodStartRecord) RecordReader.readAll(data).get(0);
+        assertEquals(-1, ms.callerLine());
+    }
+
+    @Test
+    void concatSkipsNullEntries() {
+        // BinaryUtil.concat is the writer's null-tolerant joiner: this is
+        // what lets RecordWriter.logEntry pass `null` when thisInstanceCbor
+        // is absent without producing a bogus frame.
+        byte[] a = {0x01, 0x02};
+        byte[] b = {0x03};
+        byte[] result = com.github.gabert.arachna.trace.recorder.record.BinaryUtil.concat(a, null, b, null);
+        assertArrayEquals(new byte[]{0x01, 0x02, 0x03}, result);
     }
 
     // --- Test utilities ---

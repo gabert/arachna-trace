@@ -59,23 +59,6 @@ public final class RecordWriter {
                 exception(exceptionCbor));
     }
 
-    public static byte[] logExitWithArgs(String sessionId, String threadName, long timestamp,
-                                         long requestId, UUID callId,
-                                         byte[] returnCbor, boolean isVoid,
-                                         byte[] argsCbor) {
-        return BinaryUtil.concat(
-                logExit(sessionId, threadName, timestamp, requestId, callId, returnCbor, isVoid),
-                argumentsExit(argsCbor));
-    }
-
-    public static byte[] logExitExceptionWithArgs(String sessionId, String threadName,
-                                                   long timestamp, long requestId, UUID callId,
-                                                   byte[] exceptionCbor, byte[] argsCbor) {
-        return BinaryUtil.concat(
-                logExitException(sessionId, threadName, timestamp, requestId, callId, exceptionCbor),
-                argumentsExit(argsCbor));
-    }
-
     // --- Single records ---
 
     public static byte[] logEntrySimple(String sessionId, String signature, String threadName,
@@ -84,11 +67,6 @@ public final class RecordWriter {
                                         UUID callId, UUID parentCallId) {
         return new MethodStartRecord(sessionId, signature, threadName, timestamp, callerLine, requestId,
                 callId, parentCallId).toFrame();
-    }
-
-    public static byte[] logExitSimple(String sessionId, String threadName, long timestamp,
-                                       long requestId, UUID callId) {
-        return new MethodEndRecord(sessionId, threadName, timestamp, requestId, callId).toFrame();
     }
 
     public static byte[] methodEnd(String sessionId, String threadName, long timestamp,

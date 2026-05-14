@@ -52,18 +52,14 @@ class WireFormatGoldenTest {
     }
 
     @Test
-    void version_currentDefaultLayout() {
-        // Pin the agent's actual version constants. If we bump them, this
-        // test must change deliberately.
+    void version_currentDefaultIs1_4() {
+        // Pins the agent's currently-emitted version with HARDCODED bytes.
+        // Earlier this test built `expected` from RecordType.VERSION_MAJOR/MINOR
+        // and so silently followed any change. A wire-format bump must
+        // update both production AND this test — that's the whole point
+        // of a golden.
         byte[] bytes = RecordWriter.version();
-
-        byte[] expected = new byte[] {
-                0x09,
-                0x00, 0x00, 0x00, 0x04,
-                0x00, (byte) RecordType.VERSION_MAJOR,
-                0x00, (byte) RecordType.VERSION_MINOR
-        };
-        assertArrayEquals(expected, bytes);
+        assertArrayEquals(HEX.parseHex("09000000040001 0004".replace(" ", "")), bytes);
     }
 
     // ============================================================
@@ -260,6 +256,26 @@ class WireFormatGoldenTest {
         byte[] bytes = RecordWriter.exception(cbor);
 
         assertArrayEquals(HEX.parseHex("0400000004BADBADBA"), bytes);
+    }
+
+    // ============================================================
+    //  SEQUENCE (0x0A)
+    //   payload = [callId:16][seq:8]  → fixed 24 bytes
+    // ============================================================
+
+    @Test
+    void sequence_layoutForCallIdAndSeq() {
+        UUID callId = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        byte[] bytes = RecordWriter.sequence(callId, 0x0102030405060708L);
+
+        // 0A                                type = SEQUENCE
+        // 00 00 00 18                       payload length = 24 (16 + 8)
+        // AA..AA                            callId (16 bytes)
+        // 01 02 03 04 05 06 07 08           seq
+        String expected = "0A" + "00000018"
+                + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                + "0102030405060708";
+        assertArrayEquals(HEX.parseHex(expected), bytes);
     }
 
     // ============================================================

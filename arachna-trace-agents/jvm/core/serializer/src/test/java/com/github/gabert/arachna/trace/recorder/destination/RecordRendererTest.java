@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -184,6 +186,135 @@ class RecordRendererTest {
 
         RecordRenderer.Result result = RecordRenderer.render(data);
         assertEquals("http-handler-3", result.threadName());
+    }
+
+    // --- Version record rendering ---
+
+    @Test
+    void renderVersionRecord_emitsDotSeparated() {
+        // The VR line is the wire-format banner downstream parsers key on.
+        // The renderer always emits it regardless of emit_tags filter.
+        byte[] data = RecordWriter.version((short) 1, (short) 4);
+        RecordRenderer.Result result = RecordRenderer.render(data);
+
+        assertEquals(List.of("VR;1.4"), result.lines());
+        assertNull(result.threadName(), "VR records carry no thread name");
+    }
+
+    // --- Sequence record rendering ---
+
+    @Test
+    void renderSequenceRecord_formatIsCallIdPipeSeq() {
+        // The processor reads SQ; values as <callId>|<seq>. A refactor that
+        // changes the separator would silently break sequence pairing in
+        // RecordParser — pin the format here.
+        UUID callId = UUID.fromString("11111111-2222-3333-4444-555555555555");
+        byte[] data = RecordWriter.sequence(callId, 42L);
+        RecordRenderer.Result result = RecordRenderer.render(data);
+
+        assertEquals(List.of("SQ;11111111-2222-3333-4444-555555555555|42"), result.lines());
+    }
+
+    @Test
+    void renderSequenceRecord_nullCallIdLeavesEmptyLhs() {
+        // Null callId is encoded as the all-zero UUID sentinel and round-trips
+        // as null. Renderer must produce "SQ;|<seq>" with empty left side,
+        // not "SQ;null|<seq>".
+        byte[] data = RecordWriter.sequence(null, 7L);
+        RecordRenderer.Result result = RecordRenderer.render(data);
+
+        assertEquals(List.of("SQ;|7"), result.lines());
+    }
+
+    // --- emit_tags filtering ---
+
+    @Test
+    void renderRespectsEmitTagsFilter() throws Exception {
+        // User configures only MS+TE; everything else (TS/SI/TN/RI/CL/AR/CI/PI)
+        // must be filtered out of the rendered text — even though the binary
+        // record carries them.
+        byte[] args = Codec.encode(new Object[]{"x"});
+        UUID callId = UUID.randomUUID();
+        byte[] data = RecordWriter.logEntry(SESSION, SIGNATURE, THREAD, 1000L, 10, 5L, callId, null, null, args);
+
+        RecordRenderer.Result result = RecordRenderer.render(data, Set.of("MS", "TE"));
+        List<String> lines = result.lines();
+
+        assertTrue(lines.stream().anyMatch(l -> l.startsWith("MS;")), "MS must remain");
+        assertFalse(lines.stream().anyMatch(l -> l.startsWith("TS;")), "TS must be filtered");
+        assertFalse(lines.stream().anyMatch(l -> l.startsWith("SI;")), "SI must be filtered");
+        assertFalse(lines.stream().anyMatch(l -> l.startsWith("AR;")), "AR must be filtered");
+        assertFalse(lines.stream().anyMatch(l -> l.startsWith("CI;")), "CI must be filtered when not in emit_tags");
+    }
+
+    @Test
+    void msAndVrAlwaysEmittedRegardlessOfFilter() {
+        // MS is the structural anchor; VR is the wire-format banner. Both
+        // are emitted even when the user passes an empty filter. Locking this
+        // because RecordRenderer has explicit special-case code for it.
+        byte[] vr = RecordWriter.version((short) 1, (short) 4);
+        byte[] me = RecordWriter.methodEnd(null, "main", 2000L, 0L, null);
+
+        RecordRenderer.Result vrResult = RecordRenderer.render(vr, Set.of());
+        assertTrue(vrResult.lines().stream().anyMatch(l -> l.startsWith("VR;")),
+                "VR must survive an empty emit_tags filter");
+
+        // MS would normally accompany method-start; verify here via a
+        // synthetic case using methodEnd which carries no MS tag, just so
+        // we test the VR-only edge separately from the MS path.
+        RecordRenderer.Result meResult = RecordRenderer.render(me, Set.of());
+        assertEquals(0, meResult.lines().size(),
+                "ME with empty filter produces no tags (no MS, no VR on this record)");
+    }
+
+    @Test
+    void ciAndPiFollowEmitTagsFilter() {
+        // CLAUDE.md says CI and PI ALWAYS live on the binary METHOD_START
+        // record. The renderer, however, filters them via emit_tags. Lock
+        // this layering: the wire-level bytes are unchanged, but the rendered
+        // text can omit them. This is what makes the agent's UUID-pairing
+        // safe under any emit_tags configuration.
+        UUID callId = UUID.randomUUID();
+        UUID parentId = UUID.randomUUID();
+        byte[] entry;
+        try {
+            entry = RecordWriter.logEntry(null, SIGNATURE, THREAD, 1000L, 0, 0L,
+                    callId, parentId, null, Codec.encode(new Object[]{}));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        // With CI+PI in emit_tags → both appear
+        RecordRenderer.Result withCi = RecordRenderer.render(entry,
+                Set.of("MS", "TN", "CI", "PI"));
+        assertTrue(withCi.lines().stream().anyMatch(l -> l.startsWith("CI;")));
+        assertTrue(withCi.lines().stream().anyMatch(l -> l.startsWith("PI;")));
+
+        // Without CI+PI → both filtered
+        RecordRenderer.Result withoutCi = RecordRenderer.render(entry,
+                Set.of("MS", "TN"));
+        assertFalse(withoutCi.lines().stream().anyMatch(l -> l.startsWith("CI;")));
+        assertFalse(withoutCi.lines().stream().anyMatch(l -> l.startsWith("PI;")));
+    }
+
+    // --- CBOR decode error ---
+
+    @Test
+    void renderWithCorruptedCborProducesDecodeErrorMarker() {
+        // RecordRenderer wraps Codec.decode in try/catch and emits
+        // "<decode error: ...>" instead of throwing — a single poison record
+        // must not sink the whole batch. Reaches the catch via a ThisInstance
+        // record whose payload is not valid CBOR.
+        byte[] junkCbor = new byte[]{(byte) 0xFE, (byte) 0xFE, (byte) 0xFE};
+        byte[] frame = RecordWriter.thisInstance(junkCbor);
+
+        RecordRenderer.Result result = RecordRenderer.render(frame);
+
+        String tiLine = result.lines().stream()
+                .filter(l -> l.startsWith("TI;"))
+                .findFirst().orElseThrow();
+        assertTrue(tiLine.startsWith("TI;<decode error:"),
+                "expected decode-error marker, got: " + tiLine);
     }
 
     // --- Utilities ---

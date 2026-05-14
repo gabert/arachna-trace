@@ -74,6 +74,9 @@ class ArachnaTraceAdviceRecordingTest {
 
     @Test
     void voidMethodRecordsEntryAndExit() {
+        // Pins the canonical entry+exit record shape with the default emit_tags.
+        // Many assertions, one behaviour — if this drifts, every downstream
+        // consumer (renderer, processor, Python formatter) breaks together.
         String threadName = Thread.currentThread().getName();
         recorder.recordEntry(voidMethod, new ArrayList<>(), new Object[]{});
         recorder.recordExit(voidMethod, null, null, new Object[]{});
@@ -95,6 +98,56 @@ class ArachnaTraceAdviceRecordingTest {
         assertFalse(hasTag(exit, "RE"));
 
         assertBufferEmpty();
+    }
+
+    // ==================== SQ (sequence) ====================
+
+    @Test
+    void sequenceTagEmittedByDefaultAndIsMonotonic() {
+        // Default emit_tags include SQ. The SQ tag pins downstream ordering when
+        // ts_in ties at ms resolution. Format is "<callId>|<seq>" — locked here
+        // because RecordParser pairs by callId and uses seq for ordering.
+        recorder.recordEntry(voidMethod, new ArrayList<>(), new Object[]{});
+        recorder.recordExit(voidMethod, null, null, new Object[]{});
+        recorder.recordEntry(intMethod, new ArrayList<>(), new Object[]{});
+        recorder.recordExit(intMethod, 0, null, new Object[]{});
+
+        List<String> firstEntry = renderNext();
+        renderNext(); // first exit
+        List<String> secondEntry = renderNext();
+        renderNext(); // second exit
+
+        String sq1 = findTag(firstEntry, "SQ");
+        String sq2 = findTag(secondEntry, "SQ");
+        assertNotNull(sq1, "SQ enabled by default emit_tags");
+        assertNotNull(sq2);
+
+        String ci1 = findTag(firstEntry, "CI");
+        String ci2 = findTag(secondEntry, "CI");
+        assertTrue(sq1.startsWith(ci1 + "|"), "SQ format is <callId>|<seq>");
+        assertTrue(sq2.startsWith(ci2 + "|"));
+
+        long seq1 = Long.parseLong(sq1.substring(ci1.length() + 1));
+        long seq2 = Long.parseLong(sq2.substring(ci2.length() + 1));
+        assertEquals(seq1 + 1, seq2,
+                "seqCounter must advance by exactly one per entry");
+    }
+
+    @Test
+    void sequenceTagEmittedInStructuralOnlyMode() throws Exception {
+        // Guards against a regression where SQ is gated on serialize_values:
+        // the structural path (serialize_values=false) still appends the
+        // sequence record when SQ is in emit_tags.
+        configureAdvice("serialize_values=false");
+
+        recorder.recordEntry(voidMethod, new ArrayList<>(), new Object[]{});
+        recorder.recordExit(voidMethod, null, null, new Object[]{});
+
+        List<String> entry = renderNext();
+        assertTrue(hasTag(entry, "SQ"),
+                "SQ must be emitted in structural-only mode when in emit_tags");
+        String ci = findTag(entry, "CI");
+        assertTrue(findTag(entry, "SQ").startsWith(ci + "|"));
     }
 
     @Test
@@ -199,6 +252,33 @@ class ArachnaTraceAdviceRecordingTest {
         assertEquals(rootEntryRI, nestedExitRI);
         assertEquals(rootEntryRI, rootExitRI);
         assertBufferEmpty();
+    }
+
+    @Test
+    void nestedEntryPiEqualsParentCi() {
+        // CLAUDE.md guarantees CI/PI always live on the binary record. Root has
+        // no parent (PI absent); the nested entry's PI must equal the root's CI.
+        // A regression where peekParentCallId / pushCallId order changes (parent
+        // not visible to its child) would let downstream call-tree reconstruction
+        // misroute every nested call.
+        recorder.recordEntry(voidMethod, new ArrayList<>(), new Object[]{});
+        recorder.recordEntry(intMethod, new ArrayList<>(), new Object[]{});
+        recorder.recordExit(intMethod, 0, null, new Object[]{});
+        recorder.recordExit(voidMethod, null, null, new Object[]{});
+
+        List<String> rootEntry = renderNext();
+        List<String> nestedEntry = renderNext();
+        // Drain the two exits.
+        renderNext();
+        renderNext();
+
+        assertFalse(hasTag(rootEntry, "PI"), "root entry must have no parent");
+        String rootCi = findTag(rootEntry, "CI");
+        assertNotNull(rootCi);
+        assertEquals(rootCi, findTag(nestedEntry, "PI"),
+                "nested entry's PI must equal parent's CI");
+        assertNotEquals(rootCi, findTag(nestedEntry, "CI"),
+                "nested entry must have its own CI distinct from the root");
     }
 
     @Test
@@ -391,6 +471,7 @@ class ArachnaTraceAdviceRecordingTest {
         assertTrue(hasTag(entry, "TS"));
         assertFalse(hasTag(entry, "AR"), "AR disabled — args not serialized");
         assertFalse(hasTag(entry, "TI"), "TI disabled — this not serialized");
+        assertFalse(hasTag(entry, "SQ"), "SQ disabled — no sequence record appended");
 
         List<String> exit = renderNext();
         assertTrue(hasTag(exit, "TE"));

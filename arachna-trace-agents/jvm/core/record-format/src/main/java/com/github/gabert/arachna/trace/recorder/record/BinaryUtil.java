@@ -22,6 +22,24 @@ public final class BinaryUtil {
         return pos + 2;
     }
 
+    // The wire format prefixes UTF-8 strings (sessionId, signature, threadName)
+    // with a 2-byte unsigned length, so the range is 0..65535. The encoder must
+    // fail loudly on overflow — a silent (short) cast truncates the length
+    // modulo 65536, producing a corrupt frame where the reader reads fewer bytes
+    // than the writer wrote and every subsequent field is misaligned.
+    public static int putUnsignedShort(byte[] buf, int pos, int value) {
+        if (value < 0 || value > 0xFFFF) {
+            throw new IllegalArgumentException(
+                    "Unsigned-short field out of range: " + value
+                    + " (must be 0..65535). Most likely cause: a method "
+                    + "signature, threadName, or sessionId exceeded 64 KiB "
+                    + "of UTF-8 bytes.");
+        }
+        buf[pos]     = (byte) (value >>> 8);
+        buf[pos + 1] = (byte) value;
+        return pos + 2;
+    }
+
     public static int putInt(byte[] buf, int pos, int value) {
         buf[pos]     = (byte) (value >>> 24);
         buf[pos + 1] = (byte) (value >>> 16);
@@ -80,13 +98,6 @@ public final class BinaryUtil {
         long lsb = uuid != null ? uuid.getLeastSignificantBits() : 0L;
         pos = putLong(buf, pos, msb);
         return putLong(buf, pos, lsb);
-    }
-
-    /** Reads a UUID. Returns the all-zero UUID literally if that is what is on the wire. */
-    public static UUID getUuid(byte[] buf, int pos) {
-        long msb = getLong(buf, pos);
-        long lsb = getLong(buf, pos + 8);
-        return new UUID(msb, lsb);
     }
 
     /** Reads a UUID. Returns {@code null} when the encoded bytes are the all-zero sentinel. */

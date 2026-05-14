@@ -11,20 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class JpaProxyResolverLoadingTest {
 
-    // --- SPI selection by name ---
-
-    @Test
-    void spiProviderSelectedByName() throws IOException {
-        AgentConfig config = AgentConfig.getInstance("jpa_proxy_resolver=beta");
-        ClassLoader testClassLoader = Thread.currentThread().getContextClassLoader();
-
-        JpaProxyResolver resolver = SpiLoader.loadJpaProxyResolver(config, testClassLoader);
-
-        assertNotNull(resolver);
-        assertEquals("beta", resolver.name());
-    }
-
-    // --- Middle provider selected when multiple are on classpath ---
+    // --- Selection by name across multiple registered providers ---
 
     @Test
     void middleProviderSelectedFromMultiple() throws IOException {

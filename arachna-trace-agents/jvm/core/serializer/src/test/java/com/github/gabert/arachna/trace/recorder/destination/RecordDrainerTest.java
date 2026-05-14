@@ -4,11 +4,9 @@ import com.github.gabert.arachna.trace.recorder.buffer.RecordBuffer;
 import com.github.gabert.arachna.trace.recorder.buffer.UnboundedRecordBuffer;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -37,27 +35,28 @@ class RecordDrainerTest {
         assertTrue(dest.flushed);
     }
 
-    // --- Drains remaining on stop ---
+    // --- Drains all offered records under load ---
 
     @Test
-    void drainsRemainingRecordsOnStop() throws Exception {
+    void drainsAllOfferedRecords() throws Exception {
+        // 100 records offered while the drainer is running — some land in the
+        // poll loop, any stragglers fall through to drainRemaining on stop.
+        // (Was misleadingly named drainsRemainingRecordsOnStop; the previous
+        // name implied it isolated the post-stop codepath, which it doesn't —
+        // most records get picked up by the loop.)
         RecordBuffer buffer = new UnboundedRecordBuffer();
-        LatchDestination dest = new LatchDestination();
+        CollectingDestination dest = new CollectingDestination();
         RecordDrainer drainer = new RecordDrainer(buffer, dest);
 
         drainer.start();
-
-        // Wait for drainer to start spinning
         Thread.sleep(50);
 
-        // Offer records and immediately stop — drainRemaining should pick them up
         for (int i = 0; i < 100; i++) {
             buffer.offer(new byte[]{(byte) i});
         }
 
         drainer.stop();
 
-        // No version header any more — just the 100 offered records.
         assertEquals(100, dest.records.size());
         assertTrue(dest.flushed);
     }
@@ -99,6 +98,34 @@ class RecordDrainerTest {
         assertArrayEquals(new byte[]{2}, dest.records.get(1));
     }
 
+    // --- Intermediate flush when buffer empties ---
+
+    @Test
+    void intermediateFlushWhenBufferEmpties() throws Exception {
+        // Drain loop contract: when the buffer empties after delivering at
+        // least one record, the next iteration calls destination.flush()
+        // (rather than spinning idle on an unflushed batch). This is what
+        // makes file output readable while the application is still running
+        // (lines visible before close) — distinct from the on-stop flush.
+        RecordBuffer buffer = new UnboundedRecordBuffer();
+        FlushCountingDestination dest = new FlushCountingDestination();
+        RecordDrainer drainer = new RecordDrainer(buffer, dest);
+
+        drainer.start();
+        buffer.offer(new byte[]{1});
+        // Wait for the loop to drain the offered record and then flush once.
+        long deadline = System.currentTimeMillis() + 2000;
+        while (dest.flushCount.get() < 1 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(5);
+        }
+        int flushesAfterFirstBatch = dest.flushCount.get();
+        assertTrue(flushesAfterFirstBatch >= 1,
+                "drainer must flush at least once after the buffer empties (saw "
+                        + flushesAfterFirstBatch + ")");
+
+        drainer.stop();
+    }
+
     // --- Utilities ---
 
     private static void waitUntilEmpty(RecordBuffer buffer) throws InterruptedException {
@@ -127,18 +154,15 @@ class RecordDrainerTest {
         public void close() {}
     }
 
-    private static class LatchDestination implements Destination {
-        final List<byte[]> records = new ArrayList<>();
-        boolean flushed = false;
+    private static class FlushCountingDestination implements Destination {
+        final AtomicInteger flushCount = new AtomicInteger(0);
 
         @Override
-        public void accept(byte[] record) {
-            records.add(record);
-        }
+        public void accept(byte[] record) {}
 
         @Override
         public void flush() {
-            flushed = true;
+            flushCount.incrementAndGet();
         }
 
         @Override

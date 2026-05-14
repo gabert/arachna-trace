@@ -169,6 +169,9 @@ class RequestIdTest {
 
     @Test
     void propagatingRunnableRestoresOnException() throws Exception {
+        // runScoped's finally must restore state on the exception path too —
+        // a worker thread that gets a throwing body cannot keep depth=1
+        // bleeding into the next pool task it runs.
         int[] depth = RequestContext.DEPTH.get();
         long[] requestId = RequestContext.CURRENT_REQUEST_ID.get();
 

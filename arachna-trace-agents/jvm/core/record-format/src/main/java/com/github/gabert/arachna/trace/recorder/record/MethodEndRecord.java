@@ -45,10 +45,10 @@ public record MethodEndRecord(
                         + RecordType.REQUEST_ID_SIZE
                         + RecordType.UUID_SIZE];
         int pos = 0;
-        pos = BinaryUtil.putShort(payload, pos, (short) sidBytes.length);
+        pos = BinaryUtil.putUnsignedShort(payload, pos, sidBytes.length);
         System.arraycopy(sidBytes, 0, payload, pos, sidBytes.length);
         pos += sidBytes.length;
-        pos = BinaryUtil.putShort(payload, pos, (short) tnBytes.length);
+        pos = BinaryUtil.putUnsignedShort(payload, pos, tnBytes.length);
         System.arraycopy(tnBytes, 0, payload, pos, tnBytes.length);
         pos += tnBytes.length;
         pos = BinaryUtil.putLong(payload, pos, timestamp);

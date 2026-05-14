@@ -99,7 +99,14 @@ public final class Hasher {
         Object parsed = MAPPER.readValue(hashedJson, Object.class);
         if (parsed instanceof Map<?, ?> map) {
             Object meta = map.get("__meta__");
-            if (meta instanceof Map<?, ?> m && m.get("hash") instanceof String s) {
+            // Trust only the hasher's own meta blocks: those always carry
+            // BOTH "hash" and "own_hash". A user-supplied {"__meta__":
+            // {"hash": "..."}} at the top of a plain map must NOT be
+            // interpreted as a pre-computed root hash — fall back to
+            // recomputing in that case.
+            if (meta instanceof Map<?, ?> m
+                    && m.get("hash") instanceof String s
+                    && m.get("own_hash") instanceof String) {
                 return s;
             }
         }
@@ -109,7 +116,12 @@ public final class Hasher {
     private static Object toHashInput(Object node) {
         if (node instanceof Map<?, ?> map) {
             Object meta = map.get("__meta__");
-            if (meta instanceof Map<?, ?> m && m.get("hash") instanceof String h) {
+            // Same trust rule as extractRootHashFromHashed: only collapse to
+            // the hash string when both "hash" and "own_hash" are present —
+            // the joint signature of a hasher-emitted meta block.
+            if (meta instanceof Map<?, ?> m
+                    && m.get("hash") instanceof String h
+                    && m.get("own_hash") instanceof String) {
                 return h;
             }
             Map<String, Object> out = new LinkedHashMap<>();
@@ -151,6 +163,14 @@ public final class Hasher {
         for (Map.Entry<?, ?> entry : map.entrySet()) {
             String key = String.valueOf(entry.getKey());
             if (isEnvelope && (key.equals("object_id") || key.equals("class"))) {
+                continue;
+            }
+            // "__meta__" is reserved: the hasher writes its own meta block on
+            // every envelope. A user field with that name would silently
+            // overwrite (or be overwritten by) the hasher's block depending
+            // on insertion order. Dropping it on the way in makes the contract
+            // unambiguous and the hash invariant under its presence.
+            if (key.equals("__meta__")) {
                 continue;
             }
             Walked child = walk(entry.getValue());
@@ -207,11 +227,16 @@ public final class Hasher {
                 return ref;
             }
             // Root envelope OR plain (non-envelope) map. Walk all fields,
-            // dropping the envelope identity keys at the root.
+            // dropping the envelope identity keys at the root. Also drop
+            // user fields literally named "__meta__" — they are reserved
+            // for the hasher's output and excluded from the hash input by
+            // walkMap; mirror the same rule here so own_hash is invariant
+            // under their presence.
             Map<String, Object> out = new LinkedHashMap<>();
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 String key = String.valueOf(entry.getKey());
                 if (isEnvelope && (key.equals("object_id") || key.equals("class"))) continue;
+                if (key.equals("__meta__")) continue;
                 out.put(key, ownHashInput(entry.getValue(), false));
             }
             return out;

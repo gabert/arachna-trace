@@ -10,14 +10,20 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayInputStream;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.cbor.CBORFactory;
+import com.github.gabert.arachna.trace.codec.Codec;
+import com.github.gabert.arachna.trace.jpaproxy.JpaProxyResolver;
 
 /**
  * JUnit 5 tests for {@link ObjectIdRegistry}, {@link ClassNameCache}, and {@link EnvelopeSerializer}.
@@ -326,6 +332,12 @@ class EnvelopeSerializerTest {
          assertEquals(aId, refId(cycleNode), "In a three-node cycle the refId must point back to the root");
       }
 
+      // Note: this test only proves the OUTER envelope is shaped correctly
+      // (CLASS_NAME is set from value.getClass() before delegation). It does
+      // NOT prove the inner POJO content survives the re-resolved delegate
+      // call — that is the job of objectTypedFieldRoundTripsInnerContent
+      // below (VERIFY-1). Keep both: a regression in the outer-envelope path
+      // and a regression in the inner-delegate path would surface separately.
       @Test
       @DisplayName("Object-typed field: className is the runtime type, not 'java.lang.Object'")
       void objectTypedFieldGetsRuntimeClassName() throws Exception {
@@ -356,6 +368,42 @@ class EnvelopeSerializerTest {
          Object id = get(payloadEnv, FieldIds.OBJECT_ID);
          assertNotNull(id, "OBJECT_ID must be present on an Object-typed field");
          assertTrue(((Number) id).longValue() > 0, "OBJECT_ID must be a positive long");
+      }
+
+      // VERIFY-1: this test catches a class of regression where the runtime
+      // re-resolution path in EnvelopeSerializer correctly *names* the runtime
+      // type but fails to *serialize its content*. The other two object-typed
+      // tests only assert OBJECT_ID/CLASS_NAME on the outer envelope — those
+      // are set unconditionally from value.getClass() regardless of which
+      // delegate runs, so a buggy inner delegate would not break them. Only
+      // round-tripping the inner POJO field ("value": 42) proves that the
+      // re-resolved delegate is the un-wrapped POJO serializer, not a re-entry
+      // into EnvelopeSerializer (which would emit a CYCLE_REF because the
+      // value is already in the seen-set).
+      @Test
+      @DisplayName("Object-typed field: inner POJO content is preserved (round-trip)")
+      @SuppressWarnings("unchecked")
+      void objectTypedFieldRoundTripsInnerContent() throws Exception {
+         Map<Object, Object> holderEnv = cborToMap(toCbor(new ObjectHolder(new Leaf(42))));
+         Map<Object, Object> payloadEnv = fieldEnvelope(holderEnv, "payload");
+
+         Object payloadValue = get(payloadEnv, FieldIds.VALUE);
+         assertNotNull(payloadValue, "payload envelope must carry a VALUE entry");
+         assertFalse(payloadEnv.containsKey(FieldIds.CYCLE_REF)
+                  && payloadEnv.containsKey(String.valueOf(FieldIds.CYCLE_REF)),
+               "payload must not collapse to a CYCLE_REF — that would indicate "
+                  + "the runtime-resolved delegate re-entered EnvelopeSerializer "
+                  + "and saw the value already in the seen-set");
+         assertInstanceOf(Map.class, payloadValue,
+               "Leaf is a POJO, so its VALUE must be a Map of fields — "
+                  + "if VALUE is a Map carrying REF_ID+CYCLE_REF the delegate re-entered");
+         Map<Object, Object> leafFields = (Map<Object, Object>) payloadValue;
+         assertFalse(leafFields.containsKey(FieldIds.REF_ID)
+                  || leafFields.containsKey(String.valueOf(FieldIds.REF_ID)),
+               "VALUE must contain the Leaf's user fields, not a cycle ref");
+         assertEquals(42, ((Number) leafFields.get("value")).intValue(),
+               "Leaf.value must round-trip — the runtime-resolved delegate "
+                  + "must actually serialize the POJO fields");
       }
 
       @Test
@@ -565,6 +613,256 @@ class EnvelopeSerializerTest {
 
          assertTrue(cbor.length > 0, "CBOR output must not be empty");
          assertFalse(cborToMap(cbor).isEmpty(), "Decoded Map must contain at least the envelope keys");
+      }
+   }
+
+   // =========================================================================
+   // Proxy handling — JPA resolver path AND <proxy> marker fallback
+   // =========================================================================
+
+   /** Marker interface for the JDK Proxy fixture below. */
+   public interface Greeter {
+
+      String greet();
+   }
+
+   /**
+    * Test JpaProxyResolver fixture. Substitutes any Node with the same label as the trigger label to a fixed
+    * replacement Node; returns null for everything else.
+    *
+    * <p>Why same-type substitution? Realistic JPA proxies are subclasses of the real entity (HibernateProxy extends the
+    * mapped type), so the resolved value is type-compatible with the original delegate. Cross-type substitution would
+    * stress the runtime re-resolution branch, but only fires when the field is Object-typed AND Jackson hasn't
+    * contextualized the delegate to a more specific runtime type — fragile to test reliably. This fixture stays in the
+    * type-safe lane that matches production usage.
+    */
+   static class TriggeredNodeResolver implements JpaProxyResolver {
+
+      private final String triggerLabel;
+
+      private final Node replacement;
+
+      private int callCount;
+
+      TriggeredNodeResolver(String triggerLabel, Node replacement) {
+         this.triggerLabel = triggerLabel;
+         this.replacement = replacement;
+      }
+
+      @Override
+      public String name() {
+         return "triggered-node";
+      }
+
+      @Override
+      public Object resolve(Object proxy) {
+         callCount++;
+         if (proxy instanceof Node n && triggerLabel.equals(n.label)) {
+            return replacement;
+         }
+         return null;
+      }
+
+      int callCount() {
+         return callCount;
+      }
+   }
+
+   @Nested
+   @DisplayName("JPA proxy resolver branch")
+   class JpaProxyResolverTests {
+
+      // The resolver is global state on Codec. Each test that touches it must
+      // clear it in @AfterEach so subsequent unrelated tests aren't affected.
+      @AfterEach
+      void clearResolver() {
+         Codec.setJpaProxyResolver(null);
+      }
+
+      @Test
+      @DisplayName("resolver-returned value replaces the proxy in the serialized envelope")
+      @SuppressWarnings("unchecked")
+      void resolverNonNullSubstitutesValue() throws Exception {
+         // Trigger label "proxy" → replacement Node{label: "real"}. Top-level
+         // Node serialization with the resolver wired: the resolver fires on
+         // the trigger, substitutes the replacement, and the replacement's
+         // label is what lands in the envelope's VALUE.
+         Node replacement = new Node("real");
+         TriggeredNodeResolver resolver = new TriggeredNodeResolver("proxy", replacement);
+         Codec.setJpaProxyResolver(resolver);
+
+         Map<Object, Object> env = cborToMap(toCbor(new Node("proxy")));
+         Map<Object, Object> fields = (Map<Object, Object>) get(env, FieldIds.VALUE);
+
+         assertEquals("real", fields.get("label"),
+            "label must be the replacement's, not the original Node's — "
+               + "proves the resolved object is the one that got serialized");
+         assertTrue(resolver.callCount() >= 1,
+            "resolver.resolve() must have been called on the trigger Node");
+      }
+
+      @Test
+      @DisplayName("resolver returning null falls through to normal serialization (no <proxy> marker)")
+      void resolverReturnsNullFallsThroughToNormal() throws Exception {
+         // A resolver that always returns null must NOT prevent normal
+         // serialization of a non-proxy object. The Node should serialize as
+         // a regular POJO envelope, not a <proxy> marker.
+         Codec.setJpaProxyResolver(new JpaProxyResolver() {
+
+            @Override
+            public String name() {
+               return "always-null";
+            }
+
+            @Override
+            public Object resolve(Object proxy) {
+               return null;
+            }
+         });
+
+         Map<Object, Object> env = cborToMap(toCbor(new Node("real")));
+         Object value = get(env, FieldIds.VALUE);
+         assertInstanceOf(Map.class, value,
+            "VALUE must be a POJO field map, not the <proxy> marker string");
+      }
+   }
+
+   @Nested
+   @DisplayName("Proxy fallback — <proxy> marker emitted when no resolver handles the type")
+   class ProxyMarkerTests {
+
+      @AfterEach
+      void clearResolver() {
+         Codec.setJpaProxyResolver(null);
+      }
+
+      @Test
+      @DisplayName("JDK dynamic proxy: VALUE is the <proxy> sentinel string")
+      void jdkProxyEmitsProxyMarker() throws Exception {
+         Greeter dyn = (Greeter) Proxy.newProxyInstance(
+            getClass().getClassLoader(),
+            new Class<?>[] { Greeter.class },
+            (InvocationHandler) (proxy, method, args) -> "hi");
+         // No JpaProxyResolver registered → the isProxy() fallback must fire.
+
+         Map<Object, Object> env = cborToMap(toCbor(dyn));
+         Object value = get(env, FieldIds.VALUE);
+         assertEquals("<proxy>",
+            value,
+            "JDK Proxy.newProxyInstance(...) must trigger the <proxy> "
+               + "marker emission path");
+      }
+
+      @Test
+      @DisplayName("JDK dynamic proxy: CLASS_NAME is the proxy's superclass (java.lang.reflect.Proxy)")
+      void jdkProxyClassNameComesFromSuperclass() throws Exception {
+         // The marker emission uses value.getClass().getSuperclass(). For a
+         // JDK Proxy.newProxyInstance(...) the synthetic class extends
+         // java.lang.reflect.Proxy directly, so that's what's emitted —
+         // human-readable instead of the synthetic "$Proxy42" name.
+         Greeter dyn = (Greeter) Proxy.newProxyInstance(
+            getClass().getClassLoader(),
+            new Class<?>[] { Greeter.class },
+            (InvocationHandler) (proxy, method, args) -> "hi");
+
+         Map<Object, Object> env = cborToMap(toCbor(dyn));
+         assertEquals("java.lang.reflect.Proxy",
+            get(env, FieldIds.CLASS_NAME),
+            "CLASS_NAME for a JDK proxy uses the superclass — java.lang.reflect.Proxy — not the synthetic $Proxy<n> name");
+      }
+   }
+
+   // =========================================================================
+   // ClassNameCache edge cases — arrays and primitives
+   // =========================================================================
+
+   @Nested
+   @DisplayName("ClassNameCache — arrays and primitives")
+   class ClassNameCacheEdgeCases {
+
+      @Test
+      @DisplayName("array of primitives: returns 'int[]' (component-name + '[]')")
+      void primitiveArrayReturnsComponentNamePlusBrackets() {
+         assertEquals("int[]", ClassNameCache.INSTANCE.get(int[].class));
+         assertEquals("byte[]", ClassNameCache.INSTANCE.get(byte[].class));
+      }
+
+      @Test
+      @DisplayName("array of reference types: returns 'java.lang.String[]'")
+      void referenceArrayReturnsComponentNamePlusBrackets() {
+         assertEquals("java.lang.String[]", ClassNameCache.INSTANCE.get(String[].class));
+         assertEquals(Node.class.getName() + "[]", ClassNameCache.INSTANCE.get(Node[].class));
+      }
+
+      @Test
+      @DisplayName("multi-dimensional array: brackets stack correctly")
+      void multidimensionalArrayBracketsStack() {
+         assertEquals("java.lang.String[][]", ClassNameCache.INSTANCE.get(String[][].class));
+         assertEquals("int[][][]", ClassNameCache.INSTANCE.get(int[][][].class));
+      }
+
+      @Test
+      @DisplayName("primitive Class objects: returns the Java keyword name")
+      void primitiveClassReturnsKeyword() {
+         // Class.getName() returns "int" for int.class — not "java.lang.Integer".
+         // The cache must propagate that without adding decoration.
+         assertEquals("int", ClassNameCache.INSTANCE.get(int.class));
+         assertEquals("void", ClassNameCache.INSTANCE.get(void.class));
+      }
+   }
+
+   // =========================================================================
+   // EnvelopeModifier — wrap/skip contract for primitives, Strings, enums, …
+   // =========================================================================
+
+   enum Color {
+      RED,
+      BLUE
+   }
+
+   /** Holder used to verify which field types get wrapped and which pass through. */
+   static class Mixed {
+
+      public String s = "hi";
+
+      public int i = 7;
+
+      public Integer boxedI = 7;
+
+      public Color c = Color.RED;
+
+      public Node n = new Node("inner");
+   }
+
+   @Nested
+   @DisplayName("EnvelopeModifier — wrap/skip contract")
+   class EnvelopeModifierTests {
+
+      // Scalars (primitives, String, Number subclasses, Boolean, Character,
+      // enums) must NOT be wrapped in envelopes — they pass through as raw
+      // values. POJOs must be wrapped. This test asserts both rules on a
+      // single Mixed bag so a regression in shouldWrap() is caught here.
+      @Test
+      @SuppressWarnings("unchecked")
+      @DisplayName("primitives, String, Number, enum pass through; POJO fields are wrapped")
+      void scalarsArePassedThroughAndPojosAreWrapped() throws Exception {
+         Map<Object, Object> outer = cborToMap(toCbor(new Mixed()));
+         Map<Object, Object> fields = (Map<Object, Object>) get(outer, FieldIds.VALUE);
+
+         assertEquals("hi", fields.get("s"),
+            "String must not be wrapped — value sits directly under the field");
+         assertEquals(7, ((Number) fields.get("i")).intValue(),
+            "Primitive int must not be wrapped");
+         assertEquals(7, ((Number) fields.get("boxedI")).intValue(),
+            "Boxed Number subclass must not be wrapped");
+         assertEquals("RED", fields.get("c"),
+            "Enum must not be wrapped — Jackson serializes the name string directly");
+
+         assertInstanceOf(Map.class, fields.get("n"),
+            "POJO field must be wrapped — value is an envelope Map");
+         Map<Object, Object> nodeEnv = (Map<Object, Object>) fields.get("n");
+         assertNotNull(get(nodeEnv, FieldIds.OBJECT_ID),
+            "Wrapped POJO field must carry an OBJECT_ID");
       }
    }
 }

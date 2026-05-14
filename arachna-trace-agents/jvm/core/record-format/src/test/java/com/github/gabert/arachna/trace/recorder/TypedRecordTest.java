@@ -7,6 +7,7 @@ import com.github.gabert.arachna.trace.recorder.record.MethodEndRecord;
 import com.github.gabert.arachna.trace.recorder.record.MethodStartRecord;
 import com.github.gabert.arachna.trace.recorder.record.RecordType;
 import com.github.gabert.arachna.trace.recorder.record.ReturnRecord;
+import com.github.gabert.arachna.trace.recorder.record.SequenceRecord;
 import com.github.gabert.arachna.trace.recorder.record.ThisInstanceRecord;
 import com.github.gabert.arachna.trace.recorder.record.ThisInstanceRefRecord;
 import com.github.gabert.arachna.trace.recorder.record.TraceRecord;
@@ -92,6 +93,18 @@ class TypedRecordTest {
     }
 
     @Test
+    void methodEndRecord_nullCallIdRoundTripsAsNull() {
+        // Symmetric to the MethodStart null-callId case. A null callId
+        // is encoded as the all-zero 16-byte sentinel and must read back
+        // as null (not as UUID(0,0)).
+        MethodEndRecord original = new MethodEndRecord(null, "T", 0L, 0L, null);
+        MethodEndRecord r = (MethodEndRecord) TraceRecord.parse(
+                MethodEndRecord.TYPE, original.payloadBytes());
+        assertNull(r.callId());
+        assertNull(r.sessionId());
+    }
+
+    @Test
     void thisInstanceRefRecord_roundTrips() {
         ThisInstanceRefRecord original = new ThisInstanceRefRecord(0x123456789ABCDEF0L);
         TraceRecord parsed = TraceRecord.parse(ThisInstanceRefRecord.TYPE, original.payloadBytes());
@@ -101,6 +114,11 @@ class TypedRecordTest {
 
     @Test
     void cborWrappingRecords_roundTripPayloadAsIs() {
+        // The four CBOR-pass-through record types share one trivial shape:
+        // payloadBytes() returns the bytes verbatim, parse() rewraps them.
+        // They are deliberately tested together — splitting into four
+        // identical tests would be tests-for-tests. ReturnRecord, which
+        // has the extra isVoid() behaviour, is covered separately.
         byte[] cbor = {0x01, 0x02, 0x03, 0x04};
 
         TraceRecord ar = TraceRecord.parse(ArgumentsRecord.TYPE, cbor);
@@ -118,11 +136,16 @@ class TypedRecordTest {
         TraceRecord ex = TraceRecord.parse(ExceptionRecord.TYPE, cbor);
         assertInstanceOf(ExceptionRecord.class, ex);
         assertArrayEquals(cbor, ex.payloadBytes());
+    }
 
-        TraceRecord rv = TraceRecord.parse(ReturnRecord.TYPE, cbor);
-        ReturnRecord rvCast = assertInstanceOf(ReturnRecord.class, rv);
-        assertFalse(rvCast.isVoid());
-        assertArrayEquals(cbor, rv.payloadBytes());
+    @Test
+    void returnRecord_nonEmptyCborParsesAsNonVoid() {
+        // Distinct from the trivial wrappers: ReturnRecord carries an
+        // isVoid() flag that toggles on a zero-length payload.
+        byte[] cbor = {0x01, 0x02, 0x03, 0x04};
+        ReturnRecord r = (ReturnRecord) TraceRecord.parse(ReturnRecord.TYPE, cbor);
+        assertFalse(r.isVoid());
+        assertArrayEquals(cbor, r.payloadBytes());
     }
 
     @Test
@@ -131,6 +154,16 @@ class TypedRecordTest {
         ReturnRecord r = assertInstanceOf(ReturnRecord.class, rv);
         assertTrue(r.isVoid());
         assertEquals(0, r.payloadBytes().length);
+    }
+
+    @Test
+    void returnRecord_nullCborIsEquivalentToOfVoid() {
+        // Direct null-cbor construction is treated as void — locks the
+        // permissive constructor contract. ofVoid() and new ReturnRecord(null)
+        // must produce identical wire bytes.
+        ReturnRecord viaNull = new ReturnRecord(null);
+        assertTrue(viaNull.isVoid());
+        assertArrayEquals(ReturnRecord.ofVoid().payloadBytes(), viaNull.payloadBytes());
     }
 
     // ============================================================
@@ -156,7 +189,8 @@ class TypedRecordTest {
                 RecordType.RETURN,
                 RecordType.EXCEPTION,
                 RecordType.THIS_INSTANCE,
-                RecordType.THIS_INSTANCE_REF
+                RecordType.THIS_INSTANCE_REF,
+                RecordType.SEQUENCE
         };
         for (byte b : ALL) {
             byte[] payload = (b == RecordType.METHOD_START)
@@ -167,6 +201,8 @@ class TypedRecordTest {
                     ? new ThisInstanceRefRecord(0L).payloadBytes()
                     : (b == RecordType.VERSION)
                     ? new VersionRecord((short) 0, (short) 0).payloadBytes()
+                    : (b == RecordType.SEQUENCE)
+                    ? new SequenceRecord(null, 0L).payloadBytes()
                     : new byte[0];
             TraceRecord r = TraceRecord.parse(b, payload);
             assertNotNull(r, "type byte 0x" + String.format("%02X", b) + " must have a dispatch case");

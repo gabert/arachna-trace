@@ -200,7 +200,7 @@ public class RequestRecorder {
 
                 record = BinaryUtil.concat(endRecord, returnRecord, exitArgsRecord);
             } else {
-                record = RecordWriter.logExitSimple(sessionId, threadName, timestamp, requestId, callId);
+                record = RecordWriter.methodEnd(sessionId, threadName, timestamp, requestId, callId);
             }
             recordBuffer.offer(record);
         } catch (Throwable t) {

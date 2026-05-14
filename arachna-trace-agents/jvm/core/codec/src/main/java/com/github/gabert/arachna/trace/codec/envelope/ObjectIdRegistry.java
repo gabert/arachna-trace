@@ -34,6 +34,13 @@ public final class ObjectIdRegistry {
    private ObjectIdRegistry() {
    }
 
+   // Pre-condition: caller must not pass null. EnvelopeSerializer guards
+   // null at the top of its serialize() method, so this method never sees
+   // a null in production. Passing null here would create a degenerate
+   // IdentityWeakRef whose referent is already cleared, causing every
+   // subsequent lookup to allocate a fresh id — a slow leak. Asserting on
+   // null in production code would just shift the problem; the upstream
+   // guard is the contract.
    public static long idOf(Object o) {
       expungeStale();
 

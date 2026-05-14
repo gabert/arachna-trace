@@ -11,20 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class SessionIdResolverLoadingTest {
 
-    // --- SPI selection by name ---
-
-    @Test
-    void spiProviderSelectedByName() throws IOException {
-        AgentConfig config = AgentConfig.getInstance("session_resolver=test");
-        ClassLoader testClassLoader = Thread.currentThread().getContextClassLoader();
-
-        SessionIdResolver resolver = SpiLoader.loadSessionIdResolver(config, testClassLoader);
-
-        assertEquals("test", resolver.name());
-        assertEquals("test-session-123", resolver.resolve());
-    }
-
-    // --- Middle provider selected when multiple are on classpath ---
+    // --- Selection by name across multiple registered providers ---
 
     @Test
     void middleProviderSelectedFromMultiple() throws IOException {

@@ -89,6 +89,9 @@ public final class ConfigLoader {
         String input = tagsValue != null ? tagsValue : defaultValue;
         Set<String> tags = new LinkedHashSet<>();
         tags.add("MS");
+        if (input == null) {
+            return Collections.unmodifiableSet(tags);
+        }
         for (String tag : input.split(",")) {
             String t = tag.trim().toUpperCase();
             if (!t.isEmpty()) tags.add(t);

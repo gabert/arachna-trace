@@ -58,7 +58,6 @@ public class HttpDestination implements Destination {
         if (buffer.size() == 0) return;
 
         byte[] payload = buffer.toByteArray();
-        buffer.reset();
 
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(serverUri)
@@ -70,12 +69,23 @@ public class HttpDestination implements Destination {
 
         try {
             HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) {
+            if (response.statusCode() == 200) {
+                // Only discard the buffered bytes after the server confirms delivery.
+                // Resetting earlier dropped records on every transient network blip
+                // (see VERIFY-3 regression test in HttpDestinationTest).
+                buffer.reset();
+            } else {
                 System.err.println("[ArachnaTrace] HTTP destination error: " + response.statusCode()
-                        + " — " + response.body());
+                        + " — " + response.body()
+                        + " — payload retained for retry (" + payload.length + " bytes)");
             }
-        } catch (IOException | InterruptedException e) {
-            System.err.println("[ArachnaTrace] HTTP destination send failed: " + e.getMessage());
+        } catch (IOException e) {
+            System.err.println("[ArachnaTrace] HTTP destination send failed: " + e.getMessage()
+                    + " — payload retained for retry (" + payload.length + " bytes)");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.err.println("[ArachnaTrace] HTTP destination send interrupted"
+                    + " — payload retained for retry (" + payload.length + " bytes)");
         }
     }
 
