@@ -46,6 +46,17 @@ export function formatValue(v: unknown): string {
   return `{${Object.keys(obj).filter(k => k !== '__meta__').length}}`;
 }
 
+// Byte count with B / KB / MB / GB suffix. 1024-based, one decimal
+// for KB/MB, two for GB. Used wherever payload / session sizes appear
+// — the status bar, inspection-card section headers, anywhere else
+// raw byte counts would be hard to read at a glance.
+export function fmtBytes(b: number): string {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
 // Safe JSON.parse; returns the original input on failure (so callers
 // who pass already-parsed payloads through don't break) and null for
 // null/undefined input.

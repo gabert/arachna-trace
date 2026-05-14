@@ -27,21 +27,28 @@ const childrenByParent   = inject(CHILDREN_BY_PARENT, computed(() => new Map<str
 const expansionDefault   = inject(EXPANSION_DEFAULT, ref(false));
 const expansionOverrides = inject(EXPANSION_OVERRIDES, ref(new Map<string, boolean>()));
 
-// Click splits two ways: the disclosure button toggles expand/collapse,
-// the inspect chip opens the call in the right pane. They must not
-// conflict — selecting a row should never accidentally collapse it.
-// `select` is more than a setter (see CALL_SELECTION docs).
+// Click splits two ways, file-tree-style: the chevron button on the
+// left toggles expand/collapse, the row body opens the call in the
+// right pane via CALL_SELECTION. The two actions never overlap —
+// clicking anywhere on the row inspects; only the chevron's square
+// hit area toggles structure. `select` is more than a setter
+// (see CALL_SELECTION docs). The provider also paints the unified
+// yellow focus outline on the row, so we don't track an extra
+// "selected" class here.
 const callSelection = inject(CALL_SELECTION, {
   selectedId: ref<string | null>(null),
   select: (_id: string) => {}
 });
-const isSelected = computed(() => callSelection.selectedId.value === props.call.call_id);
 function select(): void { callSelection.select(props.call.call_id); }
 
-// Bubble mark for the inspected instance — direct appearances only.
-// Collapsed parents do NOT inherit a descendant's mark; the trace
-// banner's ↑/↓ navigation is the right primitive for "find the
-// next call that touches this instance".
+// Trace / exception markers — non-interactive. The whole row is
+// already clickable (select + reveal + cursor advance happens at the
+// row level), so the column-1 / column-2 marks here are pure visual
+// signals: "this row is an exception" / "the traced instance appears
+// or mutates here". No chip background, no click handler — a colored
+// glyph in a reserved column so the eye can scan a long tree for
+// these states without losing alignment between rows that have them
+// and rows that don't.
 const trace = inject(INSTANCE_TRACE, {
   instance: ref<TraceTarget | null>(null),
   appearances: computed(() => new Map<string, AppearanceKind>()),
@@ -55,33 +62,15 @@ const bubbleTitle = computed(() => {
   const inst = trace.instance.value;
   const cls = String(inst.className).split('.').pop() || inst.className;
   if (bubbleKind.value === 'mutated') {
-    return `Click to inspect — ${cls} #${inst.objectId} is mutated here (own_hash changes between AR and AX)`;
+    return `${cls} #${inst.objectId} is mutated here (own_hash changes between AR and AX)`;
   }
-  return `Click to inspect — ${cls} #${inst.objectId} appears here`;
+  return `${cls} #${inst.objectId} appears here`;
 });
 
-// Random-access bubble click: jumps the workspace to this exact
-// appearance (opens inspection card pointed at the instance's path,
-// flashes + scrolls the row in the tree). Same end state as ↑/↓
-// landing on this row.
-function onBubbleClick(): void {
-  if (!bubbleKind.value) return;
-  trace.navigateTo(props.call.call_id);
-}
-
-// Random-access exception bubble — the red → chip on every exception
-// row. Same affordance shape as the trace bubble; clicks navigate via
-// the EXCEPTION_NAV ctx (selectCall + highlight). The bubble column is
-// reserved on every row when at least one exception exists in the
-// request, so layout doesn't shift between exception and non-exception
-// rows.
 const exceptionNav = inject(EXCEPTION_NAV, {
   active: computed(() => false),
   navigateTo: (_id: string) => {}
 });
-function onExceptionBubbleClick(): void {
-  exceptionNav.navigateTo(props.call.call_id);
-}
 
 // Programmatic highlight from CallTreePanel.highlightCall(). Distinct
 // from `selected` (persistent, blue, tracks the open inspection card)
@@ -133,38 +122,45 @@ function layerOf(signature: string | null | undefined): Layer {
 
 <template>
   <li ref="rowEl" class="rec-row"
-      :class="['layer-' + layer, { open: expanded, exception: call.is_exception, leaf: !hasChildren, selected: isSelected, highlighted: isHighlighted }]">
+      :class="['layer-' + layer, { open: expanded, exception: call.is_exception, leaf: !hasChildren, highlighted: isHighlighted }]">
     <div class="rec-head">
-      <!-- Whole-row click toggles expansion: browsing the call tree is
-           the primary interaction when first reading a trace. Showing
-           values is opt-in via the explicit ↗ inspect button on the
-           right edge of the row. The bubble is its own button, so
-           it lives outside .rec-row-btn (nested <button> is invalid
-           HTML); when no row matches the trace, an empty span
-           reserves the same width to keep alignment stable. -->
-      <!-- Bubble columns. Each (exception, trace) reserves its own
-           column whenever EITHER nav is active, so the trace bubble
-           always sits in column 1 regardless of whether exception nav
-           happens to be active. Without this the blue trace bubble
-           shifts left when no exception bubbles are around. -->
-      <button v-if="exceptionNav.active.value && call.is_exception"
-              class="rec-bubble exception"
-              title="Click to focus this exception"
-              @click.stop="onExceptionBubbleClick">→</button>
+      <!-- File-tree interaction model: the chevron button on the left
+           toggles expand/collapse; clicking anywhere else on the row
+           opens the call in the right pane. The chevron is its own
+           button (nested <button> is invalid HTML) with a square
+           row-height hit area so users don't hunt for the icon. Leaf
+           rows render an empty placeholder of identical width to keep
+           columns aligned across the tree. -->
+      <!-- Marker columns — visual signals, not buttons. Each
+           (exception, trace) reserves its own column whenever EITHER
+           nav is active, so the trace marker always sits in column 1
+           regardless of whether exception nav happens to be active.
+           Without this the trace dot shifts left when no exception
+           markers are around. Empty placeholder spans keep alignment
+           on rows that don't carry the marker. -->
+      <span v-if="exceptionNav.active.value && call.is_exception"
+            class="rec-marker exception"
+            title="This call threw an exception"
+            aria-hidden="true">●</span>
       <span v-else-if="exceptionNav.active.value || tracingActive"
-            class="rec-bubble empty" aria-hidden="true">→</span>
+            class="rec-marker empty" aria-hidden="true">●</span>
 
-      <button v-if="tracingActive && bubbleKind"
-              class="rec-bubble"
-              :class="bubbleKind"
-              :title="bubbleTitle"
-              @click.stop="onBubbleClick">→</button>
+      <span v-if="tracingActive && bubbleKind"
+            class="rec-marker"
+            :class="bubbleKind"
+            :title="bubbleTitle"
+            aria-hidden="true">●</span>
       <span v-else-if="exceptionNav.active.value || tracingActive"
-            class="rec-bubble empty" aria-hidden="true">→</span>
+            class="rec-marker empty" aria-hidden="true">●</span>
+      <button v-if="hasChildren"
+              class="rec-disclosure-btn"
+              @click.stop="toggle"
+              :title="expanded ? 'Collapse' : 'Expand'"
+              :aria-expanded="expanded">{{ expanded ? '▾' : '▸' }}</button>
+      <span v-else class="rec-disclosure-btn empty" aria-hidden="true"></span>
       <button class="rec-row-btn"
-              @click="toggle"
+              @click="select"
               :title="call.signature">
-        <span class="rec-disclosure">{{ hasChildren ? (expanded ? '▾' : '▸') : '' }}</span>
         <span class="rec-time">{{ fmtTime(call.ts_in) }}</span>
         <span class="rec-dur">{{ call.duration_ms }} ms</span>
         <span class="layer-stripe" :class="'layer-' + layer"></span>
@@ -175,9 +171,6 @@ function layerOf(signature: string | null | undefined): Layer {
           {{ children.length }}↳
         </span>
       </button>
-      <button class="rec-inspect-btn"
-              @click.stop="select"
-              title="Inspect TI / AR / AX / RE in the right pane">↗</button>
     </div>
 
     <!-- Body now carries only the nested call structure. TI / AR / AX
@@ -195,34 +188,32 @@ function layerOf(signature: string | null | undefined): Layer {
 .rec-row { border-top: 1px solid var(--border); list-style: none; }
 /* Exception rows: red background tint bounded to the row head, so a
    chain of nested exception rows doesn't paint the parent's
-   indentation gutter and merge into one continuous red column. Same
-   reasoning applies to the `selected` tint — it lives on the head,
-   not the whole <li>. `.open` stays on the <li> on purpose: it tints
-   the expanded body so the children read as a grouped block. */
+   indentation gutter and merge into one continuous red column.
+   `.open` stays on the <li> on purpose: it tints the expanded body
+   so the children read as a grouped block. */
 .rec-row.exception > .rec-head {
   background: rgba(248, 113, 113, 0.10);
 }
 .rec-row.open      { background: var(--bg-base); }
-.rec-row.selected  > .rec-head { background: rgba(96, 165, 250, 0.12); }
-.rec-row.selected.exception > .rec-head { background: rgba(248, 113, 113, 0.18); }
-/* Programmatic highlight from CallTreePanel.highlightCall — amber
-   outline matching JsonTree's flash and the trace banner palette,
-   so trace ↑/↓ navigation reads as one feature. Outline lives on
-   the head row only (NOT the whole .rec-row li, which contains the
+/* Unified focus outline. Painted by CallTreePanel.highlightCall, which
+   every focus path (manual row click, trace ↑/↓, exception ↑/↓,
+   "reveal in tree", watch goto) routes through. One yellow box per
+   tree at a time — replaces the older blue "selected" tint so there's
+   a single visual answer to "which row am I looking at?". Outline lives
+   on the head only (NOT the whole .rec-row li, which contains the
    nested-children body when expanded — outlining that wraps the
-   entire subtree). Persistent until the next highlightCall or trace
-   clear; not a transient flash. */
+   entire subtree). */
 .rec-row.highlighted > .rec-head {
   outline: 2px solid #fbbf24;
   outline-offset: -2px;
   border-radius: 3px;
 }
 
-/* Row head: one big click target that toggles expansion (the whole
-   row, including the disclosure glyph) plus a small inspect button
-   on the right edge that opens the call's TI / AR / AX / RE in the
-   right pane. Wrapping div carries hover/selected styling so the
-   whole row reads as a single visual unit. */
+/* Row head: chevron button on the left toggles expand/collapse; the
+   rest of the row body is a single click target that opens the call
+   in the right pane via CALL_SELECTION. Wrapping div carries
+   hover/selected styling so the whole row reads as a single visual
+   unit. */
 .rec-head {
   display: flex; align-items: stretch;
   color: var(--text-primary);
@@ -235,95 +226,68 @@ function layerOf(signature: string | null | undefined): Layer {
   display: flex; align-items: center; gap: 0.5rem;
   background: none; border: 0; color: inherit; cursor: pointer;
   font: inherit; text-align: left;
-  padding: 0.3rem 0.5rem 0.3rem 0.5rem;
+  padding: 0.3rem 0.5rem 0.3rem 0.25rem;
   min-width: 0;
 }
-.rec-row-btn:hover .rec-disclosure { color: var(--text-primary); }
 
-/* Inspect arrow on the right edge — chip-styled affordance to "open
-   in right pane". Same blue palette as JsonTree's ⊕ watch chip so
-   the per-row interactive elements share a visual language. */
-.rec-inspect-btn {
-  background: rgba(96, 165, 250, 0.18);
-  border: 1px solid rgba(96, 165, 250, 0.4);
-  color: #93c5fd;
-  font-size: 0.9rem;
-  font-weight: 600;
-  line-height: 1;
-  padding: 0.1rem 0.5rem;
+/* Disclosure button — square hit area, row-height, with the chevron
+   centered. Big enough that the user doesn't aim for the glyph: any
+   click in the square toggles. Leaf rows render `.rec-disclosure-btn.empty`
+   at the same width so the time/sig columns line up regardless of
+   whether the row has children. */
+.rec-disclosure-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  margin: 0 0.1rem 0 0.25rem;
+  background: none;
+  border: 0;
   border-radius: 3px;
+  color: var(--text-muted);
   cursor: pointer;
-  flex-shrink: 0;
-  align-self: center;
-  margin: 0 0.5rem 0 0.4rem;
-}
-.rec-inspect-btn:hover {
-  background: rgba(96, 165, 250, 0.32);
-  color: #bfdbfe;
-}
-.rec-row.selected .rec-inspect-btn {
-  background: rgba(96, 165, 250, 0.32);
-  color: #bfdbfe;
-}
-
-.rec-disclosure { width: 1ch; color: var(--text-muted); user-select: none; }
-
-/* Bubble for the inspected instance — chip with → glyph that suggests
-   "click to go there". Random-access alternative to ↑/↓ stepping;
-   uses → to distinguish from the right-edge ↗ inspect chip ("open in
-   right pane"). Reserved column appears on every row only while
-   tracing is active so the rest of the tree stays unaffected when
-   nothing's traced. Empty rows render a same-width span so alignment
-   doesn't ripple. */
-.rec-bubble {
-  flex-shrink: 0;
-  align-self: center;
-  margin: 0 0.4rem 0 0.45rem;
-  padding: 0.05rem 0.45rem;
+  font: inherit;
   font-size: 0.85rem;
-  font-weight: 700;
   line-height: 1;
-  border-radius: 3px;
-  border: 1px solid;
-  cursor: pointer;
-  font-family: inherit;
+  user-select: none;
 }
-.rec-bubble.appears {
-  background: rgba(96, 165, 250, 0.32);
-  border-color: rgba(96, 165, 250, 0.65);
-  color: #bfdbfe;
+.rec-disclosure-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
 }
-.rec-bubble.appears:hover {
-  background: rgba(96, 165, 250, 0.55);
-  color: #dbeafe;
-}
-.rec-bubble.mutated {
-  background: rgba(251, 191, 36, 0.32);
-  border-color: rgba(251, 191, 36, 0.65);
-  color: #fde68a;
-}
-.rec-bubble.mutated:hover {
-  background: rgba(251, 191, 36, 0.55);
-  color: #fef3c7;
-}
-.rec-bubble.exception {
-  background: rgba(248, 113, 113, 0.32);
-  border-color: rgba(248, 113, 113, 0.65);
-  color: #fca5a5;
-}
-.rec-bubble.exception:hover {
-  background: rgba(248, 113, 113, 0.55);
-  color: #fecaca;
-}
-.rec-bubble.empty {
-  /* Invisible placeholder. Must contain the same → glyph as the
-     visible bubbles — visibility: hidden preserves the layout box,
-     but a content-empty span still has a zero-width content area, so
-     padding alone won't match the visible bubble's width. */
-  visibility: hidden;
+.rec-disclosure-btn.empty {
   cursor: default;
-  background: transparent;
-  border-color: transparent;
+  pointer-events: none;
+}
+.rec-disclosure-btn.empty:hover { background: none; }
+
+/* Non-interactive marker for trace appearance / mutation / exception
+   state. Plain colored glyph in a reserved column — no chip, no
+   border, no hover, no cursor:pointer. The whole row is the click
+   target; these are just visual signals. Reserved column appears on
+   every row only while the corresponding nav is active so the rest
+   of the tree stays unaffected when nothing's traced / no exceptions.
+   Empty rows render a same-width span so alignment doesn't ripple. */
+.rec-marker {
+  flex-shrink: 0;
+  align-self: center;
+  margin: 0 0.35rem;
+  width: 1rem;
+  text-align: center;
+  font-size: 1rem;
+  line-height: 1;
+  font-family: inherit;
+  user-select: none;
+}
+.rec-marker.appears   { color: #60a5fa; }
+.rec-marker.mutated   { color: #fbbf24; }
+.rec-marker.exception { color: #f87171; }
+.rec-marker.empty {
+  /* Invisible placeholder — preserves the column's layout box so
+     marker-bearing rows and plain rows align. */
+  visibility: hidden;
 }
 
 .layer-stripe { width: 3px; height: 1.1rem; border-radius: 2px; flex-shrink: 0; }

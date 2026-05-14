@@ -16,8 +16,7 @@
 // in the tree". Three guarantees, all from one call:
 //
 //   1. BOX     — draw a yellow highlight outline around the row.
-//                Persistent until the next highlightCall / clearHighlight
-//                / request change.
+//                Persistent until the next highlightCall / request change.
 //   2. EXPAND  — every collapsed ancestor of the target is forced
 //                expanded so the target row is actually rendered.
 //                The user's prior collapse choices on those ancestors
@@ -33,21 +32,25 @@
 // scroll all happen in lockstep.
 //
 // Implementation notes (so future edits don't accidentally split it):
-//   * The box state and expansion writes happen here in the panel.
+//   * The box state lives in SessionDetailView (CALL_HIGHLIGHT provide).
+//     The expansion writes happen here in the panel.
 //   * The actual scroll lives on the FrameCard via
 //     useScrollIntoViewOnHighlight (it owns the row's element ref).
 //     The composable uses runOnMount: true to cover the case where
 //     the target row mounts due to step (2) with isHighlighted
 //     already true.
-//   * clearHighlight() drops the BOX only — it does not collapse
-//     ancestors. The user's reading position stays sticky.
 //
-// `selected` state on FrameCard is something else: persistent blue
-// tint that tracks which inspection card on the right is focused.
-// Highlight is the search-cursor pointer; selection is the opened
-// document. Don't conflate them.
+// Highlight is the unified "focus marker" — one yellow box at a
+// time, representing whichever row is currently focused. Every focus
+// path routes through highlightCall: manual row clicks (via
+// CALL_SELECTION.select on SessionDetailView), trace ↑/↓, exception
+// ↑/↓, "reveal in tree" from cards, watch goto. There is no separate
+// "selected blue" tint anymore — the previous two-visual model was
+// confusing in practice (hover blue / select darker blue / nav
+// yellow read as three different concepts when really only two
+// matter: hover and focus).
 
-import { computed, inject, provide, ref, watch } from 'vue';
+import { computed, inject, ref, watch } from 'vue';
 import ProgressSpinner from 'primevue/progressspinner';
 import RequestNode from './RequestNode.vue';
 import NavOverlay from './NavOverlay.vue';
@@ -88,16 +91,15 @@ const emit = defineEmits<{
   (e: 'collapse-all'): void;
 }>();
 
-// Highlight state lives here. Cleared automatically when the trace
-// target changes (the parent triggers it externally by calling
-// highlightCall(null) or clearHighlight()), and on request change
-// (the parent unmounts the FrameCards anyway via v-if path).
-const highlightedCallId = ref<string | null>(null);
-const highlightTick = ref(0);
-
-provide(CALL_HIGHLIGHT, {
-  callId: highlightedCallId,
-  tick: highlightTick
+// Highlight state lives one level up in SessionDetailView so both
+// this pane (the call tree) and the inspection-card pane on the right
+// inject from the same source — that's what visually pairs the
+// focused row with its matching CallInspectionCard. We inject the
+// refs here and write through them; consumers (FrameCard,
+// CallInspectionCard) read them via inject(CALL_HIGHLIGHT).
+const callHighlight = inject(CALL_HIGHLIGHT, {
+  callId: ref<string | null>(null),
+  tick: ref(0)
 });
 
 // Per-row expansion overrides — used by highlightCall() to expand
@@ -164,16 +166,11 @@ function highlightCall(callId: string | null): void {
       expandedRequests.value = reqs;
     }
   }
-  highlightedCallId.value = callId;
-  highlightTick.value++;
-}
-// clearHighlight — drops the BOX only. Does not collapse ancestors.
-// The user's reading position stays sticky.
-function clearHighlight(): void {
-  highlightedCallId.value = null;
+  callHighlight.callId.value = callId;
+  callHighlight.tick.value++;
 }
 
-defineExpose({ highlightCall, clearHighlight, expandAllRequests, collapseAllRequests });
+defineExpose({ highlightCall, expandAllRequests, collapseAllRequests });
 
 // Trace banner shows the inspected instance's class name + object id;
 // keep the short-class / id formatting where it's used (template).

@@ -444,6 +444,7 @@ function renderScalar(v: unknown): string {
 .jt-node.mutated > .jt-row {
   background: rgba(251, 191, 36, 0.10);
   box-shadow: inset 3px 0 0 #fbbf24;
+  padding-left: 0.5rem;
 }
 .jt-node.mutated > .jt-row::after {
   content: '⚠ mutation';
@@ -463,6 +464,7 @@ function renderScalar(v: unknown): string {
 .jt-node.added > .jt-row {
   background: rgba(110, 231, 183, 0.10);
   box-shadow: inset 3px 0 0 #6ee7b7;
+  padding-left: 0.5rem;
 }
 .jt-node.added > .jt-row::after {
   content: '+ new';

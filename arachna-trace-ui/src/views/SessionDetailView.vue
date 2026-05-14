@@ -25,7 +25,7 @@ import {
   EXPANSION_DEFAULT, EXPANSION_OVERRIDES,
   MUTATED_OBJECTS_BY_CALL_ID, ADDED_OBJECTS_BY_CALL_ID,
   HIGHLIGHT, NAV_TICK,
-  CALL_SELECTION, INSTANCE_TRACE, EXCEPTION_NAV
+  CALL_SELECTION, INSTANCE_TRACE, EXCEPTION_NAV, CALL_HIGHLIGHT
 } from '../keys';
 import type { CallRow, JumpAddress, OriginTarget, Watch } from '../types';
 
@@ -59,6 +59,17 @@ const parsedPayloads = computed(() => {
 // inspection card; clicking a call from a different request changes
 // the scope. Null until the user opens a card.
 const selectedRequestId = ref<number | null>(null);
+
+// Unified call-tree focus state. Lives here at the session view (the
+// common ancestor of the call-tree pane and the inspection-card pane)
+// so both panes can inject CALL_HIGHLIGHT and read the same id. The
+// tree-side highlightCall() in CallTreePanel writes through this ref;
+// every focus path (manual row click, exception/trace ↑/↓, reveal in
+// tree, watch goto) ends up here, and both the focused row in the
+// tree and its matching CallInspectionCard render the same yellow
+// box.
+const highlightedCallId = ref<string | null>(null);
+const highlightTick = ref(0);
 
 const {
   highlight, navTick, expansionDefault, expansionOverrides,
@@ -180,18 +191,23 @@ const trace = useInstanceTrace({
   ensureRequestLoaded: loadRequestCalls
 });
 
-// Manual row-click handler (FrameCard's ↗ inspect chip). Shows the
-// call in the transient browsing slot and — when an instance is being
-// traced AND this call has the instance — auto-navigates the card's
-// PayloadViewer to the instance's path so the developer doesn't have
-// to hunt for it among TI / AR / AX / RE. With lazy payload loading
-// the path lookup has to wait for the call's payloads to land in the
-// cache. The card itself acquires on mount, so our extra acquire
-// here only deduplicates the fetch and keeps the cache populated
-// across the await; we release once the card has had a chance to
-// take its own ref.
+// Manual row-click handler. Shows the call in the transient browsing
+// slot and paints the call-tree's yellow "focus" outline on the row,
+// so a manual click reads identically to programmatic navigation
+// (exception/trace cycling, "reveal in tree" from cards, etc.) —
+// one yellow box, wherever focus is.
+//
+// When an instance is being traced AND this call has the instance,
+// auto-navigates the card's PayloadViewer to the instance's path so
+// the developer doesn't have to hunt for it among TI / AR / AX / RE.
+// With lazy payload loading the path lookup has to wait for the
+// call's payloads to land in the cache. The card itself acquires on
+// mount, so our extra acquire here only deduplicates the fetch and
+// keeps the cache populated across the await; we release once the
+// card has had a chance to take its own ref.
 async function selectCall(id: string): Promise<void> {
   stack.showTransient(id);
+  callTreeRef.value?.highlightCall(id);
   const inst = trace.inspectedInstance.value;
   if (!inst) return;
   if (!trace.instanceAppearancesByCallId.value.has(id)) return;
@@ -286,6 +302,10 @@ provide(EXCEPTION_NAV, {
   active: computed(() => exceptionNav.exceptionCount.value > 0),
   navigateTo: exceptionNav.gotoException
 });
+provide(CALL_HIGHLIGHT, {
+  callId: highlightedCallId,
+  tick: highlightTick
+});
 
 // Update the derived selectedRequestId whenever the focused
 // inspection card changes. Drives the per-request tools.
@@ -320,12 +340,11 @@ watch(sessionIdRef, () => {
   resetNavigator();
 });
 
-// Clearing the trace target also clears the call-tree highlight so a
-// stale "you are here" outline doesn't linger on a row that no longer
-// has any reason to be highlighted.
-watch(trace.inspectedInstance, (v) => {
-  if (v == null) callTreeRef.value?.clearHighlight();
-});
+// The call-tree highlight is no longer a transient "trace cursor" —
+// it's the unified focus marker that tracks whichever row is currently
+// selected/navigated-to. So clearing the trace target does NOT clear
+// the highlight; it stays on whatever row the user last focused, and
+// will move when they click another row or trigger another navigator.
 </script>
 
 <template>

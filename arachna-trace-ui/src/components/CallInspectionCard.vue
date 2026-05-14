@@ -18,8 +18,9 @@ import CollapsiblePanel from './CollapsiblePanel.vue';
 import PayloadViewer from './PayloadViewer.vue';
 import ExceptionChip from './ExceptionChip.vue';
 import ProgressSpinner from 'primevue/progressspinner';
-import { fmtTime, shortSig } from '../util/format';
-import { PAYLOADS_BY_CALL_ID, SESSION_PAYLOADS } from '../keys';
+import { fmtBytes, fmtTime, shortSig } from '../util/format';
+import { PAYLOADS_BY_CALL_ID, SESSION_PAYLOADS, CALL_HIGHLIGHT } from '../keys';
+import { useScrollIntoViewOnHighlight } from '../composables/useScrollIntoViewOnHighlight';
 import type { CallRow, OriginTarget, PayloadKind, PayloadRow, TraceTarget, Watch } from '../types';
 
 const props = withDefaults(defineProps<{
@@ -125,11 +126,42 @@ function setSectionCollapsed(k: PayloadKind, v: boolean): void {
 watch(() => props.call.call_id, () => {
   collapsedSections.value = new Set();
 });
+
+// Mirror the call-tree's yellow focus outline on the matching
+// inspection card so the two read as one linked pair. When the user's
+// focused row in the tree is this card's call, the card gets the same
+// outline — closes the visual loop "this row is what that card is
+// showing". Works for both pinned and transient cards.
+const callHighlight = inject(CALL_HIGHLIGHT, {
+  callId: ref<string | null>(null),
+  tick: ref(0)
+});
+const isHighlighted = computed(() => callHighlight.callId.value === props.call.call_id);
+
+// Pane-side half of the highlight API contract: when this card
+// becomes the focused one, scroll its container so the card lands in
+// view. Same composable the call tree uses for FrameCard rows, so the
+// behaviour is identical on both sides — highlightCall(id) up in
+// CallTreePanel results in BOTH the matching row scrolling into view
+// on the left AND the matching card scrolling into view on the right.
+// runOnMount covers the transient-card case: a freshly-shown card may
+// mount with isHighlighted already true (selectCall sets the highlight
+// before the card finishes mounting), so the watch on isMatch wouldn't
+// fire on its own.
+const rootEl = ref<HTMLElement | null>(null);
+function setRoot(inst: unknown): void {
+  // Function ref on a component instance: Vue passes the component
+  // proxy, whose $el is the root DOM element. We unwrap once here so
+  // the composable just sees a plain HTMLElement ref.
+  rootEl.value = (inst as { $el?: HTMLElement } | null)?.$el ?? null;
+}
+useScrollIntoViewOnHighlight(rootEl, isHighlighted, callHighlight.tick, { runOnMount: true });
 </script>
 
 <template>
-  <CollapsiblePanel class="cic"
-                    :class="{ collapsed, transient }"
+  <CollapsiblePanel :ref="setRoot"
+                    class="cic"
+                    :class="{ collapsed, transient, highlighted: isHighlighted }"
                     :collapsed="collapsed"
                     @update:collapsed="(v) => emit('set-collapsed', v)">
     <template #header>
@@ -170,7 +202,9 @@ watch(() => props.call.call_id, () => {
         <template #header>
           <span class="kind" :class="p.kind">{{ p.kind }}</span>
           <ExceptionChip v-if="p.kind === 'RE' && call.return_type === 'EXCEPTION'" />
-          <span class="cic-section-meta">{{ p.payload_size }} B</span>
+          <span v-if="p.payload_size != null"
+                class="cic-section-meta"
+                :title="`${p.payload_size.toLocaleString()} B`">{{ fmtBytes(p.payload_size) }}</span>
         </template>
         <PayloadViewer :data="p.parsed"
                        :callId="call.call_id"
@@ -191,6 +225,18 @@ watch(() => props.call.call_id, () => {
   margin-bottom: 0.75rem;
   overflow: hidden;
   position: relative;
+}
+
+/* Mirror of FrameCard's .rec-row.highlighted outline. Painted when
+   the focused call (CALL_HIGHLIGHT) is this card's call, so the row
+   on the left and the card on the right wear the same yellow box —
+   visually linking the two. Same colour and stroke as the row
+   outline; offset is positive here because the card has a real
+   border and ambient spacing, so the outline reads cleanly sitting
+   just outside the border. */
+.cic.highlighted {
+  outline: 2px solid #fbbf24;
+  outline-offset: 1px;
 }
 
 /* Card root uses CollapsiblePanel; style its head as the card header

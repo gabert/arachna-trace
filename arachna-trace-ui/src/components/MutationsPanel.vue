@@ -82,6 +82,17 @@ function memberDiff(callId: string, objectId: number): DiffEntry[] | null {
   return diffOwnState(arEnv, axEnv);
 }
 
+// Local "last jumped from" highlight. Intentionally NOT tied to the
+// global CALL_HIGHLIGHT ref — the call-tree/inspection-card pair
+// represents "where the user is now" and moves with every click;
+// the tool panel represents "what I jumped from in this tool" and
+// stays put until the user picks another row here, even when the
+// user goes investigating elsewhere in the tree. Same yellow as the
+// unified focus, but a different meaning — and that's what makes
+// the panes feel connected instead of erasing themselves on every
+// unrelated tree click.
+const lastJumpedCallId = ref<string | null>(null);
+
 function jumpTo(g: MutationGroup, objectId: number): void {
   // Land on the actual mutated envelope inside AX (e.g. the BookEntity),
   // not the AX args-array root. Walk the loaded AX payload to find the
@@ -94,6 +105,7 @@ function jumpTo(g: MutationGroup, objectId: number): void {
   const calls = payloadsByCallId.value.get(callId) || [];
   const ax = calls.find(p => p.kind === 'AX');
   const path = ax?.parsed ? findPathToObjectId(ax.parsed, objectId) : null;
+  lastJumpedCallId.value = callId;
   emit('jump', {
     callId,
     kind: 'AX',
@@ -129,7 +141,9 @@ function jumpTo(g: MutationGroup, objectId: number): void {
     </p>
 
     <ul v-else class="mp-list">
-      <li v-for="(g, i) in groupsView" :key="i" class="mp-group">
+      <li v-for="(g, i) in groupsView" :key="i"
+          class="mp-group"
+          :class="{ highlighted: lastJumpedCallId === g.call_id }">
         <!-- The sample (first occurrence) header AND its diff entries
              share one click target — same affordance as the per-member
              rows below. Avoids "wide row clickable up top, narrow text
@@ -208,6 +222,17 @@ function jumpTo(g: MutationGroup, objectId: number): void {
   border-radius: 4px;
   padding: 0.55rem 0.7rem;
   margin-bottom: 0.5rem;
+}
+/* "Last jumped from" outline. Painted on the group whose call the
+   user most recently navigated from via this panel. Same yellow as
+   the call-tree row and inspection card, but a different meaning —
+   the global focus moves with every click in the tree, this stays
+   put until the user picks another mutation here. Lets the panel
+   read as a stable breadcrumb instead of erasing itself when the
+   tree focus moves on. */
+.mp-group.highlighted {
+  outline: 2px solid #fbbf24;
+  outline-offset: 1px;
 }
 .mp-sample {
   cursor: pointer;

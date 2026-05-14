@@ -8,6 +8,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { api } from '../api/client';
+import { fmtBytes } from '../util/format';
 import type { SessionSize } from '../types';
 import pkg from '../../package.json';
 
@@ -67,13 +68,6 @@ watch(currentSessionId, async (id) => {
   }
 }, { immediate: true });
 
-function formatBytes(b: number): string {
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
-  return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
-
 const sessionSizeTitle = computed(() => {
   const s = sessionSize.value;
   if (!s) return '';
@@ -92,7 +86,7 @@ const sessionSizeTitle = computed(() => {
     <div class="status-mid">
       <span v-if="sessionSize" class="status-session" :title="sessionSizeTitle">
         session
-        <strong>{{ formatBytes(sessionSize.payload_bytes) }}</strong>
+        <strong>{{ fmtBytes(sessionSize.payload_bytes) }}</strong>
         <span class="status-session-meta">
           · {{ sessionSize.payload_rows }} payloads · {{ sessionSize.call_rows }} calls
         </span>

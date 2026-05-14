@@ -34,7 +34,23 @@ watch(() => props.active, async (visible) => {
   inputRef.value?.focus();
 });
 
+// Local "last jumped from" highlight. Intentionally NOT tied to the
+// global CALL_HIGHLIGHT ref — the call-tree/inspection-card pair
+// represents "where the user is now" and moves with every click;
+// this panel represents "what I jumped from in search" and stays put
+// until the user picks another hit, even when the user goes
+// investigating elsewhere in the tree. Same yellow as the unified
+// focus, but a different meaning — and that's what makes the panes
+// feel connected instead of erasing themselves on every unrelated
+// tree click.
+const lastJumpedCallId = ref<string | null>(null);
+
+// Re-running a search throws away the prior result set — drop the
+// breadcrumb so a stale highlight doesn't survive into the new hits.
+watch(() => props.search.submitted.value, () => { lastJumpedCallId.value = null; });
+
 function jumpHit(h: ValueSearchHit): void {
+  lastJumpedCallId.value = h.call_id;
   emit('jump', {
     callId: h.call_id,
     kind: h.kind,
@@ -108,6 +124,7 @@ const resultsLabel = computed(() => {
         <li v-for="(h, i) in search.hits.value"
             :key="i"
             class="sp-row"
+            :class="{ highlighted: lastJumpedCallId === h.call_id }"
             @click="jumpHit(h)">
           <span class="sp-time">{{ fmtTime(h.ts_in) }}</span>
           <span class="sp-kind kind" :class="h.kind">{{ h.kind }}</span>
@@ -282,6 +299,17 @@ const resultsLabel = computed(() => {
 }
 .sp-row:first-child { border-top: 0; }
 .sp-row:hover { background: var(--bg-hover); border-radius: 3px; }
+/* "Last jumped from" outline. Painted on the hit the user most
+   recently clicked here. Same yellow as the call-tree row and
+   inspection card, but a different meaning — the global focus
+   moves with every click in the tree, this stays put until the
+   user picks another hit. Cleared when a new search submits, so
+   a stale breadcrumb doesn't survive into a fresh result set. */
+.sp-row.highlighted {
+  outline: 2px solid #fbbf24;
+  outline-offset: -1px;
+  border-radius: 3px;
+}
 .sp-time { color: var(--text-muted); }
 .sp-sig  { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sp-path {
