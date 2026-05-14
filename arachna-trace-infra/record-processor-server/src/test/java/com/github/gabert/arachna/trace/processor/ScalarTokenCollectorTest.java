@@ -79,4 +79,33 @@ class ScalarTokenCollectorTest {
     void emptyInputYieldsEmptyTokens() throws IOException {
         assertEquals(List.of(), ScalarTokenCollector.collect("{}"));
     }
+
+    @Test
+    void listOfPrimitivesAtRootIsTokenized() throws IOException {
+        // Argument arrays render as a JSON list of scalars — e.g. AR for a
+        // method foo(int, int) is rendered to [1, 2]. The collector must
+        // descend into list children even when there is no envelope wrapper.
+        List<String> tokens = ScalarTokenCollector.collect("[1, 2, \"hello\"]");
+        assertTrue(tokens.contains("1"));
+        assertTrue(tokens.contains("2"));
+        assertTrue(tokens.contains("hello"));
+    }
+
+    @Test
+    void cycleRefFalseIsNotTreatedAsCycle() {
+        // Defensive: only Boolean.TRUE on cycle_ref triggers the skip. If the
+        // renderer ever emits `cycle_ref: false` (a future format), the node's
+        // user scalars must still be tokenized.
+        String json = """
+                {"__meta__": {"id": 1, "class": "X", "hash": "h"},
+                 "cycle_ref": false,
+                 "value": "live"}
+                """;
+        try {
+            assertTrue(ScalarTokenCollector.collect(json).contains("live"),
+                    "cycle_ref:false must not short-circuit the node");
+        } catch (IOException e) {
+            throw new AssertionError(e);
+        }
+    }
 }

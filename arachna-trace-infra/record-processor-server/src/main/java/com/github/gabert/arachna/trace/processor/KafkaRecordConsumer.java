@@ -82,7 +82,7 @@ public class KafkaRecordConsumer implements AutoCloseable {
      * if the {@code agent_run_id} header is absent. {@code agent_run_id} is the
      * required marker — without it we cannot attribute the batch.
      */
-    private static AgentRunMetadata extractAgentRun(Headers headers) {
+    static AgentRunMetadata extractAgentRun(Headers headers) {
         String runIdString = headerString(headers, AgentRun.Headers.AGENT_RUN_ID);
         if (runIdString == null) return null;
 

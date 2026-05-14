@@ -14,7 +14,6 @@ class RecordParserTest {
 
     private static final UUID OUT  = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final UUID INN  = UUID.fromString("33333333-3333-3333-3333-333333333333");
-    private static final UUID OTH  = UUID.fromString("44444444-4444-4444-4444-444444444444");
 
     @Test
     void singleCallProducesOneParsedCall() {
@@ -139,6 +138,9 @@ class RecordParserTest {
     @Test
     void unmatchedTeWithoutOpenCallIsIgnored() {
         // ME with a callId that was never seen as MS — orphan, drop silently.
+        // Defence-in-depth: RequestRecorder's failed-entry contract should
+        // suppress the matching exit upstream, but the parser must still not
+        // produce a half-built call if a stray ME ever slips through.
         Result r = result("TE;1", "TN;t", "RI;1", "CI;" + OUT);
         assertEquals(0, new RecordParser().parse(r).size());
     }
@@ -146,8 +148,9 @@ class RecordParserTest {
     @Test
     void unmatchedMsWithoutTeStaysOpenAcrossBatches() {
         // Truncated stream — agent crashed mid-call. The MS lives in the
-        // open-calls map until eviction (not implemented yet); it does not
-        // surface as a completed call.
+        // open-calls map until the TTL sweep reaps it (see
+        // staleOpenCallIsEvictedAfterTtl); it never surfaces as a completed
+        // call.
         RecordParser parser = new RecordParser();
         Result r = result(
                 "TS;1", "MS;F.f()V", "TN;t", "RI;1", "CL;1", "CI;" + OUT);
@@ -293,16 +296,6 @@ class RecordParserTest {
     }
 
     @Test
-    void orphanMeIsDroppedWhenNoMatchingMsExists() {
-        // RequestRecorder's failed-entry contract guarantees a failed entry
-        // suppresses its matching exit, but defense-in-depth: if we ever see
-        // a stray ME (callId not in openCalls), it must be dropped silently.
-        Result r = result(
-                "TE;100", "TN;t", "RI;1", "CI;" + OTH, "RT;VOID");
-        assertEquals(0, new RecordParser().parse(r).size());
-    }
-
-    @Test
     void staleOpenCallIsEvictedAfterTtl() {
         // L-01: an MS without a matching ME (agent crash mid-call) used to
         // sit in openCalls forever. The TTL sweep at the end of parse() must
@@ -376,6 +369,22 @@ class RecordParserTest {
                 "TE;1100", "TN;t", "RI;1", "CI;" + OUT, "RT;VOID");
 
         assertEquals(0L, new RecordParser().parse(r).get(0).seq());
+    }
+
+    @Test
+    void malformedSqSeqDoesNotClobberPreviousValidSeq() {
+        // VERIFY-5: parseLongOrZero silently rewrites a valid seq with 0 if a
+        // later malformed SQ for the same callId is seen. The SQ case must
+        // bail on number-format failure, not assign seq=0.
+        Result r = result(
+                "TS;1000", "MS;A()V", "TN;t", "RI;1", "CL;1", "CI;" + OUT,
+                "SQ;" + OUT + "|7",
+                "SQ;" + OUT + "|garbage",
+                "TE;1100", "TN;t", "RI;1", "CI;" + OUT, "RT;VOID");
+
+        ParsedCall c = new RecordParser().parse(r).get(0);
+        assertEquals(7L, c.seq(),
+                "malformed seq must not overwrite the earlier valid value");
     }
 
     private static Result result(String... lines) {

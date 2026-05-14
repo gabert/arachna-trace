@@ -24,7 +24,7 @@ public class ProcessorConfig {
     private final String clickhousePassword;
     private final String sinkType;
 
-    private ProcessorConfig(Map<String, String> configMap) {
+    ProcessorConfig(Map<String, String> configMap) {
         this.kafkaBootstrapServers = configMap.getOrDefault(
                 "kafka_bootstrap_servers", DEFAULT_KAFKA_BOOTSTRAP_SERVERS);
         this.kafkaTopic = configMap.getOrDefault(

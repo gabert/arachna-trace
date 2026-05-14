@@ -183,7 +183,7 @@ public class ClickHouseSink implements RecordSink {
                 || !agentRunBuffer.isEmpty() || !sessionBuffer.isEmpty();
     }
 
-    private void addRows(ParsedCall c, UUID effectiveRunId) {
+    void addRows(ParsedCall c, UUID effectiveRunId) {
         Long thisId = c.thisIdRef();
         if (thisId == null && c.thisJson() != null) {
             thisId = extractRootId(c.thisJson());
@@ -216,7 +216,7 @@ public class ClickHouseSink implements RecordSink {
         callBuffer.add(row);
     }
 
-    private static Map<String, Object> payloadRow(ParsedCall c, UUID effectiveRunId, String kind, String json) {
+    static Map<String, Object> payloadRow(ParsedCall c, UUID effectiveRunId, String kind, String json) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("agent_run_id", uuidToString(effectiveRunId));
         row.put("call_id", uuidToString(c.callId()));
@@ -243,7 +243,7 @@ public class ClickHouseSink implements RecordSink {
 
     // --- agent_runs / sessions row builders ---
 
-    private static Map<String, Object> agentRunRow(AgentRunMetadata m) {
+    static Map<String, Object> agentRunRow(AgentRunMetadata m) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("agent_run_id", uuidToString(m.agentRunId()));
         row.put("hostname",       nullToEmpty(m.hostname()));
@@ -257,7 +257,7 @@ public class ClickHouseSink implements RecordSink {
         return row;
     }
 
-    private void noteSessionIfNew(ParsedCall c, UUID effectiveRunId) {
+    void noteSessionIfNew(ParsedCall c, UUID effectiveRunId) {
         SessionKey key = new SessionKey(effectiveRunId, c.sessionId() != null ? c.sessionId() : "");
         if (seenSessions.putIfAbsent(key, System.currentTimeMillis()) == null) {
             Map<String, Object> row = new LinkedHashMap<>();
@@ -272,7 +272,7 @@ public class ClickHouseSink implements RecordSink {
         // concrete query that needs accurate last_seen on the live row.
     }
 
-    private void evictStaleSessions() {
+    void evictStaleSessions() {
         long now = System.currentTimeMillis();
         if (now < nextSessionSweepAt) return;
         nextSessionSweepAt = now + SESSION_SWEEP_INTERVAL_MS;
@@ -281,6 +281,21 @@ public class ClickHouseSink implements RecordSink {
     }
 
     private record SessionKey(UUID agentRunId, String sessionId) {}
+
+    // --- Test-only accessors (package-private). Mirror the openCallCount()
+    //     pattern used by RecordParser: expose state for assertions without
+    //     leaking the underlying collections.
+
+    int callBufferSize()      { return callBuffer.size(); }
+    int payloadBufferSize()   { return payloadBuffer.size(); }
+    int agentRunBufferSize()  { return agentRunBuffer.size(); }
+    int sessionBufferSize()   { return sessionBuffer.size(); }
+    int seenSessionCount()    { return seenSessions.size(); }
+
+    List<Map<String, Object>> peekCalls()      { return List.copyOf(callBuffer); }
+    List<Map<String, Object>> peekPayloads()   { return List.copyOf(payloadBuffer); }
+    List<Map<String, Object>> peekSessions()   { return List.copyOf(sessionBuffer); }
+    List<Map<String, Object>> peekAgentRuns()  { return List.copyOf(agentRunBuffer); }
 
     private static String extractRootHash(String hashedJson) {
         try {
@@ -334,7 +349,7 @@ public class ClickHouseSink implements RecordSink {
         return s != null ? s : "";
     }
 
-    private void flushLocked() {
+    void flushLocked() {
         if (!agentRunBuffer.isEmpty()) {
             postJsonEachRow(insertAgentRunsUri, agentRunBuffer);
             agentRunBuffer.clear();

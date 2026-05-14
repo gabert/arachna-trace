@@ -169,8 +169,13 @@ public final class RecordParser {
                     int bar = value.indexOf('|');
                     if (bar < 0) break;
                     UUID seqCallId = parseUuidOrNull(value.substring(0, bar));
-                    long seq = parseLongOrZero(value.substring(bar + 1));
                     if (seqCallId == null) break;
+                    // Bail on malformed seq instead of falling through to 0 —
+                    // otherwise a later malformed SQ for the same callId would
+                    // silently clobber an earlier valid seq.
+                    long seq;
+                    try { seq = Long.parseLong(value.substring(bar + 1)); }
+                    catch (NumberFormatException e) { break; }
                     Builder b = openCalls.get(seqCallId);
                     if (b == null && currentEntry != null
                             && seqCallId.equals(currentEntry.callId)) {
