@@ -260,6 +260,37 @@ priority.
   loaded by application classloader after attach, classes that
   fail retransformation).
 
+- **Codec support for `Optional` unwrapping.** `Optional<T>` is a
+  synchronous presence wrapper, fully resolved by the time the
+  agent serializes it. The codec today walks it as a generic
+  POJO, surfacing its internal `value` field and `isPresent()`
+  getter — so the contained DTO ends up buried one level under
+  `value` and the rendered output reads cryptically (envelope id
+  + a boolean). Replace with: unwrap to the inner value's
+  envelope and stamp a `wrapped_in: "Optional"` marker on
+  `__meta__` so the wrapping signal is preserved without burying
+  the payload. Empty Optional renders as an explicit
+  `{ "__optional__": "empty" }` sentinel. Generalizes to
+  `OptionalInt` / `OptionalLong` / `OptionalDouble` with the
+  same shape. Scope is strictly synchronous wrappers — `Future`
+  is a separate entry because the constraints differ.
+
+- **Codec support for `Future` / `CompletableFuture` state
+  capture.** Async wrappers whose value may not exist when the
+  agent records them. The agent must never call `.get()` (would
+  block) or peek at internals to fish out a maybe-null value
+  (conflates pending / done-with-null / failed). Render as a
+  tagged structure carrying *state* plus optional payload:
+  `{ "__future__": { "state": "PENDING|DONE|FAILED|CANCELLED",
+  "value": <T>?, "exception": <Throwable>? } }`. PENDING shows
+  state only; DONE includes the value envelope; FAILED includes
+  the exception envelope. A `PENDING` at AR transitioning to
+  `DONE` at AX is interesting signal but is *not* a wrapper
+  mutation — the Future object didn't change, its internal
+  state did. The UI may eventually want a distinct decoration
+  for that transition class; the codec just records what it
+  sees at each end.
+
 ## Spec / wire-format evolution
 
 ### Adopt JCS (RFC 8785) for hash canonicalization — **Low priority**
