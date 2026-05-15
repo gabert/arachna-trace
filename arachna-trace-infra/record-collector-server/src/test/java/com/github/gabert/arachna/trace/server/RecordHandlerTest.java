@@ -1,6 +1,6 @@
 package com.github.gabert.arachna.trace.server;
 
-import com.github.gabert.arachna.trace.recorder.AgentRun;
+import com.github.gabert.arachna.trace.codec.AgentRun;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
@@ -76,7 +76,7 @@ class RecordHandlerTest {
         headers.put(AgentRun.Headers.AGENT_VERSION, "1.2.3");
         headers.put(AgentRun.Headers.CODE_VERSION,  "abc123");
         headers.put(AgentRun.Headers.ENV,           "prod");
-        headers.put(AgentRun.Headers.JVM_PID,       "4242");
+        headers.put(AgentRun.Headers.PROCESS_PID,   "4242");
         headers.put(AgentRun.Headers.STARTED_AT_MS, "9000000");
 
         ch.writeInbound(post("/records", new byte[]{0}, headers));

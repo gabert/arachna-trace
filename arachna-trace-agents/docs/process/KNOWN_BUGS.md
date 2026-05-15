@@ -448,9 +448,9 @@ boundary), but it's a subtle behaviour that could surprise.
 **Status:** ACCEPTED. The principled fix would downgrade the
 project's core Merkle property; cost not worth it. Mitigated in
 the UI by the own-state hash (D-09 follow-up below).
-**Where:** `core/codec/Hasher.java` (Merkle walk) +
-`core/codec/envelope/EnvelopeSerializer.java` (cycle marker
-emission).
+**Where:** `arachna-trace-shared/codec/.../Hasher.java` (Merkle walk) +
+`arachna-trace-shared/codec/.../envelope/EnvelopeSerializer.java`
+(cycle marker emission).
 
 **Trigger:** Any object graph with a cycle (e.g. JPA bidirectional
 `Author` ⇌ `Book`). Two traces of the same logical state can

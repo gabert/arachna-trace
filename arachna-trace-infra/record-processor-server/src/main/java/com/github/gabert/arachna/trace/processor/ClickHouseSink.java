@@ -1,6 +1,7 @@
 package com.github.gabert.arachna.trace.processor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.gabert.arachna.trace.codec.AgentRun;
 import com.github.gabert.arachna.trace.codec.Hasher;
 import com.github.gabert.arachna.trace.recorder.destination.RecordRenderer.Result;
 
@@ -115,7 +116,7 @@ public class ClickHouseSink implements RecordSink {
     }
 
     @Override
-    public void accept(Result result, AgentRunMetadata headerMetadata) {
+    public void accept(Result result, AgentRun headerMetadata) {
         if (headerMetadata == null) {
             // Agent-run identity travels at the transport layer (Kafka headers).
             // A batch without it is malformed — almost certainly a misconfigured
@@ -153,7 +154,7 @@ public class ClickHouseSink implements RecordSink {
     }
 
     private static final String AGENT_RUN_HEADER_HINT =
-            "expected " + com.github.gabert.arachna.trace.recorder.AgentRun.Headers.AGENT_RUN_ID
+            "expected " + AgentRun.Headers.AGENT_RUN_ID
             + " on Kafka record headers";
 
     @Override
@@ -243,11 +244,11 @@ public class ClickHouseSink implements RecordSink {
 
     // --- agent_runs / sessions row builders ---
 
-    static Map<String, Object> agentRunRow(AgentRunMetadata m) {
+    static Map<String, Object> agentRunRow(AgentRun m) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("agent_run_id", uuidToString(m.agentRunId()));
         row.put("hostname",       nullToEmpty(m.hostname()));
-        row.put("jvm_pid",        m.jvmPid());
+        row.put("process_pid",    m.processPid());
         row.put("agent_version",  nullToEmpty(m.agentVersion()));
         row.put("code_version",   nullToEmpty(m.codeVersion()));
         row.put("env",            nullToEmpty(m.env()));

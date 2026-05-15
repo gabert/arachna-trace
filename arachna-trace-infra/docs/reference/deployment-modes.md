@@ -121,11 +121,11 @@ The agent and the postprocessing logic are bit-for-bit reusable:
 
 | Component | Shared across all modes |
 |---|---|
-| Agent (`core/agent`, `core/codec`, `core/serializer`, `core/record-format`) | yes |
+| Agent (`arachna-trace-agents/jvm/core/agent` + `core/serializer`, on top of `arachna-trace-shared/`) | yes |
 | `.dft` file format | yes (already rendered + Merkle-hashed at write time) |
 | `RecordRenderer`, `RecordHashEnricher` | yes (already applied at write) |
 | `RecordParser` (UUID-keyed MS↔ME pairing) | yes |
-| `ParsedCall`, `AgentRunMetadata` types | yes |
+| `ParsedCall`, `AgentRun` types | yes |
 | `ObjectIdCollector`, `ScalarTokenCollector` | yes (pure JSON walks) |
 | `arachna-trace-ui` (Vue app) | yes (consumes a stable JSON API contract) |
 

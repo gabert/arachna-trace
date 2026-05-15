@@ -15,22 +15,27 @@ putting identity on the transport (HTTP headers, Kafka headers, or a
 file sidecar), every batch of records carries its own attribution
 unambiguously, regardless of order, replay, or restart.
 
-## 2. The AgentRun fields
+## 2. The AgentRun record (normative)
+
+`AgentRun` is the cross-platform contract for per-process producer
+identity. Every agent in every language MUST emit these seven fields
+under the seven canonical header names defined in §3 / §4 / §5.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `agent_run_id` | UUID v4 | yes | Unique per JVM/process run. |
+| `agent_run_id` | UUID v4 | yes | Unique per process run. |
 | `hostname`     | string  | yes | The producer's hostname. |
 | `agent_version`| string  | yes | The agent implementation version (e.g. `"arachna-trace-agent/0.4.1-java"`). |
 | `code_version` | string  | no  | The traced application's version (git SHA, tag, build id). Empty when unset. |
 | `env`          | string  | no  | Environment label (`prod` / `staging` / `dev` / etc.). Empty when unset. |
-| `process_pid`  | uint64  | yes | OS process id (the JVM pid for Java; equivalent for other runtimes). |
+| `process_pid`  | uint64  | yes | OS process id of the producer (JVM pid for a Java agent, `os.getpid()` for Python, equivalent for other runtimes). The value is opaque to consumers — they do not interpret it as language-specific. |
 | `started_at_millis` | int64 | yes | Producer's wall-clock at agent start, ms since Unix epoch UTC. |
 
-`process_pid` is named `jvm_pid` in the reference Java agent (header
-`X-Arachna-Trace-Jvm-Pid`); a non-Java agent SHOULD reuse the same header
-name and treat the value as opaque from the consumer's standpoint —
-the consumer does not interpret it as Java-specific.
+The reference Java implementation lives in
+`arachna-trace-shared/codec/src/main/java/.../codec/AgentRun.java`
+(a single type shared by producer and consumer). The seven HTTP /
+Kafka header names are defined as constants on `AgentRun.Headers`
+so producers and consumers cannot drift.
 
 ## 3. HTTP transport (agent → collector)
 
@@ -49,7 +54,7 @@ X-Arachna-Trace-Hostname:        <string>
 X-Arachna-Trace-Agent-Version:   <string>
 X-Arachna-Trace-Code-Version:    <string>      ; if known
 X-Arachna-Trace-Env:             <string>      ; if known
-X-Arachna-Trace-Jvm-Pid:         <uint64 as decimal>
+X-Arachna-Trace-Process-Pid:     <uint64 as decimal>
 X-Arachna-Trace-Started-At-Millis: <int64 as decimal>
 
 <binary record bytes>
@@ -170,15 +175,15 @@ names map directly to JSON keys, no naming-strategy override):
   "agentVersion": "arachna-trace-agent/0.4.1-java",
   "codeVersion": "git-abc12345",
   "env": "prod",
-  "jvmPid": 12345,
+  "processPid": 12345,
   "startedAtMillis": 1730412345678
 }
 ```
 
 A non-Java agent MUST use the **same key names** (camelCase) to
-keep file-destination output cross-tool readable. The `jvmPid` key
-holds the producer's process id; the value is treated as opaque
-— it is not interpreted as Java-specific by any consumer.
+keep file-destination output cross-tool readable. The `processPid`
+key holds the producer's OS process id; the value is treated as
+opaque — it is not interpreted as language-specific by any consumer.
 
 > **Naming inconsistency between transports.** HTTP/Kafka headers
 > use kebab-case with an `X-Arachna-Trace-` prefix (e.g.

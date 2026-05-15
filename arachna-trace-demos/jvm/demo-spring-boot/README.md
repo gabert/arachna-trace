@@ -8,18 +8,22 @@ integrating Arachna Trace into your own Spring Boot project.
 
 - JDK 17+
 - Maven
-- The agent JAR built from the project root:
+- The shared libs, agent JAR, and JVM extensions built from the
+  project root:
   ```bash
-  cd arachna-trace-agent
-  mvn clean install
+  cd arachna-trace-shared        && mvn clean install   # codec / renderer / SPI APIs
+  cd ../arachna-trace-agents/jvm && mvn clean install   # the JVM agent
+  cd ../../arachna-trace-jvm-extensions && mvn clean install  # the SPI impls
   ```
-  This produces `core/agent/target/arachna-trace-agent.jar`.
+  This produces
+  `arachna-trace-agents/jvm/core/agent/target/arachna-trace-agent.jar`
+  plus the SPI impl JARs in `arachna-trace-jvm-extensions/*/target/`.
 
 ## Running
 
 **With the automated test script:**
 ```bash
-cd demos/demo-spring-boot
+cd arachna-trace-demos/jvm/demo-spring-boot
 bash test-run.sh
 ```
 
@@ -28,37 +32,33 @@ sessions, prints the trace output, and shuts down.
 
 **Manually (for interactive testing):**
 ```bash
-cd demos/demo-spring-boot
+cd arachna-trace-demos/jvm/demo-spring-boot
 mvn spring-boot:run \
-    -Dspring-boot.run.jvmArguments="-javaagent:../../core/agent/target/arachna-trace-agent.jar=config=./arachna-agent.cfg"
+    -Dspring-boot.run.jvmArguments="-javaagent:../../../arachna-trace-agents/jvm/core/agent/target/arachna-trace-agent.jar=config=./arachna-agent.cfg"
 ```
 
 Then use curl or a browser against `http://localhost:8080/api/`.
 
 ## How to Integrate Arachna Trace into Your Spring Boot App
 
-### 1. Add SPI dependencies to your `pom.xml`
+### 1. Add the SPI extension JARs to your `pom.xml`
 
 The agent JAR is **not** a Maven dependency — it is attached via `-javaagent`.
-However, the SPI interfaces and implementations must be on the application
-classpath so the agent's ServiceLoader can find them at runtime:
+The SPI implementation JARs *are* dependencies, dropped on the application
+classpath so the agent's ServiceLoader can find them. The reference impls
+ship from
+[`arachna-trace-jvm-extensions/`](../../../arachna-trace-jvm-extensions/) —
+each is a self-contained single-class plugin JAR:
 
 ```xml
-<!-- Required: SPI interface for session ID resolution -->
+<!-- HTTP session ID resolver for any Spring web / Jakarta Servlet app -->
 <dependency>
     <groupId>com.github.gabert</groupId>
-    <artifactId>SessionResolverApi</artifactId>
+    <artifactId>SessionResolverSpring</artifactId>
     <version>0.0.1-SNAPSHOT</version>
 </dependency>
 
-<!-- Optional: SPI interface for JPA proxy unwrapping -->
-<dependency>
-    <groupId>com.github.gabert</groupId>
-    <artifactId>JpaProxyResolverApi</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
-</dependency>
-
-<!-- Optional: Hibernate proxy resolver implementation -->
+<!-- Optional: Hibernate proxy / collection unwrapping -->
 <dependency>
     <groupId>com.github.gabert</groupId>
     <artifactId>JpaProxyResolverHibernate</artifactId>
@@ -66,55 +66,42 @@ classpath so the agent's ServiceLoader can find them at runtime:
 </dependency>
 ```
 
-### 2. Implement a `SessionIdResolver`
+Each impl jar transitively pulls only the API jar it needs — your app's
+classpath stays slim.
 
-Create a resolver that reads the HTTP session ID from a ThreadLocal:
+### 2. Register `SessionIdFilter` as a `@Bean`
+
+`SessionIdFilter` (from the `SessionResolverSpring` JAR) populates the
+ThreadLocal that the resolver reads. It is intentionally **not** annotated
+with `@Component` — register it explicitly so the wiring is visible in
+your app:
 
 ```java
-// SessionIdHolder.java — ThreadLocal storage
-public final class SessionIdHolder {
-    private static final ThreadLocal<String> CURRENT = new ThreadLocal<>();
-    public static void set(String id) { CURRENT.set(id); }
-    public static String get()        { return CURRENT.get(); }
-    public static void clear()        { CURRENT.remove(); }
-}
+import com.github.gabert.arachna.trace.agent.session.spring.SessionIdFilter;
 
-// SessionIdFilter.java — Servlet filter that populates the ThreadLocal
-@Component
-public class SessionIdFilter implements Filter {
-    @Override
-    public void doFilter(ServletRequest request, ServletResponse response,
-                         FilterChain chain) throws IOException, ServletException {
-        try {
-            String sessionId = ((HttpServletRequest) request).getSession().getId();
-            SessionIdHolder.set(sessionId);
-            chain.doFilter(request, response);
-        } finally {
-            SessionIdHolder.clear();
-        }
+@SpringBootApplication
+public class MyApp {
+
+    public static void main(String[] args) {
+        SpringApplication.run(MyApp.class, args);
+    }
+
+    @Bean
+    public SessionIdFilter sessionIdFilter() {
+        return new SessionIdFilter();
     }
 }
-
-// SpringSessionIdResolver.java — SPI implementation
-public final class SpringSessionIdResolver implements SessionIdResolver {
-    @Override public String name()    { return "spring-session"; }
-    @Override public String resolve() { return SessionIdHolder.get(); }
-}
 ```
 
-### 3. Register the SPI via ServiceLoader
+Spring Boot auto-detects `Filter` beans and adds them to the servlet chain.
 
-Create the file:
-```
-src/main/resources/META-INF/services/com.github.gabert.arachna.trace.agent.session.SessionIdResolver
-```
+> **Want to write your own resolver instead?** Each extension module under
+> `arachna-trace-jvm-extensions/` is a 1-class worked example — open
+> `session-resolver-spring/` and you'll see the entire recipe (one resolver
+> class + one `META-INF/services` file + the pom). Copy that shape for any
+> custom session source (MDC, OpenTelemetry trace ID, gRPC metadata, etc.).
 
-With the fully qualified class name of your resolver:
-```
-com.example.yourapp.SpringSessionIdResolver
-```
-
-### 4. Create a `arachna-agent.cfg`
+### 3. Create a `arachna-agent.cfg`
 
 ```properties
 session_dump_location=D:\temp
@@ -128,7 +115,7 @@ jpa_proxy_resolver=hibernate
 - `session_resolver` — must match the `name()` returned by your resolver
 - `jpa_proxy_resolver=hibernate` — enables Hibernate proxy unwrapping (omit if not using JPA)
 
-### 5. Attach the agent at startup
+### 4. Attach the agent at startup
 
 **Maven plugin:**
 ```bash
@@ -148,7 +135,7 @@ JAVA_OPTS="-javaagent:/opt/arachna-trace/arachna-trace-agent.jar=config=/opt/ara
 java $JAVA_OPTS -jar your-app.jar
 ```
 
-### 6. Inspect the output
+### 5. Inspect the output
 
 Traces are written to `<session_dump_location>/SESSION-<yyyyMMdd-HHmmss>/`
 with one `.dft` file per thread. Files are flushed after each record, so you
@@ -179,8 +166,11 @@ src/main/java/.../library/
     AuthorDTO.java, BookDTO.java       Data transfer objects
   model/
     AuthorEntity.java, BookEntity.java JPA entities (H2 in-memory)
-  session/
-    SessionIdHolder.java               ThreadLocal for HTTP session ID
-    SessionIdFilter.java               Servlet filter (populates ThreadLocal)
-    SpringSessionIdResolver.java       SPI implementation (reads ThreadLocal)
 ```
+
+The session-handling classes (`SessionIdHolder`, `SessionIdFilter`,
+`SpringSessionIdResolver`) used to live inside this demo. They have
+since been promoted into the shipped `SessionResolverSpring` module
+(under `arachna-trace-jvm-extensions/`) — the demo now consumes them
+as a dependency. `LibraryApplication.java` registers `SessionIdFilter`
+as a `@Bean`; that's the entire glue.

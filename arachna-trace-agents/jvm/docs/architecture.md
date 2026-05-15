@@ -230,23 +230,33 @@ baked into the agent.
 
 ### What ships today
 
-- **`SessionIdResolver`** (in `spi/session-resolver-api/`). Returns
-  the current logical session ID for the calling thread on every
-  method entry/exit. Built-in: `config` (reads a static ID from the
-  agent config). Demo-shipped: `spring-session` (reads from a
-  `ThreadLocal` populated by a Servlet filter). Plausible custom
-  implementations: MDC correlation IDs, OpenTelemetry trace IDs,
-  gRPC metadata, per-tenant request markers — anything with a
-  notion of "which request am I in right now" reachable from a
-  ThreadLocal.
+SPI **interfaces** live in
+[`arachna-trace-shared/spi/`](../../../arachna-trace-shared/spi/) — pure
+Java interfaces, zero deps. SPI **reference implementations** live in
+[`arachna-trace-jvm-extensions/`](../../../arachna-trace-jvm-extensions/),
+each as a self-contained single-class JAR users can drop on the
+application classpath or copy as a template.
 
-- **`JpaProxyResolver`** (in `spi/jpa-proxy-resolver-api/`). Asked
-  on every captured value: "is this a proxy you recognise, and if
-  so, what's the real object?". Built-in: `hibernate` (unwraps
-  Hibernate lazy proxies and `org.hibernate.collection.*` wrappers
-  via reflection — no compile-time Hibernate dependency on the
-  agent). Plausible custom implementations: EclipseLink, OpenJPA,
-  custom proxy frameworks.
+- **`SessionIdResolver`** (interface in
+  `arachna-trace-shared/spi/session-resolver-api/`). Returns the
+  current logical session ID for the calling thread on every method
+  entry/exit. Shipped impls (in `arachna-trace-jvm-extensions/`):
+  `session-resolver-config` (reads a static ID from the agent
+  config), `session-resolver-spring` (reads from a `ThreadLocal`
+  populated by a Jakarta Servlet filter — works in any Spring web
+  app or other servlet container). Plausible custom impls: MDC
+  correlation IDs, OpenTelemetry trace IDs, gRPC metadata,
+  per-tenant request markers — anything with a notion of "which
+  request am I in right now" reachable from a ThreadLocal.
+
+- **`JpaProxyResolver`** (interface in
+  `arachna-trace-shared/spi/jpa-proxy-resolver-api/`). Asked on every
+  captured value: "is this a proxy you recognise, and if so, what's
+  the real object?". Shipped impl (in `arachna-trace-jvm-extensions/`):
+  `jpa-proxy-resolver-hibernate` (unwraps Hibernate lazy proxies and
+  `org.hibernate.collection.*` wrappers via reflection — no
+  compile-time Hibernate dependency on the agent). Plausible custom
+  impls: EclipseLink, OpenJPA, custom proxy frameworks.
 
 ### Loading
 

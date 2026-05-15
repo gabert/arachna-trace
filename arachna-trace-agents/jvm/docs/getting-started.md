@@ -8,14 +8,14 @@
 ## Build
 
 ```bash
-cd arachna-trace-agents/jvm
-mvn clean install
+cd arachna-trace-shared        && mvn clean install   # codec / renderer / SPI APIs
+cd ../arachna-trace-agents/jvm && mvn clean install   # the JVM agent
 ```
 
 This compiles all modules and produces the agent JAR at:
 
 ```
-core/agent/target/arachna-trace-agent.jar
+arachna-trace-agents/jvm/core/agent/target/arachna-trace-agent.jar
 ```
 
 The JAR is self-contained (ByteBuddy, Jackson, codec, serializer are shaded

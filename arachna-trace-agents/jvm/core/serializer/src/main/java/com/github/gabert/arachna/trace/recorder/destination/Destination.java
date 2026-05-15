@@ -1,6 +1,6 @@
 package com.github.gabert.arachna.trace.recorder.destination;
 
-import com.github.gabert.arachna.trace.recorder.AgentRun;
+import com.github.gabert.arachna.trace.codec.AgentRun;
 
 import java.io.Closeable;
 import java.io.IOException;

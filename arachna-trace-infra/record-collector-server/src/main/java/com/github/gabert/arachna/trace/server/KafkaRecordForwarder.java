@@ -33,7 +33,7 @@ public class KafkaRecordForwarder {
 
     /**
      * Forward one HTTP-batch payload to Kafka. {@code agentHeaders} carries the
-     * agent-run identity ({@link com.github.gabert.arachna.trace.recorder.AgentRun.Headers})
+     * agent-run identity ({@link com.github.gabert.arachna.trace.codec.AgentRun.Headers})
      * lifted from the HTTP request, copied verbatim onto the Kafka record so the
      * processor can attribute the body without parsing it.
      */

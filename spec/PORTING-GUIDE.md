@@ -71,7 +71,7 @@ fully-fabricated METHOD_START / METHOD_END pair to a local file.
 Verify the bytes match
 [WIRE-FORMAT.md §7's worked example](WIRE-FORMAT.md) (or one of the
 golden tests in
-`core/record-format/src/test/java/.../recorder/WireFormatGoldenTest.java`).
+`arachna-trace-shared/codec/src/test/java/.../recorder/WireFormatGoldenTest.java`).
 The simplest cross-check: compute the expected payload length
 yourself, compare to the byte that should appear at offsets 1–4 of
 each frame. If those four bytes match the goldens for matching

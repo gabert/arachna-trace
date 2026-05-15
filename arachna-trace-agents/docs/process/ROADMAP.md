@@ -100,9 +100,7 @@ priority.
   level** of `CallInspectionCard.vue` (one icon, not per
   section header) that pops a tooltip / inline panel mapping
   each code to its full name + one-line meaning. Single source
-  of truth — no per-chip duplication. Surfaced after a
-  colleague review (2026-05-12): codes felt arcane on first
-  glance, fine after one tooltip read.
+  of truth — no per-chip duplication.
 
 ## Server / agent follow-ups
 
@@ -171,11 +169,113 @@ priority.
   alignment-contract section in deployment-modes.md is the
   recipe).
 
+- **Java 11 source compatibility for runtime modules.**
+  Audience: enterprise JVM shops still on Java 11 LTS — a real
+  population that can't easily upgrade and would benefit from
+  this tool. The runtime modules (loaded into the user's JVM —
+  `arachna-trace-shared/`, `arachna-trace-agents/jvm/core/`,
+  `arachna-trace-jvm-extensions/`) currently require Java 17
+  because they use records, sealed interfaces, and pattern
+  `instanceof`.
+
+  Scope: re-target only the modules that load into the user's
+  JVM. `arachna-trace-infra/` stays on Java 17 — it runs in our
+  containers, not the user's.
+
+  Mechanical conversion:
+  - Records (~15–20 of them: `AgentRun`, `MethodStartRecord`,
+    `MethodEndRecord`, `ParsedCall`, etc.) → final classes with
+    constructor + getters + `equals`/`hashCode`/`toString`.
+  - Sealed interfaces (`TraceRecord` and similar) → regular
+    interfaces. Loses the compiler's exhaustiveness check;
+    runtime behaviour identical.
+  - Pattern `instanceof` → cast + check.
+  - Switch expressions with pattern matching → traditional switch.
+  - Maven `<release>11</release>` on runtime modules only;
+    tooling (build, infra) can stay on 17.
+  - CI matrix (Java 11 + Java 17) to prevent silent regression
+    after the conversion.
+
+  Cost: 2–4 days of sustained mechanical surgery plus the CI
+  matrix. Not a refactor — no design changes, just lines of
+  boilerplate replacing syntactic sugar.
+
+  **Java 8 is explicitly out of scope** — the audience is
+  smaller, the language gap is wider (no `var`, no records, no
+  pattern `instanceof`, no `Map.of`, etc.), and the security
+  posture of modern Java has effectively retired it for new
+  tooling.
+
+- **Runtime attach to a running JVM.** Audience: production
+  debuggers who can't restart the JVM — *"customer reports a bug
+  at 14:00, you want runtime evidence, you can't bounce the
+  process."* Today the agent only supports startup attach
+  (`-javaagent:`); the JAR manifest declares `Premain-Class`
+  but no `Agent-Class`, so `VirtualMachine.attach(pid).loadAgent(jar)`
+  fails. ByteBuddy itself fully supports runtime attach (the
+  capability is well-trodden — Datadog, New Relic, Elastic APM
+  all do this); the gap is purely that we haven't wired it up.
+
+  Scope:
+  - Manifest: add
+    `Agent-Class: com.github.gabert.arachna.trace.agent.ArachnaTraceAgent`
+    next to the existing `Premain-Class`.
+  - Code: add `agentmain(String args, Instrumentation inst)` to
+    `ArachnaTraceAgent` mirroring the `premain` setup (config
+    load, `RecorderManager.create(...)`, shutdown hook, ByteBuddy
+    `AgentBuilder` install).
+  - ByteBuddy: install with `RedefinitionStrategy.RETRANSFORMATION`
+    so already-loaded classes get retransformed on attach. The
+    existing `@Advice`-based instrumentation fits within the
+    JVM's retransformation constraints (no new methods, no new
+    fields), so this is enabling-mode, not a redesign.
+  - Integration test: spin up a JVM, let it warm up, attach the
+    agent, exercise previously-loaded code, verify the resulting
+    traces. None of the existing integration tests cover this
+    path; runtime-attach has its own failure modes (classloader
+    visibility, retransform conflicts).
+
+  Operational notes that should land in
+  [`reference/agent-config.md`](../reference/agent-config.md) when this ships:
+  - The agent runs **inside the target JVM** after attach — same
+    process, same network stack, same filesystem. The attacher
+    is just a one-shot "load this JAR" delivery mechanism.
+    Network reach to the collector is the target's responsibility,
+    not the attacher's.
+  - Agent stderr lands in the target JVM's stderr, not the
+    attacher's terminal — easy to miss HTTP destination errors
+    if you're not watching the target's logs.
+  - "Remote attach" in practice means SSH to target → run
+    `jcmd <pid> JVMTI.agent_load /path/to/agent.jar config=...`
+    locally. Attach is process-local; the JVM does not expose a
+    network attach endpoint.
+  - Pairs nicely with `destination=file` for one-off production
+    debugging — the agent writes `.dft` files locally, you
+    `scp` them off afterwards, and you bypass the
+    network-reachability-to-collector question entirely.
+
+  Cost: ~1 day for manifest + `agentmain` + AgentBuilder
+  retransform-mode wiring; ~1 day for a robust integration test
+  that catches the corner cases (classloader visibility, classes
+  loaded by application classloader after attach, classes that
+  fail retransformation).
+
 ## Spec / wire-format evolution
 
-### Adopt JCS (RFC 8785) for hash canonicalization — **HIGH PRIORITY**
+### Adopt JCS (RFC 8785) for hash canonicalization — **Low priority**
 
 **Status**: open. Triggers a wire-format **major bump** (1.x → 2.0).
+
+> **Note on priority.** Originally filed as HIGH PRIORITY on the
+> assumption that future non-JVM agents would also produce hashes.
+> Under the actual architecture there is **one hasher** (Java, in
+> the processor) — every agent in every language emits CBOR and the
+> processor does all hashing. Cross-implementation hash agreement
+> is therefore not a current concern. Even when polyglot ships,
+> semantic correlation is gated by the ontology problem (sibling
+> entry below), not by canonicalization. JCS is kept on the roadmap
+> as the right long-term canonicalization choice, but is not
+> load-bearing for any planned feature.
 
 #### Motivation
 
@@ -183,10 +283,10 @@ Arachna Trace's hash inputs are produced by Jackson `ObjectMapper`
 with `ORDER_MAP_ENTRIES_BY_KEYS=true`. That's a *de facto*
 canonical form, not a portable spec. Java-specific quirks —
 notably `Double.toString()` formatting (`1.0` vs `1`, `1.0E-4`
-vs `0.0001`) — mean a Python / Go / .NET agent has to
-**mirror Jackson's exact byte output** to produce matching
-MD5s. Achievable but fragile (a Jackson upgrade or a porter's
-arithmetic difference one place can shift hashes).
+vs `0.0001`) — mean any future non-Java hashing implementation
+would have to **mirror Jackson's exact byte output** to produce
+matching MD5s. Achievable but fragile (a Jackson upgrade or a
+porter's arithmetic difference one place can shift hashes).
 
 [RFC 8785 — JSON Canonicalization Scheme](https://datatracker.ietf.org/doc/html/rfc8785)
 is the IETF standard for byte-identical JSON serialization
@@ -242,13 +342,21 @@ Three migration paths to pick from at switch time:
 
 #### Trigger
 
-The doc's stance — *"v1 deliberately doesn't"* — holds until
-a second-language agent ships. Once Python / Go / .NET joins
-the ecosystem, two implementations have to agree on hashes to
-interoperate, and Jackson-mimicry costs more than the
-migration. That's the natural trigger — at which point this
-becomes the **first thing** to land in wire-format 2.0,
-because every other v2 change cascades through hashes.
+Two conditions must both hold before this becomes worth the
+migration cost:
+
+1. A non-Java hashing implementation exists (a non-JVM file-mode
+   agent, or a non-Java processor) — *and* its hashes must
+   byte-match Java's.
+2. Cross-language semantic correlation is in scope (see the
+   sibling polyglot-ontology entry — JCS is necessary but not
+   sufficient for that, and the ontology work is the harder
+   half).
+
+Today neither condition holds. Single Java hasher in the
+processor, no polyglot deployments, no plans for either. The
+entry stays on the roadmap so the choice is made consciously
+when those conditions appear, not as standing work.
 
 #### References
 
@@ -258,6 +366,33 @@ because every other v2 change cascades through hashes.
 - [spec/PORTING-GUIDE.md](../../../spec/PORTING-GUIDE.md) —
   the porter's-perspective doc that today has to warn about
   byte-level Jackson mimicry.
+
+### Polyglot semantic correlation needs an ontology, not a JSON convention
+
+**Status**: open · **Low priority** — deferred until polyglot is a
+real use case.
+
+JCS gives byte-canonical JSON, which is a prerequisite for
+cross-language hash agreement but not sufficient for correlating
+"the same logical object" across language boundaries. A `BookSO`
+produced by a Python service and a `BookSO` produced by a Java
+service won't match even with JCS in place because:
+
+- `class` strings diverge (`com.example.BookSO` vs
+  `example.book.BookSO` vs `example/book.BookSO`).
+- `object_id` is per-runtime (JVM long, Python `id()`, Go pointer)
+  and own_hash embeds it via `__ref__`, so own_hash diverges too.
+- Field names diverge — and not just casing. Different systems use
+  genuinely different names for the same concept (`title` / `name`
+  / `bookTitle` / `displayName`). A JSON-level normalization
+  (snake_case ↔ camelCase) can't fix this; the divergence is
+  semantic, not syntactic.
+
+The right shape is a **semantic ontology layer** mapping
+language-native types and fields onto shared logical concepts —
+not a wire-format convention. Out of scope for v1; surfaces only
+when polyglot deployments need joined queries, and best designed
+then with the actual use case in hand.
 
 ---
 
@@ -793,9 +928,8 @@ try this on **my** app"* the full stack is more than they need:
   my app" should take.
 
 The gap is the doc/demo funnel's natural second step: *wow →
-hook → instrument*. The first compose covers wow + hook
-(see [project_first_setup_funnel.md](https://github.com/gabert/arachna-trace)
-in memory). FR-6 fills the third.
+hook → instrument*. The first compose covers wow + hook;
+FR-6 fills the third.
 
 ### Approach sketch
 

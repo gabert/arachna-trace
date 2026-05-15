@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.github.gabert</groupId>
+        <artifactId>ArachnaTraceJvmExtensions</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>SessionResolverSpring</artifactId>
+
+    <!--
+        Reference impl of SessionIdResolver: returns the HTTP session ID for
+        the current request, captured via a Jakarta Servlet Filter into a
+        thread-local.
+
+        Activate with `session_resolver=spring-session` in arachna-agent.cfg
+        AND register `SessionIdFilter` in your servlet container (e.g. as a
+        @Bean in a Spring Boot @Configuration).
+
+        Despite the module name, the implementation is pure Jakarta Servlet —
+        it works in any servlet container, not just Spring Boot. The
+        `spring-session` name reflects the typical use case (Spring web app),
+        not a hard dependency on Spring.
+
+        Dependency footprint: SessionResolverApi + jakarta.servlet-api.
+        That is the entire recipe.
+    -->
+
+    <properties>
+        <jakarta.servlet.version>6.0.0</jakarta.servlet.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.github.gabert</groupId>
+            <artifactId>SessionResolverApi</artifactId>
+            <version>${arachna.trace.shared.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <version>${jakarta.servlet.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Test only: Mockito for stubbing HttpServletRequest in
+             SessionIdFilterTest. Not part of the production footprint. -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>5.11.0</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

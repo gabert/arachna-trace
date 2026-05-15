@@ -16,7 +16,7 @@ import java.util.UUID;
  * {@code parentCallId} is the call that contains this one (lexically for
  * sync calls, by submitter for async-propagated calls), and is null at the
  * root of a request. Agent-run identity is carried at the transport layer
- * — see {@link AgentRunMetadata}.</p>
+ * — see {@link com.github.gabert.arachna.trace.codec.AgentRun}.</p>
  */
 public record ParsedCall(
         UUID callId,

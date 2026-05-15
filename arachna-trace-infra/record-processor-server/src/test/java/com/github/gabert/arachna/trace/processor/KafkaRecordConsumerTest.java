@@ -1,6 +1,6 @@
 package com.github.gabert.arachna.trace.processor;
 
-import com.github.gabert.arachna.trace.recorder.AgentRun;
+import com.github.gabert.arachna.trace.codec.AgentRun;
 import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.junit.jupiter.api.Test;
@@ -30,17 +30,17 @@ class KafkaRecordConsumerTest {
                 .add(AgentRun.Headers.AGENT_VERSION,   "0.0.3".getBytes(StandardCharsets.UTF_8))
                 .add(AgentRun.Headers.CODE_VERSION,    "rev-abc".getBytes(StandardCharsets.UTF_8))
                 .add(AgentRun.Headers.ENV,             "staging".getBytes(StandardCharsets.UTF_8))
-                .add(AgentRun.Headers.JVM_PID,         "12345".getBytes(StandardCharsets.UTF_8))
+                .add(AgentRun.Headers.PROCESS_PID,     "12345".getBytes(StandardCharsets.UTF_8))
                 .add(AgentRun.Headers.STARTED_AT_MS,   "1700000000000".getBytes(StandardCharsets.UTF_8));
 
-        AgentRunMetadata m = KafkaRecordConsumer.extractAgentRun(headers);
+        AgentRun m = KafkaRecordConsumer.extractAgentRun(headers);
         assertNotNull(m);
         assertEquals(RUN_ID, m.agentRunId());
         assertEquals("host-a", m.hostname());
         assertEquals("0.0.3", m.agentVersion());
         assertEquals("rev-abc", m.codeVersion());
         assertEquals("staging", m.env());
-        assertEquals(12345L, m.jvmPid());
+        assertEquals(12345L, m.processPid());
         assertEquals(1700000000000L, m.startedAtMillis());
     }
 
@@ -66,15 +66,15 @@ class KafkaRecordConsumerTest {
 
     @Test
     void missingNumericHeadersDefaultToZero() {
-        // jvm_pid / started_at are required by ClickHouse columns; absent or
+        // process_pid / started_at are required by ClickHouse columns; absent or
         // malformed values default to 0 rather than throwing, so a partially-
         // populated header set still flows through.
         Headers headers = new RecordHeaders()
                 .add(AgentRun.Headers.AGENT_RUN_ID, RUN_ID.toString().getBytes(StandardCharsets.UTF_8));
 
-        AgentRunMetadata m = KafkaRecordConsumer.extractAgentRun(headers);
+        AgentRun m = KafkaRecordConsumer.extractAgentRun(headers);
         assertNotNull(m);
-        assertEquals(0L, m.jvmPid());
+        assertEquals(0L, m.processPid());
         assertEquals(0L, m.startedAtMillis());
     }
 
@@ -82,11 +82,11 @@ class KafkaRecordConsumerTest {
     void malformedNumericHeadersDefaultToZero() {
         Headers headers = new RecordHeaders()
                 .add(AgentRun.Headers.AGENT_RUN_ID,  RUN_ID.toString().getBytes(StandardCharsets.UTF_8))
-                .add(AgentRun.Headers.JVM_PID,       "not-a-number".getBytes(StandardCharsets.UTF_8))
+                .add(AgentRun.Headers.PROCESS_PID,   "not-a-number".getBytes(StandardCharsets.UTF_8))
                 .add(AgentRun.Headers.STARTED_AT_MS, "also-bad".getBytes(StandardCharsets.UTF_8));
 
-        AgentRunMetadata m = KafkaRecordConsumer.extractAgentRun(headers);
-        assertEquals(0L, m.jvmPid());
+        AgentRun m = KafkaRecordConsumer.extractAgentRun(headers);
+        assertEquals(0L, m.processPid());
         assertEquals(0L, m.startedAtMillis());
     }
 }

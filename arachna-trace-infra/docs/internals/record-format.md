@@ -1,10 +1,12 @@
 # Record Format and Collector
 
-The `core/record-format` module defines the on-the-wire binary
-frames that every Arachna Trace trace consists of. The
-`server/record-collector-server` module is the first network hop
-that reads those frames — it accepts them over HTTP and relays
-them onto Kafka.
+The wire-format record types (MS/ME/AR/AX/RE/etc., plus the binary
+read/write codecs) live in `arachna-trace-shared/codec/` (under
+`com.github.gabert.arachna.trace.recorder.record.*`). They define
+the on-the-wire binary frames every Arachna Trace trace consists of.
+The `arachna-trace-infra/record-collector-server/` module is the
+first network hop that reads those frames — it accepts them over
+HTTP and relays them onto Kafka.
 
 These two are paired here because the collector's job is exactly
 "forward the bytes record-format defines, unchanged." Anything
@@ -139,7 +141,7 @@ X-Arachna-Trace-Hostname
 X-Arachna-Trace-Agent-Version
 X-Arachna-Trace-Code-Version
 X-Arachna-Trace-Env
-X-Arachna-Trace-Jvm-Pid
+X-Arachna-Trace-Process-Pid
 X-Arachna-Trace-Started-At-Millis
 ```
 
@@ -169,7 +171,7 @@ See [serializer.md](serializer.md) for the destination interface.
 
 ## Source files
 
-- `core/record-format/src/main/java/com/github/gabert/arachna/trace/recorder/record/`
+- `arachna-trace-shared/codec/src/main/java/com/github/gabert/arachna/trace/recorder/record/`
   - `TraceRecord.java` — sealed interface + parse dispatch
   - `RecordType.java` — type-byte constants and size constants
   - `RecordWriter.java` — frame builders (producer-side)

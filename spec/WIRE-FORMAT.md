@@ -401,7 +401,7 @@ SEQUENCE = 24 bytes (`0x18` = `16 + 8`), METHOD_END = 38 bytes
 (`0x26` = `36 + 2`), RETURN = 0 bytes (void).
 
 The reference test corpus at
-`core/record-format/src/test/java/.../recorder/WireFormatGoldenTest.java`
+`arachna-trace-shared/codec/src/test/java/.../recorder/WireFormatGoldenTest.java`
 carries the same and additional pinned encodings (THIS_INSTANCE,
 THIS_INSTANCE_REF, ARGUMENTS, ARGUMENTS_EXIT, EXCEPTION, RETURN
 value, VERSION, plus null-sid variants). New-language implementors

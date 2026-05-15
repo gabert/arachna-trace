@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS arachna_trace.agent_runs
 (
     agent_run_id    UUID,
     hostname        String,
-    jvm_pid         UInt32,
+    process_pid     UInt32,
     agent_version   String,
     code_version    String,                 -- empty when unset
     env             LowCardinality(String), -- empty when unset

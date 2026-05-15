@@ -1,6 +1,6 @@
 package com.github.gabert.arachna.trace.server;
 
-import com.github.gabert.arachna.trace.recorder.AgentRun;
+import com.github.gabert.arachna.trace.codec.AgentRun;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
@@ -29,7 +29,7 @@ public class RecordHandler extends SimpleChannelInboundHandler<FullHttpRequest> 
             AgentRun.Headers.AGENT_VERSION,
             AgentRun.Headers.CODE_VERSION,
             AgentRun.Headers.ENV,
-            AgentRun.Headers.JVM_PID,
+            AgentRun.Headers.PROCESS_PID,
             AgentRun.Headers.STARTED_AT_MS
     );
 

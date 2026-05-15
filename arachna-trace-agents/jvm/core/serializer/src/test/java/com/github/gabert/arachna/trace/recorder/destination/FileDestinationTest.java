@@ -3,7 +3,7 @@ package com.github.gabert.arachna.trace.recorder.destination;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.gabert.arachna.trace.codec.Codec;
-import com.github.gabert.arachna.trace.recorder.AgentRun;
+import com.github.gabert.arachna.trace.codec.AgentRun;
 import com.github.gabert.arachna.trace.recorder.record.RecordWriter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -196,7 +196,7 @@ class FileDestinationTest {
         assertEquals("1.2.3", json.get("agentVersion").asText());
         assertEquals("abc", json.get("codeVersion").asText());
         assertEquals("prod", json.get("env").asText());
-        assertEquals(4242L, json.get("jvmPid").asLong());
+        assertEquals(4242L, json.get("processPid").asLong());
         assertEquals(9_000_000L, json.get("startedAtMillis").asLong());
     }
 

@@ -72,7 +72,7 @@ MD5 over the envelope's own scalar state *plus* the hashes of
 its children. Detects "anything in this subtree changed". The
 right shape for **drilling down** through nested data. Lives in
 `__meta__.hash` and `payloads.root_hash`. Computed by `Hasher`
-in `core/codec`.
+in `arachna-trace-shared/codec/`.
 
 ### `own_hash`
 
@@ -139,8 +139,8 @@ Plus the structural marker that says which of RE applies:
 
 ## Record types on the wire
 
-The binary record types the agent emits (`core/record-format`'s
-`RecordType.java`):
+The binary record types the agent emits (defined in
+`arachna-trace-shared/codec/`'s `RecordType.java`):
 
 | Byte | Record | Carries |
 |---|---|---|
@@ -170,7 +170,7 @@ the Java implementation is in
 One JVM-with-agent process from `premain` to JVM exit. Issues
 one `agent_run_id` at startup; emits trace records until
 shutdown. Identity (`agent_run_id`, hostname, agent_version,
-code_version, env, jvm_pid, started_at_millis) rides on
+code_version, env, process_pid, started_at_millis) rides on
 transport-layer metadata.
 
 ### Session

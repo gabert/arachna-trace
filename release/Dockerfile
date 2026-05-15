@@ -16,15 +16,22 @@
 FROM maven:3.9-eclipse-temurin-17@sha256:036d1a6f2965e4368157bb87f02cd31652a96918a26f7eb5ae45a0aa33f2cb8e AS builder
 WORKDIR /src
 
-COPY arachna-trace-agents/ ./arachna-trace-agents/
-COPY arachna-trace-infra/  ./arachna-trace-infra/
-COPY arachna-trace-demos/  ./arachna-trace-demos/
+COPY arachna-trace-shared/         ./arachna-trace-shared/
+COPY arachna-trace-agents/         ./arachna-trace-agents/
+COPY arachna-trace-jvm-extensions/ ./arachna-trace-jvm-extensions/
+COPY arachna-trace-infra/          ./arachna-trace-infra/
+COPY arachna-trace-demos/          ./arachna-trace-demos/
 
-# Build JVM agent first — installs codec / record-format / serializer /
-# agent jars into the in-image m2 cache so infra and demos can resolve
-# them as plain Maven dependencies.
+# Build the language-neutral umbrella first (codec, renderer, SPI APIs) →
+# then the JVM agent (serializer + agent jar) → then the SPI reference
+# impls → then infra and demos. Each step publishes its artifacts into
+# the in-image m2 cache for downstream Maven resolution.
 RUN --mount=type=cache,target=/root/.m2/repository \
+    cd /src/arachna-trace-shared && \
+    mvn -B -DskipTests install && \
     cd /src/arachna-trace-agents/jvm && \
+    mvn -B -DskipTests install && \
+    cd /src/arachna-trace-jvm-extensions && \
     mvn -B -DskipTests install && \
     cd /src/arachna-trace-infra && \
     mvn -B -DskipTests package && \

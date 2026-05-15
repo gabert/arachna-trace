@@ -67,7 +67,7 @@ successfully, the full object state is captured.
 | Property | Value |
 |----------|-------|
 | Name | `hibernate` |
-| Module | `jpa-proxy-resolver-hibernate` |
+| Module | `jpa-proxy-resolver-hibernate` (under `arachna-trace-jvm-extensions/`) |
 
 Handles two categories:
 
@@ -97,6 +97,11 @@ returns `null`.
    ```
 3. Place JAR on application classpath
 4. Set `jpa_proxy_resolver=<your-name>` in config
+
+For the complete wiring chain — what each file looks like, how
+ServiceLoader picks impls, and how to diagnose when it doesn't fire —
+see [SPI wiring](spi-wiring.md). Reading that once will save hours of
+"why isn't my resolver being used?" later.
 
 **Example -- EclipseLink:**
 

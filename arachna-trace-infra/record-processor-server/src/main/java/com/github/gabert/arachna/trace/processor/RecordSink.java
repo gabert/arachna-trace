@@ -1,5 +1,6 @@
 package com.github.gabert.arachna.trace.processor;
 
+import com.github.gabert.arachna.trace.codec.AgentRun;
 import com.github.gabert.arachna.trace.recorder.destination.RecordRenderer;
 
 public interface RecordSink extends AutoCloseable {
@@ -14,7 +15,7 @@ public interface RecordSink extends AutoCloseable {
      *                        authoritative source for the run identity and
      *                        ignore any in-payload {@code RH} record.
      */
-    void accept(RecordRenderer.Result result, AgentRunMetadata headerMetadata);
+    void accept(RecordRenderer.Result result, AgentRun headerMetadata);
 
     @Override
     void close();

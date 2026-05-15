@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.github.gabert</groupId>
+        <artifactId>ArachnaTraceJvmExtensions</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>SessionResolverConfig</artifactId>
+
+    <!--
+        Reference impl of SessionIdResolver: returns a static session ID read
+        from agent config. Useful for CLI tools, batch jobs, single-tenant
+        services, debugging.
+
+        Activate with `session_resolver=config` and supply
+        `session_id=<your-id>` in arachna-agent.cfg.
+
+        This pom is the entire dependency footprint — one line.
+    -->
+
+    <dependencies>
+        <dependency>
+            <groupId>com.github.gabert</groupId>
+            <artifactId>SessionResolverApi</artifactId>
+            <version>${arachna.trace.shared.version}</version>
+        </dependency>
+    </dependencies>
+</project>

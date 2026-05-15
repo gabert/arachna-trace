@@ -1,5 +1,6 @@
 package com.github.gabert.arachna.trace.processor;
 
+import com.github.gabert.arachna.trace.codec.AgentRun;
 import com.github.gabert.arachna.trace.codec.Hasher;
 import com.github.gabert.arachna.trace.recorder.destination.RecordRenderer.Result;
 import org.junit.jupiter.api.AfterEach;
@@ -56,7 +57,7 @@ class ClickHouseSinkTest {
     // ============================================================
 
     @Test
-    void acceptDropsBatchWhenAgentRunMetadataIsNull() {
+    void acceptDropsBatchWhenAgentRunIsNull() {
         Result rendered = new Result("t", List.of(
                 "TS;1000", "MS;F.f()V", "TN;t", "RI;1", "CL;1", "CI;" + CALL_ID,
                 "TE;1100", "TN;t", "RI;1", "CI;" + CALL_ID, "RT;VOID"));
@@ -203,7 +204,7 @@ class ClickHouseSinkTest {
 
     @Test
     void agentRunRowCarriesAllMetadataFields() {
-        AgentRunMetadata m = new AgentRunMetadata(
+        AgentRun m = new AgentRun(
                 RUN_ID, "host-a", "0.0.3", "rev-abc", "staging",
                 12345L, 1700000000000L);
 
@@ -211,7 +212,7 @@ class ClickHouseSinkTest {
 
         assertEquals(RUN_ID.toString(),  row.get("agent_run_id"));
         assertEquals("host-a",           row.get("hostname"));
-        assertEquals(12345L,             row.get("jvm_pid"));
+        assertEquals(12345L,             row.get("process_pid"));
         assertEquals("0.0.3",            row.get("agent_version"));
         assertEquals("rev-abc",          row.get("code_version"));
         assertEquals("staging",          row.get("env"));
@@ -224,7 +225,7 @@ class ClickHouseSinkTest {
     void agentRunRowNullStringsBecomeEmpty() {
         // ReplacingMergeTree columns are not nullable strings — convert to ""
         // so we don't blow up on JSONEachRow insert.
-        AgentRunMetadata m = new AgentRunMetadata(RUN_ID, null, null, null, null, 0L, 0L);
+        AgentRun m = new AgentRun(RUN_ID, null, null, null, null, 0L, 0L);
         Map<String, Object> row = ClickHouseSink.agentRunRow(m);
 
         assertEquals("", row.get("hostname"));
@@ -273,8 +274,8 @@ class ClickHouseSinkTest {
         return new Result("t", List.of());
     }
 
-    private static AgentRunMetadata agentRun(UUID runId) {
-        return new AgentRunMetadata(runId, "host", "0.0.3", null, null, 0L, 0L);
+    private static AgentRun agentRun(UUID runId) {
+        return new AgentRun(runId, "host", "0.0.3", null, null, 0L, 0L);
     }
 
     private static ParsedCall call(String sessionId) {

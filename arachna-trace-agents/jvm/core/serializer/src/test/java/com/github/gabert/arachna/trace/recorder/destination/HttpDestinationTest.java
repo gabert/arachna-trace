@@ -1,6 +1,6 @@
 package com.github.gabert.arachna.trace.recorder.destination;
 
-import com.github.gabert.arachna.trace.recorder.AgentRun;
+import com.github.gabert.arachna.trace.codec.AgentRun;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -175,7 +175,7 @@ class HttpDestinationTest {
         assertEquals("1.2.3",   hdrs.get(AgentRun.Headers.AGENT_VERSION.toLowerCase()));
         assertEquals("abc123",  hdrs.get(AgentRun.Headers.CODE_VERSION.toLowerCase()));
         assertEquals("prod",    hdrs.get(AgentRun.Headers.ENV.toLowerCase()));
-        assertEquals("4242",    hdrs.get(AgentRun.Headers.JVM_PID.toLowerCase()));
+        assertEquals("4242",    hdrs.get(AgentRun.Headers.PROCESS_PID.toLowerCase()));
         assertEquals("9000000", hdrs.get(AgentRun.Headers.STARTED_AT_MS.toLowerCase()));
         dest.close();
     }

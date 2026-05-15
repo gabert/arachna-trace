@@ -1,6 +1,6 @@
 package com.github.gabert.arachna.trace.recorder.destination;
 
-import com.github.gabert.arachna.trace.recorder.AgentRun;
+import com.github.gabert.arachna.trace.codec.AgentRun;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -98,7 +98,7 @@ public class HttpDestination implements Destination {
         builder.header(AgentRun.Headers.AGENT_VERSION, run.agentVersion());
         if (run.codeVersion() != null) builder.header(AgentRun.Headers.CODE_VERSION, run.codeVersion());
         if (run.env() != null)         builder.header(AgentRun.Headers.ENV,          run.env());
-        builder.header(AgentRun.Headers.JVM_PID,       Long.toString(run.jvmPid()));
+        builder.header(AgentRun.Headers.PROCESS_PID,   Long.toString(run.processPid()));
         builder.header(AgentRun.Headers.STARTED_AT_MS, Long.toString(run.startedAtMillis()));
     }
 }

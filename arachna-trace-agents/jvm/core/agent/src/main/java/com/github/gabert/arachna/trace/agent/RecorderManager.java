@@ -1,6 +1,6 @@
 package com.github.gabert.arachna.trace.agent;
 
-import com.github.gabert.arachna.trace.recorder.AgentRun;
+import com.github.gabert.arachna.trace.codec.AgentRun;
 import com.github.gabert.arachna.trace.recorder.buffer.RecordBuffer;
 import com.github.gabert.arachna.trace.recorder.buffer.UnboundedRecordBuffer;
 import com.github.gabert.arachna.trace.recorder.destination.Destination;

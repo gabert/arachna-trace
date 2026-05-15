@@ -214,12 +214,14 @@ different strategy — see IDENTITY-MODEL.md §3.
 
 ## 9. Reference implementation
 
-The Java agent at `core/agent/`, the codec at `core/codec/`, the
-record format at `core/record-format/`, the serializer at
-`core/serializer/`, and the processors under `server/` together form
-the reference implementation. Behavior in code that contradicts this
-spec is a defect in the code, not in the spec. File issues against
-either as appropriate.
+The Java agent at `arachna-trace-agents/jvm/core/agent/`, the
+serializer at `arachna-trace-agents/jvm/core/serializer/`, the
+language-neutral codec / renderer / SPI APIs at
+`arachna-trace-shared/`, the JVM SPI reference impls at
+`arachna-trace-jvm-extensions/`, and the server-side pipeline at
+`arachna-trace-infra/` together form the reference implementation.
+Behavior in code that contradicts this spec is a defect in the
+code, not in the spec. File issues against either as appropriate.
 
 ## 10. License & change control
 

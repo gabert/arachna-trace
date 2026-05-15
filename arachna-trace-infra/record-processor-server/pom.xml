@@ -16,13 +16,13 @@
     <dependencies>
         <dependency>
             <groupId>com.github.gabert</groupId>
-            <artifactId>ArachnaTraceRecordFormat</artifactId>
-            <version>${arachna.trace.agent.version}</version>
+            <artifactId>ArachnaTraceCodec</artifactId>
+            <version>${arachna.trace.shared.version}</version>
         </dependency>
         <dependency>
             <groupId>com.github.gabert</groupId>
-            <artifactId>ArachnaTraceSerializer</artifactId>
-            <version>${arachna.trace.agent.version}</version>
+            <artifactId>ArachnaTraceRenderer</artifactId>
+            <version>${arachna.trace.shared.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.kafka</groupId>

@@ -125,14 +125,25 @@ arrays carry identity per the ARGUMENTS shape in
 
 ## Key source files
 
-All under `core/codec/src/main/java/com/github/gabert/arachna/trace/codec/`:
+All under `arachna-trace-shared/codec/src/main/java/com/github/gabert/arachna/trace/`:
 
-- `Codec.java` — public facade (`encode`, `decode`, `toReadableJson`,
+- `codec/Codec.java` — public facade (`encode`, `decode`, `toReadableJson`,
   JPA proxy hook getter/setter)
-- `envelope/EnvelopeSerializer.java` — the Jackson custom serializer
+- `codec/Hasher.java` — Merkle content hash + own_hash, `__meta__`
+  envelope construction (used by the renderer module on the consumer
+  side; lives here because everyone shares the same hashing rules)
+- `codec/AgentRun.java` — cross-platform per-process producer identity
+  record + the seven canonical transport header names. Shared between
+  agent (writes) and infra (reads) — single definition prevents drift.
+- `codec/envelope/EnvelopeSerializer.java` — the Jackson custom serializer
   (object id assignment, cycle detection, JPA proxy unwrap, runtime
   type re-resolution)
-- `envelope/EnvelopeModifier.java` — per-type wrap-or-bare decision
-- `envelope/ObjectIdRegistry.java` — weak-ref-backed identity map.
+- `codec/envelope/EnvelopeModifier.java` — per-type wrap-or-bare decision
+- `codec/envelope/ObjectIdRegistry.java` — weak-ref-backed identity map.
   `IdentityWeakRef` is a public nested class inside it, not a
   separate file.
+- `recorder/record/` — binary wire-format record types (MS/ME/AR/AX/RE/etc.)
+  and the `RecordReader` / `RecordWriter` codecs for them. Lives in this
+  module because the wire format is part of the shared contract.
+- `config/ConfigLoader.java` — agent config file parsing (used by the
+  agent at startup; lives here as a stable cross-module utility).

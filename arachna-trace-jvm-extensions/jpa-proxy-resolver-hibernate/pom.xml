@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.github.gabert</groupId>
+        <artifactId>ArachnaTraceJvmExtensions</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>JpaProxyResolverHibernate</artifactId>
+
+    <!--
+        Reference impl of JpaProxyResolver: unwraps Hibernate proxy entities
+        and persistent collections via reflection (no compile-time Hibernate
+        dependency — the user's app supplies Hibernate at runtime).
+
+        Activate with `jpa_proxy_resolver=hibernate` in arachna-agent.cfg.
+
+        This pom is the entire dependency footprint — one line.
+    -->
+
+    <dependencies>
+        <dependency>
+            <groupId>com.github.gabert</groupId>
+            <artifactId>JpaProxyResolverApi</artifactId>
+            <version>${arachna.trace.shared.version}</version>
+        </dependency>
+    </dependencies>
+</project>

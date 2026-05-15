@@ -138,17 +138,15 @@ arachna-trace-agents/jvm/
   arachna-agent.cfg                 Reference config (all options documented)
   core/
     agent/                          Bytecode instrumentation (entry point)
-    codec/                          Object serialization with identity envelopes
-    record-format/                  Binary wire format
-    serializer/                     Buffer, drainer, file destination
-  spi/
-    session-resolver-api/           SessionIdResolver SPI interface
-    session-resolver-config/        Built-in "config" resolver
-    jpa-proxy-resolver-api/         JpaProxyResolver SPI interface
-    jpa-proxy-resolver-hibernate/   Hibernate proxy/collection unwrapping
+    serializer/                     Buffer, drainer, file/HTTP destinations
 ```
 
-The server-side pipeline (collector, processor, query, ClickHouse
-schema) lives in [`../../arachna-trace-infra/`](../../arachna-trace-infra/).
-Sample apps with the agent attached live in
-[`../../arachna-trace-demos/jvm/`](../../arachna-trace-demos/jvm/).
+This reactor contains only the JVM-specific producer code. Everything
+else lives in sibling top-level reactors:
+
+| Reactor | What it holds |
+|---|---|
+| [`../../arachna-trace-shared/`](../../arachna-trace-shared/) | Language-neutral codec, renderer, AgentRun, binary wire types, and the SPI api interfaces. |
+| [`../../arachna-trace-jvm-extensions/`](../../arachna-trace-jvm-extensions/) | Reference SPI implementations for the JVM ecosystem (`session-resolver-config`, `session-resolver-spring`, `jpa-proxy-resolver-hibernate`). Each is a self-contained single-class plugin JAR; users either drop them onto the application classpath or copy them as templates for their own. |
+| [`../../arachna-trace-infra/`](../../arachna-trace-infra/) | Server-side pipeline — collector, processor, query, ClickHouse schema. |
+| [`../../arachna-trace-demos/jvm/`](../../arachna-trace-demos/jvm/) | Sample apps with the agent attached. |

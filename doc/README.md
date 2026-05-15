@@ -178,11 +178,25 @@ on the [repo root README](../README.md#what-we-built-this-for).
 
 ## Components
 
+- **arachna-trace-shared/** -- language-neutral umbrella reactor:
+  `codec/` (CBOR encode/decode + envelope + Hasher + AgentRun + binary
+  wire types), `renderer/` (RecordRenderer + RecordHashEnricher), and
+  `spi/` (the SessionIdResolver + JpaProxyResolver thin API
+  interfaces). Depended on by both agents and infra.
 - **arachna-trace-agents/** -- parent dir for language-specific agents.
   Today contains only `jvm/` (the JVM agent: ByteBuddy-based bytecode
-  instrumentation). Generic any-agent docs (concepts, mutation
+  instrumentation, plus the serializer that owns FileDestination and
+  HttpDestination). Generic any-agent docs (concepts, mutation
   detection, request-id propagation) live under
   [`arachna-trace-agents/docs/`](../arachna-trace-agents/docs/).
+- **arachna-trace-jvm-extensions/** -- reference implementations of
+  the SPI contracts for the JVM ecosystem
+  (`session-resolver-config`, `session-resolver-spring`,
+  `jpa-proxy-resolver-hibernate`). Each is a self-contained
+  single-class plugin JAR; users either drop them on the application
+  classpath or copy them as templates for their own. See its
+  [README](../arachna-trace-jvm-extensions/README.md) for the
+  recipe.
 - **arachna-trace-infra/** -- language-neutral server-side pipeline:
   Netty collector, Kafka-fed processor, query HTTP API, ClickHouse
   schema, and a docker-compose for local development. Consumes any

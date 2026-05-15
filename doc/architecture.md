@@ -266,22 +266,28 @@ The agent is built around two `ServiceLoader` SPIs that plug
 framework-specific behaviour in at runtime:
 
 - **`SessionIdResolver`** — given the current thread, return the
-  logical session/request ID. The built-in `config` resolver reads
-  a static ID from the agent config; the demo's `spring-session`
-  resolver reads a Servlet session ID off a thread-local; a custom
-  one might pull MDC, OpenTelemetry trace IDs, gRPC metadata, etc.
+  logical session/request ID. Shipped impls (in
+  `arachna-trace-jvm-extensions/`): `session-resolver-config` reads
+  a static ID from the agent config; `session-resolver-spring`
+  reads a Servlet session ID off a thread-local populated by a
+  Jakarta Servlet filter. A custom one might pull MDC,
+  OpenTelemetry trace IDs, gRPC metadata, etc.
 - **`JpaProxyResolver`** — given a captured value, decide if it's a
-  proxy you recognise and unwrap it to its real object. The built-in
-  `hibernate` resolver handles Hibernate lazy proxies and collection
-  wrappers; a custom one could handle EclipseLink, OpenJPA, or any
+  proxy you recognise and unwrap it to its real object. Shipped impl
+  (in `arachna-trace-jvm-extensions/`): `jpa-proxy-resolver-hibernate`
+  handles Hibernate lazy proxies and collection wrappers via
+  reflection. A custom one could handle EclipseLink, OpenJPA, or any
   proxy framework.
 
-Implementations live as separate JARs on the application's
-classpath alongside the framework they wrap — never bundled into
-the agent. Adding a new resolver is implement-the-interface, ship-a-
-JAR, set-the-name-in-config; no agent rebuild. Adding a *new* SPI
-interface (a redaction hook, a per-tenant routing hook, …) is a new
-api module plus a load point in the agent's `SpiBootstrap`.
+The SPI **interfaces** live in `arachna-trace-shared/spi/` as their
+own thin JARs (zero deps, normative). The reference **implementations**
+live in `arachna-trace-jvm-extensions/` as separate JARs on the
+application's classpath alongside the framework they wrap — never
+bundled into the agent. Adding a new resolver is
+implement-the-interface, ship-a-JAR, set-the-name-in-config; no
+agent rebuild. Adding a *new* SPI interface (a redaction hook, a
+per-tenant routing hook, …) is a new api module plus a load point in
+the agent's `SpiBootstrap`.
 
 The result is that the agent core stays universal — it has no
 compile-time dependency on Hibernate, Spring, Servlet containers, or

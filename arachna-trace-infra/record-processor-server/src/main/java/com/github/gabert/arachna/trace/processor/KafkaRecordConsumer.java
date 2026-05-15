@@ -1,6 +1,6 @@
 package com.github.gabert.arachna.trace.processor;
 
-import com.github.gabert.arachna.trace.recorder.AgentRun;
+import com.github.gabert.arachna.trace.codec.AgentRun;
 import com.github.gabert.arachna.trace.recorder.destination.RecordHashEnricher;
 import com.github.gabert.arachna.trace.recorder.destination.RecordRenderer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -70,7 +70,7 @@ public class KafkaRecordConsumer implements AutoCloseable {
         try {
             RecordRenderer.Result rendered = RecordRenderer.render(record.value());
             RecordRenderer.Result enriched = RecordHashEnricher.enrich(rendered);
-            AgentRunMetadata headerMetadata = extractAgentRun(record.headers());
+            AgentRun headerMetadata = extractAgentRun(record.headers());
             sink.accept(enriched, headerMetadata);
         } catch (Exception e) {
             System.err.println("[ArachnaTrace] Failed to process record batch: " + e.getMessage());
@@ -78,11 +78,11 @@ public class KafkaRecordConsumer implements AutoCloseable {
     }
 
     /**
-     * Build {@link AgentRunMetadata} from Kafka record headers, or {@code null}
+     * Build an {@link AgentRun} from Kafka record headers, or {@code null}
      * if the {@code agent_run_id} header is absent. {@code agent_run_id} is the
      * required marker — without it we cannot attribute the batch.
      */
-    static AgentRunMetadata extractAgentRun(Headers headers) {
+    static AgentRun extractAgentRun(Headers headers) {
         String runIdString = headerString(headers, AgentRun.Headers.AGENT_RUN_ID);
         if (runIdString == null) return null;
 
@@ -97,10 +97,10 @@ public class KafkaRecordConsumer implements AutoCloseable {
         String agentVersion = headerString(headers, AgentRun.Headers.AGENT_VERSION);
         String codeVersion  = headerString(headers, AgentRun.Headers.CODE_VERSION);
         String env          = headerString(headers, AgentRun.Headers.ENV);
-        long jvmPid         = headerLong(headers, AgentRun.Headers.JVM_PID);
+        long processPid     = headerLong(headers, AgentRun.Headers.PROCESS_PID);
         long startedAtMs    = headerLong(headers, AgentRun.Headers.STARTED_AT_MS);
 
-        return new AgentRunMetadata(runId, hostname, agentVersion, codeVersion, env, jvmPid, startedAtMs);
+        return new AgentRun(runId, hostname, agentVersion, codeVersion, env, processPid, startedAtMs);
     }
 
     private static String headerString(Headers headers, String name) {

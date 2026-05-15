@@ -20,10 +20,9 @@ mutation that the trace makes visible.
 From the project root:
 
 ```bash
-cd arachna-trace-agents/jvm
-mvn clean install
-cd ../../arachna-trace-demos/jvm
-mvn clean install
+cd arachna-trace-shared        && mvn clean install   # codec / renderer / SPI APIs
+cd ../arachna-trace-agents/jvm && mvn clean install   # the JVM agent
+cd ../../arachna-trace-demos/jvm && mvn clean install # this demo
 ```
 
 This produces the agent JAR at

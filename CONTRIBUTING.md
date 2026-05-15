@@ -4,6 +4,15 @@ Thank you for your interest in Arachna Trace. This document describes the
 project's scope, where contribution is most welcome, and how to get a
 change merged.
 
+> The documentation in this repository is human-driven but
+> AI-drafted, with maintainer review that spot-checks rather
+> than audits every paragraph
+> (see [README → About this documentation](README.md#about-this-documentation)).
+> Doc corrections are first-class contributions — if you spot
+> a mismatch between the docs and the code, please file an
+> issue or a PR. Reader pushback is how the docs keep up with
+> what the code actually does.
+
 ## Project scope
 
 Arachna Trace is a **runtime tracing substrate** with two cleanly
@@ -66,7 +75,6 @@ The maintainers' active work is on the **distributed deployment mode**
 - Multi-service production debugging
 - Regulated-industry audit substrates
 - AI-era observability at fleet scale
-- The hosted SaaS path
 
 See [arachna-trace-infra/docs/reference/deployment-modes.md](arachna-trace-infra/docs/reference/deployment-modes.md) for the full
 positioning of each mode.
@@ -90,16 +98,33 @@ New agents in other languages shouldn't just port the existing
 signal set; each runtime exposes its own diagnostic surface, and
 the agent should reach for it.
 
-**Heuristics.** Heuristics turn raw signals into hypotheses. An
-exception count is a signal; *"an exception was caught inside a
-request that returned 200"* is a heuristic — the kind of pattern
-that catches bugs nobody else finds. State mutated and never read,
-return values inconsistent with arguments, identical inputs
-producing different outputs, retried work that should have been
-idempotent, objects with the same content but diverging identity —
-each one is a low-cost *"look here first"* signpost. The processor
-is where heuristics live, and the catalog of useful ones is wide
-open.
+**Heuristics and analyses on top of the trace.** Heuristics turn
+raw signals into hypotheses. An exception count is a signal;
+*"an exception was caught inside a request that returned 200"* is
+a heuristic — the kind of pattern that catches bugs nobody else
+finds. The one heuristic that already ships is **value-origin
+tracing** — given a value observed somewhere in a trace, walk
+backwards through the recorded data flow to find the call that
+first produced it. Useful as a worked example of the shape: a
+small piece of analysis that turns the captured trace into a
+direct answer to a debugger's question.
+
+Beyond that, the catalog is wide open. Plausible directions —
+none implemented today, all reachable from the existing trace
+data: state mutated and never read, return values inconsistent
+with arguments, identical inputs producing different outputs,
+retried work that should have been idempotent, objects with the
+same content but diverging identity, exceptions silently caught
+inside successful-looking requests. Each one is a low-cost
+*"look here first"* signpost.
+
+LLM-driven analysis is the other half of this space and largely
+unexplored: a captured trace is a structured artefact an LLM can
+read and reason about (*"is the discount being applied to the
+right line item?", "did this method actually do what its name
+suggests?"*). Where the line falls between deterministic
+heuristics and LLM judgment is itself a research direction —
+contributions that propose an experiment here are welcome.
 
 **UI for hypothesis-driven debugging.** Not a log viewer with
 filters bolted on. The operator arrives with *"X is broken"* and
@@ -156,150 +181,87 @@ one substrate: the agent, the wire format, the heuristics, and
 the UI. A contribution that strengthens the substrate usually
 moves all three forward at once.
 
-## Where contribution is most welcome
+## Where contribution is needed
 
-If you're looking for a specific concrete starting point, two places
-to scan first:
+The categories below describe the **shapes** of work that move
+the project forward. For specific entries inside any category —
+open items, motivation, approach sketches, status — see:
 
-- **[arachna-trace-agents/docs/process/ROADMAP.md](arachna-trace-agents/docs/process/ROADMAP.md)** — open work
-  with motivation and approach sketches. The "Bug-finding UX
-  backlog" (B2–B6) items and the FR-1..FR-5 user-facing feature
-  ideas are good entry points for someone new to the codebase.
-- **[arachna-trace-agents/docs/process/KNOWN_BUGS.md](arachna-trace-agents/docs/process/KNOWN_BUGS.md)** — bug
-  catalog with stable IDs. Items marked `Status: OPEN` are
-  candidates; `ACCEPTED` are intentional trade-offs, don't touch
-  without discussion.
+- **[arachna-trace-agents/docs/process/ROADMAP.md](arachna-trace-agents/docs/process/ROADMAP.md)** — open features and follow-ups, with motivation and approach sketches.
+- **[arachna-trace-agents/docs/process/KNOWN_BUGS.md](arachna-trace-agents/docs/process/KNOWN_BUGS.md)** — bug catalog with stable IDs. Items marked `Status: OPEN` are candidates; `ACCEPTED` are intentional trade-offs — don't touch without discussion.
 
-Beyond those, deliverables below are grouped by which **part** of
-the project they live in — agent or infrastructure.
+Open an issue or a PR against any category below.
 
-## Agent-side contributions
+### Agents for other runtimes
 
-### A1. Agent for another language
+The single most impactful contribution surface. Today's only agent
+is for the JVM (`arachna-trace-agents/jvm/`). The wire-format spec
+under [`spec/`](spec/) defines exactly what a conformant agent in
+any other language must produce — candidates are .NET, Python,
+Node, Go, Ruby, native (C/C++/Rust). Each runtime exposes its own
+diagnostic surface (CLR profiler API, CPython `sys.monitoring`,
+V8 inspector, Go runtime traces, eBPF uprobes, …) and a new agent
+shouldn't just port the existing signal set; it should reach for
+what its runtime makes naturally visible. Architecturally clean
+— the contract is fully specified and conformance is verifiable
+by pointing the new agent at the existing collector and reading
+the resulting UI. [`spec/PORTING-GUIDE.md`](spec/PORTING-GUIDE.md)
+is the checklist; the JVM agent is the reference implementation.
 
-The single most impactful contribution surface. The pipeline is
-language-agnostic, so any agent emitting conformant wire-format bytes
-plugs straight into the existing collector → Kafka → processor →
-ClickHouse → UI flow.
+### SPI implementations for unsupported frameworks
 
-Candidates: **.NET, Python, Node, Go, Ruby, native (C/C++/Rust)**.
+The JVM agent has two SPI extension points (`SessionIdResolver`,
+`JpaProxyResolver`). Thin api jars live under
+[`arachna-trace-shared/spi/`](arachna-trace-shared/spi/); shipped
+reference implementations live under
+[`arachna-trace-jvm-extensions/`](arachna-trace-jvm-extensions/),
+each a self-contained single-class plugin JAR. New impls for
+Quarkus, Micronaut, Vert.x, EclipseLink, OpenJPA, message-queue
+session contexts, etc. are welcome — the recipe is at
+[`spi-wiring.md`](arachna-trace-agents/jvm/docs/reference/spi-wiring.md);
+each existing module is a worked example to copy as a template.
+Non-JVM agents will grow their own equivalent SPIs as they need
+them.
 
-What this requires from a new agent:
+### Heuristics and analyses on top of the trace
 
-- Hook into the target runtime's instrumentation point (CLR profiler
-  API, CPython `sys.setprofile` / `sys.monitoring`, V8 inspector,
-  Go runtime traces, eBPF uprobes, …).
-- Emit the binary record format defined in
-  [spec/WIRE-FORMAT.md](spec/WIRE-FORMAT.md), with the tag
-  set from [spec/TAGS.md](spec/TAGS.md) and the CBOR
-  envelope shape from [spec/CBOR-ENVELOPE.md](spec/CBOR-ENVELOPE.md).
-- Compute Merkle content hashes per
-  [spec/HASHING.md](spec/HASHING.md) — or leave that to
-  the processor (the JVM agent leaves hashing to the processor;
-  the spec allows either).
-- POST batches to the collector per
-  [spec/TRANSPORT.md](spec/TRANSPORT.md), including the
-  agent-run identity headers.
+The captured trace is a structured artefact — a queryable graph
+of calls, values, identities, and mutations. Analyses sit on top:
+deterministic heuristics turn raw signals into hypotheses; LLM
+inspection asks intent-level questions of the trace; hybrids are
+likely the most interesting territory. The shape of "an analysis
+as a feature" is established (the shipped value-origin tracer is
+a worked example); the catalog of useful analyses is wide open.
 
-[spec/PORTING-GUIDE.md](spec/PORTING-GUIDE.md) is the
-checklist for porting; the JVM agent under
-`arachna-trace-agents/jvm/core/` is the reference implementation.
+### Local / IDE-plugin viewer for `.dft` files
 
-Substantial undertaking but architecturally clean — the contract is
-fully specified, and conformance can be verified by pointing the new
-agent at the existing collector and reading the resulting UI.
+A way to read `.dft` files (the agent's local file output, already
+fully rendered and Merkle-hashed) directly from an IDE — typically
+an IntelliJ plugin — so a developer can run the agent against
+their app and inspect traces with no infrastructure standing up.
+The existing `RecordParser` and the Vue UI are reusable; the gap
+is the plugin shell, an in-memory query layer, and the embedding
+glue. Either a JVM impl reusing the existing parser or a non-JVM
+port is valid since the wire format is language-neutral.
 
-### A2. JVM agent — SPI resolvers
+### Alternative infrastructure components
 
-The JVM agent has two SPI extension points:
+The collector / processor / query / UI interfaces speak the wire
+format on the ingest side and a documented HTTP API on the read
+side. Replacements that speak the same contracts are welcome — a
+different transport (NATS, Redpanda, plain TCP), a different
+storage engine (Postgres + JSONB, Parquet on object store, DuckDB
+file), or a different query layer (GraphQL).
 
-- `SessionIdResolver` — extracts a session ID from runtime context
-  (HTTP request, message header, etc.). Built-in resolvers:
-  `config`, with a Spring servlet resolver in the demo module.
-- `JpaProxyResolver` — unwraps lazy-loaded ORM proxies. Built-in:
-  Hibernate.
+### UI features
 
-New resolvers for other frameworks (Quarkus, Micronaut, Vert.x,
-non-Hibernate JPA implementations, message-queue session contexts)
-are welcome. Non-JVM agents will grow their own equivalent SPIs as
-they need them.
-
-## Infrastructure-side contributions
-
-### I1. Local mode — single-JAR / IDE plugin viewer
-
-A standalone tool that watches `.dft` files written by the agent and
-serves the existing UI from a localhost HTTP server. No Docker, no
-Kafka, no ClickHouse. ~50 MB RAM.
-
-What already exists:
-
-- The agent already writes `.dft` files in fully-rendered, Merkle-hashed
-  form. No rendering or hashing work is needed at read time.
-- `RecordParser` (in `arachna-trace-infra/record-processor-server`) consumes the
-  exact line format `.dft` files contain.
-- The Vue UI is API-shaped — point it at any host that serves the
-  existing query endpoints, and it works.
-
-What needs to be built:
-
-- `SessionWatcher` — JDK `WatchService` + `RandomAccessFile` tail
-- `InMemoryStore` — `Map`s with inverted indexes for value / identity
-  search
-- `LocalQueryHandler` — implements the existing query API on top of
-  `InMemoryStore`
-- Embedded `com.sun.net.httpserver.HttpServer` to serve the UI bundle
-  and the JSON API
-- Optional: IntelliJ plugin wrapper using JCEF + PSI for
-  source-code-anchored navigation (jump-to-method, gutter icons,
-  inline value hints)
-
-This is approximately a 2–3 week prototype, 6–10 weeks for a polished
-IDE plugin. The current Java implementation is convenient because the
-existing parser is reusable; a non-JVM port is also valid since the
-wire format is language-neutral.
-
-### I2. Embedded mode — DuckDB-backed single server
-
-A standalone server that reads `.dft` files (or accepts HTTP intake
-from a single agent) and inserts into a DuckDB file. Persistent,
-analytical-SQL-queryable, no cluster.
-
-What already exists:
-
-- Same as local mode plus the ClickHouse SQL in `QueryHandler` is
-  mostly portable to DuckDB.
-
-What needs to be built:
-
-- `DuckDBSink` — replaces `ClickHouseSink`, same interface
-- DDL adaptation — the `01-schema.sql` schema with DuckDB syntax tweaks
-- `EmbeddedQueryHandler` — runs the existing query SQL against DuckDB
-- File-tail or single-host HTTP intake (reuse the local-mode watcher)
-
-Smaller scope than local mode in many ways because the SQL stays close
-to what already exists.
-
-### I3. UI features
-
-The UI is in `arachna-trace-ui/` (Vue 3 + TypeScript). It talks to
-the query API over a documented HTTP surface and is fully decoupled
-from the agent. Features that match the architectural ambitions of
-the project:
-
-- Session diffing (compare two sessions side-by-side)
-- Persistent saved queries
-- LLM-agent integration via MCP
-- Better mutation visualization at scale
-
-### I4. Alternative infrastructure components
-
-The collector / processor / query interfaces are not magic — anyone
-can write a replacement that speaks the same wire format on the
-ingest side and the same HTTP API on the read side. Examples:
-a different transport (NATS, Redpanda, plain TCP), a different
-storage engine (Postgres + JSONB, Parquet on object store), a
-different query layer (GraphQL).
+The UI is in `arachna-trace-ui/` (Vue 3 + TypeScript). It talks
+to the query API over a documented HTTP surface and is fully
+decoupled from the agent. Contributions matching the project's
+hypothesis-driven debugging direction (cross-request /
+cross-thread / cross-session navigation as one motion, identity
+and value lineage as first-class, surfacing analysis findings
+prominently) are particularly welcome.
 
 ## What is *not* in scope
 
@@ -318,8 +280,25 @@ These apply to the existing codebases. A new agent in a different
 language follows that language's idiomatic conventions — the project
 does not impose Java style on a Python or Go port.
 
-- **JVM agent + Java infrastructure.** JDK 17 target. Standard
-  formatting; existing code is the reference. Maven module tests.
+- **JVM agent + Java infrastructure.** JDK 17 is the current source
+  target across the codebase. Standard formatting; existing code is
+  the reference. Maven module tests.
+
+  **Heads-up on the runtime modules.** The modules that load into
+  the user's JVM — `arachna-trace-shared/`,
+  `arachna-trace-agents/jvm/core/`, and
+  `arachna-trace-jvm-extensions/` — are tagged for an eventual
+  Java 11 source retarget so the agent can run in enterprise JVMs
+  still on the 11 LTS. See the roadmap entry "Java 11 source
+  compatibility for runtime modules" for scope and rationale. The
+  retarget hasn't shipped yet, so any Java 17 idiom is fine today;
+  but if you're adding code to a runtime module and you can do the
+  same thing with a Java 11–compatible construction at no
+  expressivity cost, prefer it — every record / sealed interface /
+  pattern `instanceof` / pattern-switch you add becomes mechanical
+  conversion work later. Infrastructure code under
+  `arachna-trace-infra/` runs in our containers and stays on
+  Java 17 with no constraint.
 - **UI.** TypeScript strict mode; existing code is the reference.
   Component-level tests when behaviour is non-trivial.
 - **New agents (other languages).** Conform to the wire-format spec

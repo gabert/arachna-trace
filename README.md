@@ -49,48 +49,45 @@ schema-migration path.
 
 ## Why this exists
 
-The deepest reason this product exists is verifying what
-**AI-written code actually does at runtime**. LLM self-verification
-is one of the genuinely unresolved problems in current AI: a model
-that wrote a piece of code is unreliable at telling you whether
-it's correct, and asking it to critique its own work is unreliable
-on a regular basis — the same reasoning that produced a bug usually
-rationalises it. Unit tests only cover the cases someone thought to
-check, and AI-generated code multiplies the unanticipated ones.
+Software breaks in two ways. Crashes and exceptions are loud — you
+get a stack trace, you find the bug, you fix it. **Data errors are
+silent.** The application runs fine, returns HTTP 200, commits to
+the database, and the result is wrong. A price is off. A permission
+check passes when it shouldn't. A transaction settles with the wrong
+amount.
+
+These bugs are hard because the code did what it was told. The
+problem is in the values, not the structure. To find it you need to
+see what actually went into each method and what came out — and
+today there's no good way to do that. Log statements only capture
+what someone thought to log. APM tools (OpenTelemetry, Datadog) work
+at service boundaries — they tell you a request took 200 ms, not
+that the discount was applied to the wrong line item. Debuggers
+require reproducing the exact scenario interactively, which is
+often impossible in production-like environments.
 
 The missing piece is **runtime evidence** — the actual values that
-flowed through the code as it ran, not a model's belief about them.
-Arachna Trace captures that evidence: every instrumented method call
-with its arguments, return values, mutations, and exceptions,
-identified by stable object IDs and Merkle content hashes. That
-turns *"I think the code is correct"* into *"here is what it
-actually did,"* giving any verification loop — human reviewer or
-LLM agent — something to land on other than guesses. The five use
-cases below all read the same trace data; this is the deepest
-reason the product is shaped the way it is.
+flowed through the code as it ran, not a model's or developer's
+belief about them. Arachna Trace captures that evidence: every
+instrumented method call with its arguments, return values,
+mutations, and exceptions, identified by stable object IDs and
+Merkle content hashes. That turns *"I think the code is correct"*
+into *"here is what it actually did."*
+
+The same recording serves several adjacent problems — debugging
+silent data errors, reconstructing what happened for a regulator,
+verifying what an AI coding tool just shipped, orienting on a
+codebase you didn't write, comparing data flow before and after a
+refactor. The five use cases below all read the same trace data;
+this is the deepest reason the product is shaped the way it is.
 
 ## What we built this for
 
 Five use cases drove the design. They all read the same data — a
 recording of every captured method's inputs, outputs, and
-mutations — for different reasons.
-
-### Observability for AI-generated code
-
-AI coding tools (Claude, Cursor, Copilot, agent-style pipelines) are
-now in heavy day-to-day use, and the volume of code they produce can
-easily outpace what reviewers can deeply read. CI passing and a
-reviewer's approval show that the structure compiles and the unit
-tests cover the inputs someone anticipated. Neither shows that the
-data actually flowed correctly through the new code under realistic
-conditions.
-
-Run the feature with the agent attached and capture what happened
-end-to-end. A reviewer can read the trace for the changed paths, or
-an LLM can query the trace store — for example, *"find every call
-where `Order.total` was set to a value that doesn't equal the sum of
-its line items"*. The result is runtime evidence of correctness,
-alongside the unit tests' evidence of expected behaviour.
+mutations — for different reasons. The original use case was the
+first one below; the others fell out of the same capture as it
+became clear how broadly applicable a full runtime recording is.
 
 ### Debugging silent data errors
 
@@ -119,6 +116,23 @@ A Arachna Trace trace records how data moved through the instrumented
 code during a session, attributed to a specific JVM run, host, build
 version, and environment. Traces of interest can be flagged
 retain-forever in the trace store to survive the default 30-day TTL.
+
+### Observability for AI-generated code
+
+AI coding tools (Claude, Cursor, Copilot, agent-style pipelines) are
+now in heavy day-to-day use, and the volume of code they produce can
+easily outpace what reviewers can deeply read. CI passing and a
+reviewer's approval show that the structure compiles and the unit
+tests cover the inputs someone anticipated. Neither shows that the
+data actually flowed correctly through the new code under realistic
+conditions.
+
+Run the feature with the agent attached and capture what happened
+end-to-end. A reviewer can read the trace for the changed paths, or
+an LLM can query the trace store — for example, *"find every call
+where `Order.total` was set to a value that doesn't equal the sum of
+its line items"*. The result is runtime evidence of correctness,
+alongside the unit tests' evidence of expected behaviour.
 
 ### Understanding code you didn't write
 
@@ -241,8 +255,9 @@ supplies *what* happened; the other reasons about *why*.
 ## Quick start
 
 ```bash
-cd arachna-trace-agents/jvm && mvn clean install
-# Produces core/agent/target/arachna-trace-agent.jar.
+cd arachna-trace-shared      && mvn clean install   # codec / renderer / SPI APIs
+cd ../arachna-trace-agents/jvm && mvn clean install # the JVM agent
+# Produces arachna-trace-agents/jvm/core/agent/target/arachna-trace-agent.jar.
 ```
 
 Minimal config (`arachna-agent.cfg`):
@@ -295,6 +310,25 @@ The repo splits into four logical pieces, each with its own docs:
 
 Sample apps with the agent attached live under
 [arachna-trace-demos/](arachna-trace-demos/) (today: `jvm/`).
+
+## About this documentation
+
+This documentation is **human-driven but AI-drafted**. The
+direction, structure, scope, and editorial decisions are the
+maintainer's; the prose was drafted by an AI assistant working
+under that direction. The maintainer reviews and steers, but
+realistically the AI produces text faster than one person can
+close-read every line — so review is closer to "spot-check and
+redirect" than "audit every paragraph."
+
+The trade-off: this working model gets a lot of documentation
+written that otherwise wouldn't exist, at the cost that
+AI-drafted text can be confidently wrong about subtle technical
+details, the confident tone makes that hard to spot, and the
+review-doesn't-keep-up dynamic means inaccuracies do land in
+shipped docs. Where you find something that doesn't match the
+code, please trust the code and open an issue or a PR. Those
+corrections are how the docs catch up with reality.
 
 ## License
 

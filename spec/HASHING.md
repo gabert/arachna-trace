@@ -337,7 +337,7 @@ envelope's problem.
 
 The reference Java implementation is `Hasher.ownHashInput(node,
 atRoot)` in
-`core/codec/src/main/java/com/github/gabert/arachna/trace/codec/Hasher.java`.
+`arachna-trace-shared/codec/src/main/java/com/github/gabert/arachna/trace/codec/Hasher.java`.
 A non-Java processor produces byte-identical `own_hash` values
 by implementing the same algorithm plus the same canonical JSON
 (§5).
@@ -514,7 +514,7 @@ not after; debug by diffing the canonical-JSON outputs.
 ## 11. Implementation notes (Informative)
 
 - The reference implementation lives at
-  `core/codec/src/main/java/com/github/gabert/arachna/trace/codec/Hasher.java`.
+  `arachna-trace-shared/codec/src/main/java/com/github/gabert/arachna/trace/codec/Hasher.java`.
   The hashing pass is wired up by
   `core/serializer/.../destination/RecordHashEnricher.java`, which
   applies `Hasher.hash()` to the JSON values of the `TI`, `AR`,

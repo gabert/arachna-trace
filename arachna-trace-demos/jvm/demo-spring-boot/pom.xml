@@ -37,14 +37,17 @@
             <artifactId>h2</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!--
+            This demo uses two SPI reference impls from
+            arachna-trace-jvm-extensions/. Each one is a self-contained
+            single-class plugin; we just put the JARs on the classpath
+            and activate them via arachna-agent.cfg
+            (`session_resolver=spring-session` and
+            `jpa_proxy_resolver=hibernate`).
+        -->
         <dependency>
             <groupId>com.github.gabert</groupId>
-            <artifactId>SessionResolverApi</artifactId>
-            <version>0.0.1-SNAPSHOT</version>
-        </dependency>
-        <dependency>
-            <groupId>com.github.gabert</groupId>
-            <artifactId>JpaProxyResolverApi</artifactId>
+            <artifactId>SessionResolverSpring</artifactId>
             <version>0.0.1-SNAPSHOT</version>
         </dependency>
         <dependency>

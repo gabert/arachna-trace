@@ -20,8 +20,13 @@
         </dependency>
         <dependency>
             <groupId>com.github.gabert</groupId>
-            <artifactId>ArachnaTraceRecordFormat</artifactId>
-            <version>${project.version}</version>
+            <artifactId>ArachnaTraceCodec</artifactId>
+            <version>${arachna.trace.shared.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.github.gabert</groupId>
+            <artifactId>ArachnaTraceRenderer</artifactId>
+            <version>${arachna.trace.shared.version}</version>
         </dependency>
         <dependency>
             <groupId>com.github.gabert</groupId>
@@ -30,18 +35,13 @@
         </dependency>
         <dependency>
             <groupId>com.github.gabert</groupId>
-            <artifactId>ArachnaTraceCodec</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.github.gabert</groupId>
             <artifactId>SessionResolverApi</artifactId>
-            <version>${project.version}</version>
+            <version>${arachna.trace.shared.version}</version>
         </dependency>
         <dependency>
             <groupId>com.github.gabert</groupId>
             <artifactId>JpaProxyResolverApi</artifactId>
-            <version>${project.version}</version>
+            <version>${arachna.trace.shared.version}</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>

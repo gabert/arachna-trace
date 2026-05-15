@@ -2,7 +2,7 @@ package com.github.gabert.arachna.trace.recorder.destination;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.gabert.arachna.trace.config.ConfigLoader;
-import com.github.gabert.arachna.trace.recorder.AgentRun;
+import com.github.gabert.arachna.trace.codec.AgentRun;
 
 import java.io.BufferedWriter;
 import java.io.IOException;

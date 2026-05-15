@@ -24,13 +24,14 @@ intake and the same HTTP query surface.
 
 ## Build
 
-The infra reactor consumes shared libraries (`ArachnaTraceRecordFormat`,
-`ArachnaTraceSerializer`) from the local Maven repository. The agent
-reactor must be built first so those libraries are available:
+The infra reactor consumes shared libraries (`ArachnaTraceCodec`,
+`ArachnaTraceRenderer`) from the local Maven repository. The
+`arachna-trace-shared/` reactor must be built first so those
+libraries are available:
 
 ```bash
-cd ../arachna-trace-agents/jvm && mvn install     # publishes shared libs to local m2
-cd ../../arachna-trace-infra   && mvn install     # builds collector / processor / query
+cd ../arachna-trace-shared     && mvn install     # publishes codec + renderer + SPI APIs
+cd ../arachna-trace-infra      && mvn install     # builds collector / processor / query
 ```
 
 The infra build and the demos build are independent of each other —

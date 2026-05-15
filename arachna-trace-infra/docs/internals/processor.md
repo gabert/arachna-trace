@@ -20,7 +20,7 @@ KafkaRecordConsumer.pollLoop()
   └─ processRecord(record)
        ├─ RecordRenderer.render(record.value())     # CBOR → JSON per TI/AR/AX/RE value
        ├─ RecordHashEnricher.enrich(rendered)       # walk JSON, inject __meta__
-       ├─ AgentRunMetadata.from(record.headers())   # X-Arachna-Trace-* → AgentRunMetadata
+       ├─ AgentRun.from(record.headers())   # X-Arachna-Trace-* → AgentRun
        └─ sink.accept(enriched, headerMetadata)
             └─ ClickHouseSink                       # buffered INSERT JSONEachRow
                  ├─ RecordParser.parse(...)         # pair MS↔ME by call_id → ParsedCall
@@ -65,8 +65,8 @@ then `consumer.close()` (closes the consumer and the sink).
 
 `extractAgentRun(record.headers())` lifts the seven
 `X-Arachna-Trace-*` Kafka headers (set by the collector) into an
-`AgentRunMetadata` record. A batch with a missing or unparseable
-`agent_run_id` header returns null `AgentRunMetadata`, and the
+`AgentRun` record. A batch with a missing or unparseable
+`agent_run_id` header returns null `AgentRun`, and the
 sink drops it with an error log — see
 [../spec/TRANSPORT.md](../spec/TRANSPORT.md) for the rationale.
 
@@ -165,12 +165,11 @@ ClickHouse isn't part of the loop — useful for testing the agent
 - `RecordProcessorServer.java` — entry point, wires the sink
 - `ProcessorConfig.java` — Kafka config + sink_type
 - `KafkaRecordConsumer.java` — poll loop, header extraction
-- `RecordSink.java` — `accept(Result, AgentRunMetadata)` interface
+- `RecordSink.java` — `accept(Result, AgentRun)` interface
 - `ClickHouseSink.java` — buffered HTTP inserts, periodic flush
 - `LoggingSink.java` — stdout sink, opt-in
 - `RecordParser.java` — UUID-keyed `MS`↔`ME` pairer with TTL
 - `ParsedCall.java` — value class output by the parser
-- `AgentRunMetadata.java` — record built from Kafka headers
 - `ObjectIdCollector.java` — walks hashed JSON for `object_ids[]`
 - `ScalarTokenCollector.java` — walks hashed JSON for
   `payload_tokens[]`
