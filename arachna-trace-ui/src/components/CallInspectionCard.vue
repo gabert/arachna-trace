@@ -15,6 +15,7 @@
 
 import { computed, inject, onBeforeUnmount, ref, watch } from 'vue';
 import CollapsiblePanel from './CollapsiblePanel.vue';
+import KindLegend from './KindLegend.vue';
 import PayloadViewer from './PayloadViewer.vue';
 import ExceptionChip from './ExceptionChip.vue';
 import ProgressSpinner from 'primevue/progressspinner';
@@ -97,6 +98,7 @@ onBeforeUnmount(() => {
 // Render in the order the values flow through the call: receiver
 // instance, arguments at entry, arguments at exit, return.
 const ORDER: PayloadKind[] = ['TI', 'AR', 'AX', 'RE'];
+
 const ordered = computed<PayloadRow[]>(() => {
   const m = new Map<PayloadKind, PayloadRow>();
   for (const p of payloads.value) m.set(p.kind, p);
@@ -176,6 +178,7 @@ useScrollIntoViewOnHighlight(rootEl, isHighlighted, callHighlight.tick, { runOnM
             @click.stop
             title="Drag to reorder">⋮⋮</span>
       <div class="cic-sig" :title="call.signature">{{ shortSig(call.signature) }}</div>
+      <KindLegend />
       <div class="cic-meta">
         <span class="cic-time">{{ fmtTime(call.ts_in) }}</span>
         <span class="cic-dur">{{ call.duration_ms }} ms</span>
@@ -346,6 +349,7 @@ useScrollIntoViewOnHighlight(rootEl, isHighlighted, callHighlight.tick, { runOnM
   min-width: 0;
 }
 .cic-meta { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+
 .cic-time { font-family: ui-monospace, monospace; color: var(--text-muted); font-size: 0.8rem; }
 .cic-dur  { font-family: ui-monospace, monospace; color: var(--text-secondary); font-size: 0.8rem; }
 /* The return-type pill (VALUE / VOID) was removed — silence on the

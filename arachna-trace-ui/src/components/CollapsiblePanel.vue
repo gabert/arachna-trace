@@ -52,7 +52,6 @@ function toggle(): void {
          role="button"
          tabindex="0"
          :aria-expanded="!isCollapsed"
-         :title="isCollapsed ? 'Expand' : 'Collapse'"
          @click="toggle"
          @keydown.enter.prevent="toggle"
          @keydown.space.prevent="toggle">

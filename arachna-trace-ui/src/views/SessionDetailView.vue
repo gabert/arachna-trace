@@ -451,7 +451,7 @@ watch(sessionIdRef, () => {
                                 @dragend="stack.onCardDragEnd" />
 
             <div v-if="!transientCard && !pinnedCalls.length" class="inspection-placeholder">
-              <p>Click <span class="inline-inspect-chip" aria-hidden="true">↗</span> on a call in the tree to open its TI / AR / AX / RE.</p>
+              <p>Click on a row to see values for the method.</p>
               <p class="hint">A new card replaces the previous one as you browse. Click <code>📌</code> on its header to keep it; pinned cards stack below and are drag-reorderable.</p>
             </div>
             </div>

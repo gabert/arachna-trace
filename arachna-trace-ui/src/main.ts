@@ -1,5 +1,6 @@
 import { createApp } from 'vue';
 import PrimeVue from 'primevue/config';
+import Tooltip from 'primevue/tooltip';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — @primeuix/themes ships ESM without bundled .d.ts at top level
 import Aura from '@primeuix/themes/aura';
@@ -15,4 +16,5 @@ app.use(router);
 app.use(PrimeVue, {
   theme: { preset: Aura, options: { darkModeSelector: '.app-dark' } }
 });
+app.directive('tooltip', Tooltip);
 app.mount('#app');
