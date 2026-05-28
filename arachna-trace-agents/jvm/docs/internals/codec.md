@@ -5,9 +5,9 @@ identity envelope. The wire-level contract -- field IDs, envelope shape,
 cycle-reference shape, truncation marker, identity guarantees -- lives
 in the spec:
 
-- [CBOR-ENVELOPE.md](../spec/CBOR-ENVELOPE.md) -- envelope shape and field IDs
-- [IDENTITY-MODEL.md](../spec/IDENTITY-MODEL.md) -- the cross-language identity contract
-- [HASHING.md](../spec/HASHING.md) -- the post-render hashing pass
+- [CBOR-ENVELOPE.md](../../../../spec/CBOR-ENVELOPE.md) -- envelope shape and field IDs
+- [IDENTITY-MODEL.md](../../../../spec/IDENTITY-MODEL.md) -- the cross-language identity contract
+- [HASHING.md](../../../../spec/HASHING.md) -- the post-render hashing pass
 
 This document covers only how the Java agent satisfies that contract.
 
@@ -15,7 +15,7 @@ This document covers only how the Java agent satisfies that contract.
 
 The agent assigns each captured live instance a stable positive `int64`
 ID, monotonically increasing, never reused -- the requirements of
-[CBOR-ENVELOPE.md §3.1](../spec/CBOR-ENVELOPE.md). The Java implementation:
+[CBOR-ENVELOPE.md §3.1](../../../../spec/CBOR-ENVELOPE.md). The Java implementation:
 
 - A `ConcurrentHashMap<IdentityWeakRef, Long>` keyed by an
   identity-equality wrapper around the live object.
@@ -30,7 +30,7 @@ ID, monotonically increasing, never reused -- the requirements of
 not unique across distinct live objects. Hence the wrapper.
 
 This is the natural weak-reference path called out in
-[IDENTITY-MODEL.md §2](../spec/IDENTITY-MODEL.md). Lookup is amortized
+[IDENTITY-MODEL.md §2](../../../../spec/IDENTITY-MODEL.md). Lookup is amortized
 O(1); memory cost is proportional to live tracked objects only.
 
 ## EnvelopeSerializer (Jackson hook)
@@ -52,7 +52,7 @@ which:
 
 `EnvelopeModifier` decides at registration time whether a given Java
 type should be envelope-wrapped or written as a bare CBOR primitive.
-The rule per [CBOR-ENVELOPE.md §5](../spec/CBOR-ENVELOPE.md): wrap
+The rule per [CBOR-ENVELOPE.md §5](../../../../spec/CBOR-ENVELOPE.md): wrap
 anything with mutable state and identity (POJOs, Maps, Collections,
 arrays); leave primitives, Strings, boxed primitives, and enums bare.
 
@@ -85,7 +85,7 @@ The codec exposes the decode and the render as two separate calls:
   the integer field IDs.
 - `Codec.toReadableJson(Object decoded) -> String` — humanizes that
   decoded tree to JSON text. Integer field IDs are renamed per
-  [HASHING.md §3](../spec/HASHING.md): `1 -> object_id`, `2 -> class`,
+  [HASHING.md §3](../../../../spec/HASHING.md): `1 -> object_id`, `2 -> class`,
   `3 -> value`, `4 -> ref_id`, `5 -> cycle_ref`. The `VALUE` field is
   flattened — a CBOR map becomes sibling keys; **a CBOR array becomes
   a sibling key `"items"`**; a scalar becomes a sibling key `"value"`.
@@ -121,7 +121,7 @@ readable JSON via `Codec.toReadableJson()`:
 `"hello"` is bare (String -- not envelope-wrapped). `myPerson` is
 envelope-wrapped. The outer `Object[]` is also envelope-wrapped --
 arrays carry identity per the ARGUMENTS shape in
-[CBOR-ENVELOPE.md §6](../spec/CBOR-ENVELOPE.md).
+[CBOR-ENVELOPE.md §6](../../../../spec/CBOR-ENVELOPE.md).
 
 ## Key source files
 

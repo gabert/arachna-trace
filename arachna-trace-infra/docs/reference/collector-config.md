@@ -60,7 +60,7 @@ kafka_bootstrap_servers=broker1:9092,broker2:9092
 Kafka topic name for raw trace records. Each HTTP POST becomes
 one Kafka record on this topic; agent-run-identity headers from
 the HTTP request are copied to the Kafka record's headers
-verbatim. See [../spec/TRANSPORT.md](../spec/TRANSPORT.md).
+verbatim. See [../spec/TRANSPORT.md](../../../spec/TRANSPORT.md).
 
 Default: `arachna-trace-records`.
 

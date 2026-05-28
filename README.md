@@ -282,7 +282,7 @@ supplies *what* happened; the other reasons about *why*.
   when the target was compiled with `-parameters` *or* with debug info
   (`-g`, the Maven / Gradle default); falls back to `arg0..argN` for
   stripped jars. See
-  [Argument names](arachna-trace-agents/docs/argument-names.md).
+  [Argument names](arachna-trace-agents/jvm/docs/reference/argument-names.md).
 
 - **Object identity tracking.** Every object instance receives a stable unique
   ID. When the same `Order` passes through `validate`, `calculateTax`, and
@@ -312,6 +312,39 @@ supplies *what* happened; the other reasons about *why*.
   to keep large objects from dominating traces.
 
 - **Zero application dependencies.** Self-contained fat JAR.
+
+## Two modes of use
+
+Arachna Trace is designed to work in two modes. Both use the same agent
+and produce the same trace data; the difference is who reads them.
+
+**Human mode.** A developer attaches the agent, reproduces the
+scenario, and reads the trace directly. In file mode, the `.dft` files
+are structured text — method signatures, argument values, return
+values, timestamps — readable in any editor. In HTTP mode, the same
+data is queryable from ClickHouse. Either way, a human reads the
+trace; no external system is involved.
+
+This mode matters for two reasons. First, data sensitivity: when a
+trace contains values that must not leave a controlled environment
+(financial transactions, classified data, patient records,
+cryptographic material), only verified humans access the data. No
+external system, including LLMs, ever sees it. Second, cost:
+LLM-based analysis of detailed traces consumes tokens proportional to
+trace size; for focused debugging, a developer reading a structured
+trace is often the faster path.
+
+**AI-assisted mode.** The same trace data can be fed to an LLM for
+automated analysis. In HTTP mode, traces land in ClickHouse — an LLM
+agent with SQL access can query specific calls, find mutations,
+follow an `object_id` across a request, and surface unexpected
+control flow. Useful for verifying AI-generated code (run the
+feature, ask the agent to confirm the data flowed correctly) or for
+large traces where manual reading is impractical.
+
+Both modes work with either destination. File mode keeps everything
+local. HTTP mode centralises traces but access is still controlled —
+nothing reaches an LLM unless you choose to send it.
 
 ## What Arachna Trace is NOT
 

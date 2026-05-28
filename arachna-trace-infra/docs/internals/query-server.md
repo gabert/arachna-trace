@@ -8,7 +8,7 @@ no SQL ever crosses the network from the browser.
 For the producer side that lands data into ClickHouse, see
 [record-format.md](record-format.md) and
 [processor.md](processor.md). For the UI that consumes this API,
-see [ui.md](ui.md).
+see [ui.md](../../../arachna-trace-ui/docs/internals/ui.md).
 
 ## Why SQL stays on the server
 
@@ -85,7 +85,7 @@ All return `application/json` and accept only `GET` (plus
 | `GET /api/analysis/mutations?session_id=...&request_id=...` | Within-call argument mutations (AR vs AX own_hash diff), grouped per `(call, class, changed-field-set)` |
 | `GET /api/analysis/value-search?session_id=...[&request_id=...]&value=...[&mode=substring]` | Every appearance of a scalar value in a session/request (bloom-filter probe on `payloads.payload_tokens`) |
 
-See [../reference/bug-finding.md](../reference/bug-finding.md)
+See [bug-finding.md](../../../arachna-trace-ui/docs/internals/bug-finding.md)
 for the algorithms behind mutations and value search.
 
 ### Operational
@@ -143,7 +143,7 @@ origin for production.
   a field-level diff. Used by `AnalysisApi.mutations` to compute
   the AR↔AX delta per `(call, object_id)` server-side. Same
   algorithm as the client-side diff walker described in
-  [../reference/bug-finding.md](../reference/bug-finding.md), so
+  [bug-finding.md](../../../arachna-trace-ui/docs/internals/bug-finding.md), so
   the user sees identical results whether the UI computes the
   diff or the server pre-computed it.
 

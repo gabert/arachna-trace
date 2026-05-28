@@ -342,7 +342,7 @@ described above flows through the ones marked **(nav)**.
 | `components/CallInspectionCard.vue` | Pinned/transient inspection of one call. Sections for TI/AR/AX/RE with chips (`ExceptionChip`, mutation count). Has a ↙ "reveal in tree" button that calls back into `CallTreePanel.highlightCall`. |
 | `components/WatchPanel.vue` | **(nav)** Pinned watches over time. Two-column hash display (deep / own_hash); marks the row whose address matches the global highlight. |
 | `components/WatchItem.vue` | One pinned-watch row in `WatchPanel`. Renders the appearance list, hash transitions, and the row-click → `goto` wiring. |
-| `components/MutationsPanel.vue` | Within-request mutations view. AR↔AX own_hash diff, grouped per `(call, class, changed-field-set)`. See [../reference/bug-finding.md](../reference/bug-finding.md). |
+| `components/MutationsPanel.vue` | Within-request mutations view. AR↔AX own_hash diff, grouped per `(call, class, changed-field-set)`. See [bug-finding.md](bug-finding.md). |
 | `components/OriginPanel.vue` | Field provenance / origin chain. Source / propagation / next-mutation cards per appearance. |
 | `components/SearchPanel.vue` | Value search across the loaded session/request. Calls `/api/analysis/value-search`; click a hit → `goto` jumps to the JsonTree node. |
 | `components/DiffEntries.vue` | Field-level diff rows used by `MutationsPanel` and `OriginPanel`. Shared renderer. |

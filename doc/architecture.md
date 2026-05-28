@@ -2,9 +2,9 @@
 
 This document maps the full Arachna Trace pipeline: which components produce
 what, what they hand off to whom, and the contracts that hold them
-together. For *what Arachna Trace is and why* you'd reach for it, start at
-[the overview](README.md) or the
-[parent README](../README.md). This doc assumes you've been there.
+together. For *what Arachna Trace is and why* you'd reach for it, start
+at the [repo root README](../README.md). This doc assumes you've been
+there.
 
 > **Two architecture docs.** This one (`doc/architecture.md`) is the
 > system-wide view — language-agnostic, the whole agent →
@@ -365,8 +365,8 @@ brief note on why it is the way it is.
 
 ## Where to go next
 
-- **Evaluating Arachna Trace.** [overview](README.md) for context and
-  the comparison table.
+- **Evaluating Arachna Trace.** the [repo root README](../README.md)
+  for context and the comparison table.
   [getting-started](../arachna-trace-agents/jvm/docs/getting-started.md) for
   build + attach.
 - **Integrating a non-Java agent.**

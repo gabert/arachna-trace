@@ -6,7 +6,7 @@ It sits between the agent (which produces records) and the outside world
 (files, network, etc.).
 
 The module operates purely on `byte[]` records whose format is defined in
-[WIRE-FORMAT.md](../spec/WIRE-FORMAT.md). It has no knowledge of bytecode
+[WIRE-FORMAT.md](../../../../spec/WIRE-FORMAT.md). It has no knowledge of bytecode
 instrumentation.
 
 ## Data flow

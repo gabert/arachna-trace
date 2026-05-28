@@ -9,7 +9,7 @@ ClickHouse.
 For the agent's wire frames that arrive here, see
 [record-format.md](record-format.md). For the high-level
 pipeline shape (agent → CH), see
-[../architecture.md](../architecture.md).
+[../../../doc/architecture.md](../../../doc/architecture.md).
 
 ## Pipeline shape
 
@@ -68,7 +68,7 @@ then `consumer.close()` (closes the consumer and the sink).
 `AgentRun` record. A batch with a missing or unparseable
 `agent_run_id` header returns null `AgentRun`, and the
 sink drops it with an error log — see
-[../spec/TRANSPORT.md](../spec/TRANSPORT.md) for the rationale.
+[../spec/TRANSPORT.md](../../../spec/TRANSPORT.md) for the rationale.
 
 ## Why stateful UUID-keyed pairing
 
@@ -128,7 +128,7 @@ JSONEachRow` format.
   the `requests_mv` materialized view, which folds every
   `calls`-insert into the rollup. This eliminated the in-memory
   per-request aggregator (and the async-after-root undercount it
-  caused — see bug B-03 in [../process/KNOWN_BUGS.md](../process/KNOWN_BUGS.md)).
+  caused — see bug B-03 in [../process/KNOWN_BUGS.md](../../../arachna-trace-agents/docs/process/KNOWN_BUGS.md)).
 - **Session deduplication**: `seenSessions` is a
   `Map<SessionKey, admittedAtMs>` with TTL eviction. A re-emit of
   an evicted session produces one duplicate `sessions` row, which

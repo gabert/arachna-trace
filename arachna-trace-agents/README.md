@@ -24,12 +24,12 @@ implement regardless of source language:
 
 - [Concepts and vocabulary](docs/concepts.md) — `object_id`, `own_hash`, `call_id`, `agent_run_id`, …
 - [Mutation detection](docs/mutation-detection.md) — AR/AX argument-at-exit pattern
-- [Request ID propagation](docs/request-id.md) — cross-thread correlation
+- [Request ID propagation](jvm/docs/request-id.md) — cross-thread correlation (JVM writeup; other agents will need their own)
 - [Truncation contract](docs/truncation.md) — size cap behaviour
 - [Serialize modes](docs/serialize-modes.md) — full vs structural-only
-- [Argument names](docs/argument-names.md) — keyed argument capture
+- [Argument names](jvm/docs/reference/argument-names.md) — keyed argument capture (JVM writeup; other agents will need their own)
 - [Reading a trace](docs/reading-a-trace.md) — interpreting the rendered output any agent produces
-- [Bug-finding workflow](docs/bug-finding.md) — forensic workflow against any conformant trace
+- [Bug-finding workflow](../arachna-trace-ui/docs/internals/bug-finding.md) — forensic workflow against any conformant trace
 - [Process docs](docs/process/) — `KNOWN_BUGS.md`, `ROADMAP.md` (project-wide)
 
 ## Implementation-specific docs

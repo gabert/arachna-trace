@@ -111,7 +111,7 @@ call's UUID and its enclosing call's UUID — calls are paired by `CI`,
 not by stack ordering, so a stream that interleaves threads still parses
 correctly.
 
-See [Trace Format](spec/TAGS.md) for the complete format specification.
+See [Trace Format](../../../spec/TAGS.md) for the complete format specification.
 
 ## Run the Spring Boot demo
 

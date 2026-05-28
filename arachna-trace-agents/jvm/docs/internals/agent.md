@@ -4,7 +4,7 @@ The agent module is the entry point of Arachna Trace. It is a Java agent that
 attaches to a target application via `-javaagent` and instruments
 selected classes at load time using ByteBuddy.
 
-The agent produces binary records (see [WIRE-FORMAT.md](../spec/WIRE-FORMAT.md))
+The agent produces binary records (see [WIRE-FORMAT.md](../../../../spec/WIRE-FORMAT.md))
 and offers them to an in-memory buffer. A background drainer thread delivers
 records to a configured destination (see [serializer.md](serializer.md)).
 
@@ -129,7 +129,7 @@ single behaviour: if `max_value_size > 0` and the encoded payload
 exceeds it, replace the payload with a fixed-shape truncation marker
 via a second `Codec.encode()` call. The agent always pays the cost of
 the original encoding — truncation saves I/O and storage, not CPU. See
-[Truncation](../reference/truncation.md).
+[Truncation](../../../docs/truncation.md).
 
 ## SpiBootstrap
 

@@ -229,7 +229,7 @@ Without `own_hash`, a row reader inspecting an `Author` whose
 `books[i].isbn` was rewritten by another method sees the `Author`
 row's `hash` shift — even though the author itself didn't change.
 `own_hash` cleanly separates the two questions. See
-[../reference/bug-finding.md](../reference/bug-finding.md) for
+[bug-finding.md](../arachna-trace-ui/docs/internals/bug-finding.md) for
 the user-facing workflow that uses it.
 
 ### 7.2 Algorithm
@@ -308,7 +308,7 @@ envelopes it references — never the children's content.
   non-root envelope, so both traversal directions produce the
   same `own_hash`. (This is the mitigation for the cyclic-graph
   false positives catalogued in
-  [process/KNOWN_BUGS.md → D-09](../process/KNOWN_BUGS.md).)
+  [process/KNOWN_BUGS.md → D-09](../arachna-trace-agents/docs/process/KNOWN_BUGS.md).)
 - The envelope's `object_id` or `class` is renumbered between
   agent runs (those keys are stripped from the own-hash input
   at root, per §7.2 step 1).
@@ -325,7 +325,7 @@ envelope's problem.
   flip on `own_hash` transitions, not on `hash` drift caused by
   child mutations.
 - **Cycle-direction invariance** — sidesteps the false positives
-  catalogued in [process/KNOWN_BUGS.md → D-09](../process/KNOWN_BUGS.md).
+  catalogued in [process/KNOWN_BUGS.md → D-09](../arachna-trace-agents/docs/process/KNOWN_BUGS.md).
 - **Indexed cross-call lookup** — `payloads.own_hashes` is a
   `LowCardinality(String)` array column with a bloom-filter
   index, so `WHERE has(own_hashes, '<hex>')` finds every call
@@ -499,8 +499,8 @@ Mutate Book's `isbn` to `"9780620"`:
    fields* didn't move. That's the Merkle propagation — the
    reason the UI also exposes `own_hash` (a sibling hash that
    ignores child content; see
-   [../reference/concepts.md](../reference/concepts.md) and
-   [../reference/bug-finding.md](../reference/bug-finding.md)).
+   [../reference/concepts.md](../arachna-trace-agents/docs/concepts.md) and
+   [bug-finding.md](../arachna-trace-ui/docs/internals/bug-finding.md)).
 
 ### A note on illustrative vs real bytes
 

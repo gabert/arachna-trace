@@ -166,7 +166,7 @@ envelope-wrapped object.
 > **Known bug.** The shape described in this section drops the
 > envelope wrapper, which kills identity tracking, mutation
 > detection, and object-tree walking at the truncated node — see
-> [process/KNOWN_BUGS.md → D-10](../process/KNOWN_BUGS.md). The
+> [process/KNOWN_BUGS.md → D-10](../arachna-trace-agents/docs/process/KNOWN_BUGS.md). The
 > current shape is normative for wire-format 1.4; a future
 > minor or major bump will envelope-wrap the marker (or replace
 > it with per-field truncation). Until then, set

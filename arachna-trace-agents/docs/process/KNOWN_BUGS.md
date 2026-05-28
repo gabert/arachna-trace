@@ -496,7 +496,7 @@ transitions were honest signal; two were cycle-direction noise.
 **Status:** OPEN. Severity High — collides with core product features.
 **Where:** `ValueEncoder.truncationMarker(int)` (`core/agent`) +
 the marker shape defined in
-[../spec/CBOR-ENVELOPE.md §5b](../spec/CBOR-ENVELOPE.md).
+[../spec/CBOR-ENVELOPE.md §5b](../../../spec/CBOR-ENVELOPE.md).
 
 **Trigger:** Any captured value (`TI` / `AR` / `AX` / `RE` /
 `EXCEPTION`) whose CBOR-encoded size exceeds `max_value_size`
@@ -532,7 +532,7 @@ clipped value.
 
 **Mitigation today:** Set `max_value_size=0` (the agent
 default). Pay storage / network for accurate identity tracking.
-Documented in [CBOR-ENVELOPE.md §5b](../spec/CBOR-ENVELOPE.md)
+Documented in [CBOR-ENVELOPE.md §5b](../../../spec/CBOR-ENVELOPE.md)
 as "known false-positive" — that framing was wrong; this is a
 bug, not an accepted trade-off.
 

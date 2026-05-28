@@ -7,12 +7,12 @@ The Java agent's runtime knobs. Read via `-javaagent` from
 Arachna Trace has four components, each with its own config:
 
 - **Agent** — this doc.
-- **Collector server** — [collector-config.md](collector-config.md).
-- **Processor server** — [processor-config.md](processor-config.md).
-- **Query server** — [query-server-config.md](query-server-config.md).
+- **Collector server** — [collector-config.md](../../../../arachna-trace-infra/docs/reference/collector-config.md).
+- **Processor server** — [processor-config.md](../../../../arachna-trace-infra/docs/reference/processor-config.md).
+- **Query server** — [query-server-config.md](../../../../arachna-trace-infra/docs/reference/query-server-config.md).
 
 For the cross-component size-limit alignment contract, see
-[deployment-modes.md](deployment-modes.md#size-limits-across-the-pipeline--alignment-contract).
+[deployment-modes.md](../../../../arachna-trace-infra/docs/reference/deployment-modes.md#size-limits-across-the-pipeline--alignment-contract).
 
 Config is passed to the agent via the `-javaagent` flag:
 
@@ -86,7 +86,7 @@ Controls serialization of arguments, return values, and exceptions.
 When `false`, only structural records are emitted (MS, TN, RI, TS, CL, TE).
 Use this for dead code detection.
 
-See [Serialize Modes](serialize-modes.md).
+See [Serialize Modes](../../../docs/serialize-modes.md).
 
 ```properties
 serialize_values=true
@@ -124,7 +124,7 @@ a truncation marker:
 
 Recommended starting points: `8192` (8 KB) or `32768` (32 KB).
 
-See [Truncation](truncation.md).
+See [Truncation](../../../docs/truncation.md).
 
 ```properties
 max_value_size=0
@@ -153,7 +153,7 @@ setting — the processor uses them to pair MS↔ME and link the call
 tree without stack reconstruction. Filtering them out only
 suppresses them from the rendered `.dft` text.
 
-See [Trace Format](../spec/TAGS.md) for tag descriptions.
+See [Trace Format](../../../../spec/TAGS.md) for tag descriptions.
 
 ```properties
 # Default — matches AgentConfig.DEFAULT_EMIT_TAGS:

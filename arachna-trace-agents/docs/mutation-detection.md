@@ -59,7 +59,7 @@ them to find the culprit.
 
 In the HTTP pipeline, the server-side `RecordHashEnricher` walks every
 captured envelope and injects a `__meta__` block carrying a Merkle
-content hash (see [HASHING.md](../spec/HASHING.md) for the construction).
+content hash (see [HASHING.md](../../spec/HASHING.md) for the construction).
 Each `payloads` row in ClickHouse therefore carries a `root_hash`
 column.
 
@@ -106,7 +106,7 @@ Cycle references are handled with back-references:
 }
 ```
 
-See [CBOR Codec](../internals/codec.md) for the full envelope specification.
+See [CBOR Codec](../jvm/docs/internals/codec.md) for the full envelope specification.
 
 ## Limitations
 

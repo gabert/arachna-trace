@@ -12,9 +12,9 @@ source language that emits conformant bytes.
 > internal data flow — the only language-specific piece. For the
 > system-wide pipeline view (agent → collector → Kafka →
 > processor → ClickHouse → UI, language-agnostic), see
-> [`doc/architecture.md`](../../doc/architecture.md) at the repo
+> [`doc/architecture.md`](../../../doc/architecture.md) at the repo
 > root. For solution-level positioning, see
-> [`doc/README.md`](../../doc/).
+> the [repo root README](../../../README.md).
 
 ## Data flow
 
@@ -154,7 +154,7 @@ bottom to keep that cost minimal.
 
 For the system-wide picture (component roles, what's stable vs
 swappable, what Arachna Trace is NOT), see
-[../../doc/architecture.md](../../doc/architecture.md).
+[../../../doc/architecture.md](../../../doc/architecture.md).
 
 ## Module structure
 

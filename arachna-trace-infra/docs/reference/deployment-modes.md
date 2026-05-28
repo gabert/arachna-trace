@@ -13,7 +13,7 @@ different audience.
 | **Distributed** | Kafka + ClickHouse | many (multi-host prod ingress) | TB-scale, replicated | Multi-service production, audit-shaped use, multi-tenant deployments |
 
 Only the distributed mode currently ships. The local and embedded modes
-are well-defined extension points; see [Contributing](../CONTRIBUTING.md)
+are well-defined extension points; see [Contributing](../../../CONTRIBUTING.md)
 if you want to build one.
 
 ## The agent is the substrate
@@ -27,7 +27,7 @@ instrumentation agent. It writes one of two destinations:
 - `destination=http` — POST batched binary records to a collector.
 
 Both `.dft` files and HTTP batches encode the same wire format (see
-[spec/SPEC.md](spec/SPEC.md)). Any deployment mode is a question of
+[spec/SPEC.md](../../../spec/SPEC.md)). Any deployment mode is a question of
 *what reads that output*, not what produces it.
 
 ## Distributed mode (current)
@@ -56,7 +56,7 @@ Used as the production reference today. Shaped around:
 
 Today the distributed mode is the only one shipped, so any deployment that
 requires multi-host capture or replicated storage uses it. See
-[architecture.md](architecture.md) for the data flow in detail.
+[architecture.md](../../../doc/architecture.md) for the data flow in detail.
 
 ## Embedded mode (DuckDB) — extension point
 
@@ -221,7 +221,7 @@ deployment mode**. These three fields never carry user payload —
 the spec routes large blobs through CBOR-payload records. In
 practice they sit well under 1 KiB; producers that exceed the
 limit here have an upstream bug. See
-[../spec/WIRE-FORMAT.md §9](../spec/WIRE-FORMAT.md).
+[../spec/WIRE-FORMAT.md §9](../../../spec/WIRE-FORMAT.md).
 
 ### Why this matters across components
 
@@ -255,7 +255,7 @@ laptop" to "audit substrate for a regulated organization."
 ## Extension points open for contribution
 
 Both lighter modes are well-scoped projects. See
-[../CONTRIBUTING.md](../CONTRIBUTING.md) for what already exists, what
+[../CONTRIBUTING.md](../../../CONTRIBUTING.md) for what already exists, what
 needs to be built, and how the seams are designed.
 
 The cloud / distributed mode is the current focus of the maintainers.

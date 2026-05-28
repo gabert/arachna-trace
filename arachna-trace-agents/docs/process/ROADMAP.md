@@ -147,7 +147,7 @@ priority.
   silent batch loss from the user's perspective. The contract
   (every downstream layer's cap must be ≥ the previous layer's
   output) is documented at
-  [../reference/deployment-modes.md#size-limits-across-the-pipeline--alignment-contract](../reference/deployment-modes.md#size-limits-across-the-pipeline--alignment-contract).
+  [../reference/deployment-modes.md#size-limits-across-the-pipeline--alignment-contract](../../../arachna-trace-infra/docs/reference/deployment-modes.md#size-limits-across-the-pipeline--alignment-contract).
 
   Proposed fix (all four together):
   - `AgentConfig.maxValueSize` default `0` → `32768` (32 KiB,
@@ -236,7 +236,7 @@ priority.
     visibility, retransform conflicts).
 
   Operational notes that should land in
-  [`reference/agent-config.md`](../reference/agent-config.md) when this ships:
+  [`reference/agent-config.md`](../../jvm/docs/reference/agent-config.md) when this ships:
   - The agent runs **inside the target JVM** after attach — same
     process, same network stack, same filesystem. The attacher
     is just a one-shot "load this JAR" delivery mechanism.

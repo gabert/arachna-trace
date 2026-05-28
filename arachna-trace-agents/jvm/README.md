@@ -110,7 +110,7 @@ Generic any-agent docs in [../docs/](../docs/):
 
 - [Concepts](../docs/concepts.md) -- terminology
 - [Mutation Detection](../docs/mutation-detection.md)
-- [Request ID propagation](../docs/request-id.md)
+- [Request ID propagation](docs/request-id.md)
 - [Truncation contract](../docs/truncation.md)
 - [Serialize modes](../docs/serialize-modes.md)
 

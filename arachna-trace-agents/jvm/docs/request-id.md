@@ -105,4 +105,4 @@ Key source locations:
 
 For details on how cross-thread propagation works at the JVM level
 (bootstrap classloader injection, module system access), see
-[Executor Instrumentation](../internals/executor-instrumentation.md).
+[Executor Instrumentation](internals/executor-instrumentation.md).

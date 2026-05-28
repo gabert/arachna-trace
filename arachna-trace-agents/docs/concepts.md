@@ -27,8 +27,8 @@ Per-method-invocation UUID. The producer (agent) generates one
 fresh UUID per `recordEntry`; the same UUID rides on both `MS`
 (start) and `ME` (end). The processor pairs `MS`↔`ME` by
 `call_id`, not by stack ordering — see
-[bug-finding.md](bug-finding.md) and
-[../internals/processor.md](../internals/processor.md). Wire
+[bug-finding.md](../../arachna-trace-ui/docs/internals/bug-finding.md) and
+[../../arachna-trace-infra/docs/internals/processor.md](../../arachna-trace-infra/docs/internals/processor.md). Wire
 tag: **`CI`**.
 
 ### `parent_call_id`
@@ -42,7 +42,7 @@ Per-JVM-run UUID. Disambiguates traces from concurrent or
 sequential JVM runs that may share a `session_id` (e.g.
 config-resolver users). Travels on the **transport layer** —
 HTTP headers, Kafka headers, file sidecar — never inside trace
-records. See [../spec/TRANSPORT.md](../spec/TRANSPORT.md).
+records. See [../../spec/TRANSPORT.md](../../spec/TRANSPORT.md).
 
 ### `session_id`
 
@@ -58,8 +58,8 @@ multiple sessions can be live in one JVM concurrently. Wire tag:
 Groups all method calls that belong to one request, including
 async work submitted to instrumented executors. Propagated
 across `ThreadPoolExecutor` and `ForkJoinPool` boundaries — see
-[request-id.md](request-id.md) and
-[../internals/executor-instrumentation.md](../internals/executor-instrumentation.md).
+[request-id.md](../jvm/docs/request-id.md) and
+[../jvm/docs/internals/executor-instrumentation.md](../jvm/docs/internals/executor-instrumentation.md).
 Wire tag: **`RI`**.
 
 ---
@@ -82,7 +82,7 @@ Invariant under cycle-entry direction and sibling-envelope
 mutations. The right shape for **flat row inspection** and the
 detection predicate behind the Mutations panel. Lives in
 `__meta__.own_hash` and `payloads.own_hashes`. See
-[bug-finding.md](bug-finding.md) for the algorithm and why both
+[bug-finding.md](../../arachna-trace-ui/docs/internals/bug-finding.md) for the algorithm and why both
 hashes coexist.
 
 ### `__meta__`
@@ -156,10 +156,10 @@ The binary record types the agent emits (defined in
 | `0x0A` | `SEQUENCE` | `SQ` ordinal for the call |
 
 The rendered tag-line view (the format you see in `.dft` files)
-is in [../spec/TAGS.md](../spec/TAGS.md); the binary frame
-layout is in [../spec/WIRE-FORMAT.md](../spec/WIRE-FORMAT.md);
+is in [../../spec/TAGS.md](../../spec/TAGS.md); the binary frame
+layout is in [../../spec/WIRE-FORMAT.md](../../spec/WIRE-FORMAT.md);
 the Java implementation is in
-[../internals/record-format.md](../internals/record-format.md).
+[../../arachna-trace-infra/docs/internals/record-format.md](../../arachna-trace-infra/docs/internals/record-format.md).
 
 ---
 
@@ -251,7 +251,7 @@ are always excluded to prevent recursion.
 Comma-separated list of trace tags the agent emits. Filters
 both what gets serialized and what appears in `.dft`. `MS` is
 forced; everything else is opt-in or opt-out. See
-[agent-config.md](agent-config.md).
+[agent-config.md](../jvm/docs/reference/agent-config.md).
 
 ### SPIs
 
@@ -259,7 +259,7 @@ Pluggable extension points loaded via `ServiceLoader`:
 
 - **`SessionIdResolver`** — supplies `session_id` per call.
   Built-in `config`, demo-shipped `spring-session`. See
-  [session-resolver.md](session-resolver.md).
+  [session-resolver.md](../jvm/docs/reference/session-resolver.md).
 - **`JpaProxyResolver`** — unwraps framework proxies before
   serialization. Built-in `hibernate`. See
-  [jpa-proxy-resolver.md](jpa-proxy-resolver.md).
+  [jpa-proxy-resolver.md](../jvm/docs/reference/jpa-proxy-resolver.md).

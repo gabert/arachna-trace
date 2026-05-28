@@ -15,7 +15,7 @@ in the processor (see [processor.md](processor.md)).
 
 For the language-neutral wire-format *contract* (what a non-Java
 agent would have to produce), see
-[../spec/WIRE-FORMAT.md](../spec/WIRE-FORMAT.md). This doc is the
+[../spec/WIRE-FORMAT.md](../../../spec/WIRE-FORMAT.md). This doc is the
 **Java implementation** of that contract.
 
 ## Binary frame layout
@@ -90,7 +90,7 @@ recordWriter.sequence(callId, seq);
 Each call returns `byte[]` — a complete framed record ready for a
 destination. `RecordBuffer` (in `core/serializer`) queues them;
 `RecordDrainer` polls and hands them to the configured
-destination. See [serializer.md](serializer.md) for the agent-side
+destination. See [serializer.md](../../../arachna-trace-agents/jvm/docs/internals/serializer.md) for the agent-side
 pipeline.
 
 ## Consumer side (collector)
@@ -154,7 +154,7 @@ This means agent-run attribution survives in-flight: a Kafka
 batch always carries its producer identity on its own headers, so
 the processor can attribute every record without depending on
 any "agent header" frame inside the body. See
-[../spec/TRANSPORT.md](../spec/TRANSPORT.md) for the normative
+[../spec/TRANSPORT.md](../../../spec/TRANSPORT.md) for the normative
 contract.
 
 ## File destination (alternative consumer)
@@ -167,7 +167,7 @@ the file destination renders the frames to text via
 HTTP destination forwards the binary bytes unchanged for the
 collector to relay.
 
-See [serializer.md](serializer.md) for the destination interface.
+See [serializer.md](../../../arachna-trace-agents/jvm/docs/internals/serializer.md) for the destination interface.
 
 ## Source files
 
