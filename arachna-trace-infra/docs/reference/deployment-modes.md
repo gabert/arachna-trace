@@ -10,7 +10,7 @@ different audience.
 |---|---|---|---|---|
 | **Local** | in-memory `Map` | 1 (one JVM, file tail) | one developer's session | Solo dev, demo, plugin |
 | **Embedded** | DuckDB file | 1 (file tail or single HTTP intake) | one team, GB-scale, persistent | Single-app team, audit-lite |
-| **Distributed** | Kafka + ClickHouse | many (multi-host prod ingress) | TB-scale, replicated | Multi-service prod, regulated audit, AI-era observability, SaaS |
+| **Distributed** | Kafka + ClickHouse | many (multi-host prod ingress) | TB-scale, replicated | Multi-service production, audit-shaped use, multi-tenant deployments |
 
 Only the distributed mode currently ships. The local and embedded modes
 are well-defined extension points; see [Contributing](../CONTRIBUTING.md)
@@ -40,22 +40,22 @@ agent --HTTP--> collector --Kafka--> processor --HTTP--> ClickHouse
                                                           arachna-trace-ui
 ```
 
-Production-grade. Designed for:
+Used as the production reference today. Shaped around:
 
 - **Multi-host capture.** N agents in N pods all post to one collector.
 - **Burst absorption.** Kafka decouples agent throughput from store
-  ingest. A slow ClickHouse never back-pressures the application's hot
+  ingest. A slow ClickHouse does not back-pressure the application's hot
   path.
 - **Replicated, retention-policied storage.** ClickHouse handles TB-scale
-  data with multi-year retention and TTL. Compliance-grade.
-- **Indexed queries at scale.** `payload_tokens` and `object_ids` bloom
-  filters return value/identity searches in seconds at billions of rows.
+  data with multi-year retention and TTL.
+- **Indexed queries at scale.** `payload_tokens` and `object_ids`
+  bloom-filter indexes turn value and identity lookups into indexed
+  probes rather than scans over JSON text.
 - **Multi-consumer fan-out.** Audit + analytics + alerting + LLM agents
   can all read the same Kafka topic without contending.
 
-This is the only mode that satisfies regulated-industry audit
-requirements, multi-service production debugging, AI-era observability
-at fleet scale, and the SaaS path. See
+Today the distributed mode is the only one shipped, so any deployment that
+requires multi-host capture or replicated storage uses it. See
 [architecture.md](architecture.md) for the data flow in detail.
 
 ## Embedded mode (DuckDB) — extension point
@@ -70,8 +70,8 @@ agent --file--> .dft files --tail--> RecordParser --insert--> DuckDB file
 
 DuckDB is an embedded analytical SQL engine: columnar, vectorized,
 supports the same analytical queries ClickHouse does, persists to a
-single file, runs in-process. For analytical queries over GB-scale
-trace data, it is "ClickHouse without the cluster."
+single file, runs in-process. It runs the same analytical queries
+in-process without a separate server.
 
 Suited to:
 

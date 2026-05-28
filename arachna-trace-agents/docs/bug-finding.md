@@ -32,15 +32,15 @@ walk. Both flow through `payload_json` as `__meta__.hash` and
 
 The Merkle `hash` is the right shape for **tree drilling** — "an
 Order changed somewhere; walk down comparing hashes until I find
-the leaf that moved". It is the **wrong** shape for **flat row
-inspection** — "did *this* AuthorEntity's own state move at this
+the leaf that moved". It is not the right shape for **flat row
+inspection** — "did this AuthorEntity's own state move at this
 call?". Without `own_hash`, an `Author` whose `books[i].isbn` is
 rewritten by another method registers as a hash drift on the
 `Author` row, even though the author itself didn't change.
 
-Conversely the own-state hash answers "did *this* object's own
-data change" and is invariant under cycle-entry direction (see
-**D-09** in `KNOWN_BUGS.md`) and sibling envelope mutations.
+The own-state hash answers "did this object's own data change" and
+is invariant under cycle-entry direction (see **D-09** in
+`KNOWN_BUGS.md`) and sibling envelope mutations.
 
 ### Algorithm — `own_hash`
 
@@ -91,20 +91,18 @@ normalizeIsbns ⏵ BookEntity #11
 ```
 
 Click any row → jumps to that call in the left pane (FrameCard
-expanded, AR + AX visible) for full context. The diff *is* the
+expanded, AR + AX visible) for full context. The diff is the
 discovery; the click is for context.
 
 ### Architecture: hash detects, client diffs
 
 The server emits `own_hash` per envelope. The UI uses hash
-transitions as the cheap detection signal, then computes the
-actual field-level diff on demand only for the rows it renders.
-
-- No diff materialization on the server.
-- No extra schema.
-- No batch-time cost for diffs the user never inspects.
-- Pure derivation from the two `payload_json` blobs already in
-  memory.
+transitions as the detection signal, then computes the
+field-level diff on demand for the rows it renders. The diff is a
+pure derivation from the two `payload_json` blobs already in
+memory on the client; no server-side diff materialization, no extra
+schema column, no batch-time cost for diffs the user does not
+inspect.
 
 The detection endpoint is `GET /api/analysis/mutations`. It
 returns groups (`{call, class, changed-field-set}`) — bulk
@@ -203,7 +201,7 @@ agent surface needed:
 For unique-ish values (UUIDs, names, ISBNs, generated IDs) this
 draws a high-confidence "field came from here" arrow. Where it
 breaks down: constants, booleans, common strings — there the
-honest UX is to show *candidate sources* with a confidence flag
+honest UX is to show candidate sources with a confidence flag
 rather than a single arrow.
 
 ### Where the computation lives

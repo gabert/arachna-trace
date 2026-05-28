@@ -1,0 +1,4 @@
+services:
+  query:
+    ports:
+      - "8082:8082"

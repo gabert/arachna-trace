@@ -105,13 +105,10 @@ bytes is a first-class citizen of the same pipeline.
 └────────────────────────────────────┘      traces — interchangeably.
 ```
 
-This boundary is positioned **as early as possible by design**. If
-it were any later — say at the Kafka topic or at the processor —
-those layers would be Java-specific too, and adopting Arachna Trace would
-mean adopting the JVM end-to-end. By making the wire format itself
-the boundary, every infrastructure-heavy piece (queue, processor
-logic, storage schema, query, UI) is built once and reused across
-every source language.
+The boundary sits at the agent's output. Anything downstream of that
+boundary — collector, Kafka, processor, storage, UI — operates on wire
+bytes only, so a non-Java agent shares the same downstream pipeline as
+the reference Java agent.
 
 The contract that makes this work is the wire-format spec at
 [spec/SPEC.md](../spec/SPEC.md).
@@ -298,8 +295,8 @@ those frameworks at runtime.
 
 ## Design choices that shape the product
 
-A handful of decisions are load-bearing — the alternative would be a
-materially different product.
+A handful of decisions shape what the system does. Each is paired with a
+brief note on why it is the way it is.
 
 - **Transport-layer agent identity, not per-record stamping.** The
   per-JVM-run UUID lives on HTTP / Kafka / file-sidecar metadata, not
@@ -345,30 +342,31 @@ materially different product.
 
 ---
 
-## What Arachna Trace is NOT
+## Scope
 
-- **Not an APM.** OpenTelemetry, Datadog, New Relic capture spans at
-  service boundaries (HTTP requests, DB calls). Arachna Trace captures
-  every method the agent is configured to instrument, including the
-  values that flowed through. The two are complementary, not
-  alternatives.
-- **Not a profiler.** No sampling, no flame graphs, no CPU/memory
-  attribution. Arachna Trace records what the code did with data, not
-  where the time went.
-- **Not structured logs at scale.** Logs require explicit
-  instrumentation (`log.info(...)` calls); Arachna Trace needs no source
-  changes. Logs survive forever; traces have a 30-day TTL by default.
-- **Not zero-cost.** Capturing every value flowing through every
-  matched method has overhead. Production use is realistic with a
-  narrow `matchers_include` and value-size truncation; capturing
-  *everything* in *every* class is not.
+- **Relation to APM.** OpenTelemetry, Datadog, and New Relic capture
+  spans at instrumented service boundaries (HTTP requests, DB calls,
+  outbound calls). Arachna Trace captures every method within the
+  configured scope, with the values that flowed through. The two
+  categories address different questions.
+- **Relation to profilers.** Profilers attribute CPU and memory cost.
+  Arachna Trace records what the code did with data; runtime cost
+  attribution is not in scope.
+- **Relation to structured logs.** Logs are populated by hand-written
+  `log.info(...)` calls; Arachna Trace records every method within scope
+  without source changes. Logs are usually retained indefinitely; traces
+  have a 30-day TTL by default.
+- **Overhead.** Capturing every value flowing through every matched
+  method has overhead. Realistic in production with a narrow
+  `matchers_include` and value-size truncation; capturing every method
+  in every class on a hot service is not.
 
 ---
 
 ## Where to go next
 
-- **Evaluating Arachna Trace.** [overview](README.md) for the value
-  proposition and the comparison table.
+- **Evaluating Arachna Trace.** [overview](README.md) for context and
+  the comparison table.
   [getting-started](../arachna-trace-agents/jvm/docs/getting-started.md) for
   build + attach.
 - **Integrating a non-Java agent.**

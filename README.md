@@ -7,6 +7,67 @@ identity, and object mutations -- without any code changes.
 Attach it via `-javaagent`, point it at your packages, reproduce the problem,
 and read the trace.
 
+## How this differs from OpenTelemetry and log aggregation
+
+OpenTelemetry traces in Elasticsearch / Tempo / Jaeger, and
+structured logs in an ELK stack, are the closest existing
+combinations: they also capture runtime data and store it
+queryably. The difference is in what ends up in the store and how
+it got there.
+
+- **The unit of decision is the package, not the call site.** With
+  OpenTelemetry and structured logging, every value that ends up
+  in the store was placed there by a hand-written
+  `setAttribute(...)` or `log.info(..., key, value)`. With Arachna
+  Trace, you configure scope once
+  (`matchers_include=com.example.myapp..*`); every argument and
+  return value of every method in that scope is captured at the
+  bytecode level. No source change at the call site.
+
+- **Object identity is a first-class column.** Each captured
+  object receives a stable `object_id` for its lifetime in a
+  session, plus a Merkle content hash. The same `Order` flowing
+  through `validate`, `calculateTax`, and `save` carries the same
+  `object_id` in all three; if its content changes between calls,
+  the hash changes. In OpenTelemetry / log data, the equivalent
+  depends on having logged a correlation field that identifies the
+  object at every step.
+
+- **The data model preserves type and structure, and is indexed
+  for query.** Captured values are CBOR-encoded with envelopes
+  that carry the class name alongside the data; nested objects,
+  arrays, numeric precision, and null-vs-missing survive the round
+  trip. The ClickHouse schema indexes `object_ids`, `own_hashes`,
+  and `payload_tokens` with bloom filters, so identity lookups
+  ("where did this instance appear in the session"), content
+  lookups ("where did this exact state appear"), and value search
+  ("find this string anywhere in the trace") run as indexed probes
+  rather than scans over JSON text. OpenTelemetry attributes are
+  flat key-value with no identity or type metadata; Elasticsearch
+  indexes JSON text but has no notion of "same instance" across
+  documents.
+
+- **Mutations are recorded as an entry/exit pair.** Arguments are
+  captured both when a method is entered and when it returns. The
+  diff identifies the method that modified them. The
+  OpenTelemetry / logging equivalent is logging arguments twice
+  per call site and computing the diff.
+
+- **Async request correlation is automatic.** Request IDs
+  propagate across `ThreadPoolExecutor` and `ForkJoinPool`
+  submissions at the bytecode level — no context-propagation
+  wiring at each async boundary.
+
+OpenTelemetry plus disciplined structured logging can produce the
+same answers when they have been wired into every call site that
+matters. Arachna Trace is designed so that this work lives in the
+framework, not in application code. Configure scope once, attach
+the agent, and the captured data — call tree, arguments, returns,
+object identity, content hashes, mutation pairs, async-propagated
+request IDs — is there as a property of having run the code. The
+developer's job is reading the trace afterwards; nothing in the
+application source has to be added, maintained, or kept in sync.
+
 ## Try it in 60 seconds
 
 Only Docker plus Docker Compose are required. Docker Desktop
@@ -59,20 +120,32 @@ amount.
 These bugs are hard because the code did what it was told. The
 problem is in the values, not the structure. To find it you need to
 see what actually went into each method and what came out — and
-today there's no good way to do that. Log statements only capture
-what someone thought to log. APM tools (OpenTelemetry, Datadog) work
-at service boundaries — they tell you a request took 200 ms, not
-that the discount was applied to the wrong line item. Debuggers
+today the options for runtime visibility each take a different
+angle. Log statements capture values at lines the developer chose
+to log. APM and distributed-tracing tools (Datadog, Honeycomb,
+OpenTelemetry-emitted spans) instrument service boundaries —
+request entry, outbound calls, span events — surfacing latency,
+error counts, and span attributes at those points. Debuggers
 require reproducing the exact scenario interactively, which is
-often impossible in production-like environments.
+often impossible in production-like environments. Record-and-replay
+debuggers (rr, Pernosco, UndoDB, Replay.io) record an execution
+and let you step through it afterwards in a debugger UI. Production
+live-snapshot tools (Rookout, Lightrun) capture variable snapshots
+at chosen source lines on demand without stopping the process.
 
 The missing piece is **runtime evidence** — the actual values that
 flowed through the code as it ran, not a model's or developer's
-belief about them. Arachna Trace captures that evidence: every
-instrumented method call with its arguments, return values,
-mutations, and exceptions, identified by stable object IDs and
-Merkle content hashes. That turns *"I think the code is correct"*
-into *"here is what it actually did."*
+belief about them. Arachna Trace captures that evidence as a
+queryable store: every instrumented method call with its arguments,
+return values, mutations, and exceptions, identified by stable
+object IDs and Merkle content hashes. Instrumentation scope is
+configured up front via `matchers_include=com.example.myapp..*`;
+every call within that scope contributes its full argument and
+return data to the recording, regardless of whether any specific
+value at that call site was anticipated as interesting. A question
+like *"which call first set `Order.total` to a given value anywhere
+in the session"* runs as a query against the store. That turns *"I
+think the code is correct"* into *"here is what it actually did."*
 
 The same recording serves several adjacent problems — debugging
 silent data errors, reconstructing what happened for a regulator,
@@ -160,7 +233,7 @@ hash, so the diff points at exactly which method received different
 arguments, returned a different result, or mutated something it
 didn't before.
 
-## How Arachna Trace changes debugging
+## Debugging with a trace
 
 Experienced developers tend to converge on the same procedure when
 chasing a bug: reproduce, characterize, localize, hypothesize,
@@ -250,7 +323,40 @@ supplies *what* happened; the other reasons about *why*.
   captures values whether or not anyone thought to log them. Logs survive
   forever; traces have a 30-day TTL by default.
 - **Not zero-cost.** Realistic in production with a narrow `matchers_include`;
-  capturing everything everywhere on a hot service is not.
+  capturing everything everywhere on a hot service is not. Knobs that
+  affect overhead and storage: `matchers_include` / `matchers_exclude`
+  to scope by package, `max_value_size` to cap per-payload bytes,
+  `serialize_values=false` for structure-only recording (call graph and
+  signatures, no value serialization), 30-day default TTL on partitions,
+  and content-hash dedup on identical payloads.
+
+## A note on data sensitivity
+
+A full trace captures real argument and return values, which in a
+regulated domain means PII, secrets, account numbers, and protected
+health information will land in the recording the same way they
+flow through the code.
+
+Controls available today:
+
+- **Self-hosted deployment.** The collector, processor, and store
+  all run in the operator's infrastructure; no third party sees the
+  data.
+- **Bounded retention.** 30-day TTL on `calls` and `payloads`
+  partitions by default; an opt-in `retain=true` flag exempts
+  specific traces from the TTL.
+- **Structure-only mode.** `serialize_values=false` records the
+  call graph and method signatures without serializing any argument
+  or return values.
+- **Scope configuration.** `matchers_include` and `matchers_exclude`
+  decide which packages contribute to the recording; nothing
+  outside the include scope is captured.
+
+Not yet implemented:
+
+- **Field-level redaction SPI.** A `payload_redactor` plugin in the
+  same shape as the existing session and JPA-proxy SPIs, applied at
+  capture time so designated fields never leave the agent process.
 
 ## Quick start
 

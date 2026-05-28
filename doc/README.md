@@ -10,19 +10,18 @@ A transaction settles with the wrong amount.
 
 These bugs are hard because the code did what it was told. The problem is
 in the values, not the structure. To find it you need to see what actually
-went into each method and what came out. And today there's no good way to
-do that.
+went into each method and what came out.
 
-Log statements only capture what someone thought to log. APM tools
-(OpenTelemetry, Datadog) work at service boundaries -- they tell you a
-request took 200ms, not that the discount was applied to the wrong line
-item. Debuggers require reproducing the exact scenario interactively, which
-is often impossible in production-like environments.
+Log statements capture values at lines the developer chose to log. APM and
+distributed-tracing tools (Datadog, Honeycomb, OpenTelemetry-emitted spans)
+instrument service boundaries — request entry, outbound calls, span events —
+surfacing latency, error counts, and span attributes at those points.
+Debuggers require reproducing the exact scenario interactively, which is
+often impossible in production-like environments.
 
-So data errors get debugged the way they always have: add print statements,
-redeploy, reproduce, read the output, repeat. For a simple bug that's just
-annoying. For a production issue in a bank or a defence system, it's a
-serious problem.
+Without runtime evidence, the practical fallback is the print-statement
+cycle: add logging, redeploy, reproduce, read, repeat. The cost of that
+cycle scales with the cost of reproducing the issue.
 
 ## What Arachna Trace does
 
@@ -35,22 +34,17 @@ the application. For every instrumented method it captures:
 - Arguments at exit (optional) -- did the method mutate its inputs?
 - Millisecond timestamps, request ID, session ID, caller line number
 
-No code changes. No annotations. No SDK. Just attach and run.
+Attached via `-javaagent`; the application source is unchanged.
 
-The result is a complete recording of what happened during execution --
-every method call with its actual data, ordered in time. Think of it as
-a debugging session that you can move forward and backward through without
-restarting the application or reproducing the scenario. The data is
-already there: every argument, every return value, every mutation,
-timestamped to the millisecond. You navigate the recording, not the live
-process.
+The result is a recording of what happened during execution — every method
+call within the configured scope with its arguments, return values,
+mutations, and timestamps. The data lands in a queryable store rather than
+in a stream the user has to re-step through.
 
-Because traces are deterministic records, a verified trace can serve as
-a baseline. Run the same scenario after a code change and compare the
-two traces. If the data flow changed, you see exactly where it diverged --
-which method received different arguments, which return value shifted.
-This turns traces into regression tests over actual runtime data, not
-just over expected outputs.
+Two traces of the same scenario can be compared via the content hashes
+attached to each captured value. Methods that received different arguments
+or returned different values appear as hash differences between the two
+recordings.
 
 The agent supports two destinations. **File** writes structured text files
 locally (one `.dft` file per thread) -- suitable for local debugging and
@@ -60,10 +54,11 @@ production tracing, and team-wide analysis through a query interface.
 
 Both destinations capture the same data. The difference is where it lands.
 
-What gets recorded is fully configurable per agent run -- which tags are
+What gets recorded is configurable per agent run -- which tags are
 emitted, whether values are serialized at all, whether `this` is captured
 by reference or by content, and how large a single payload may grow before
-it is truncated. The agent records exactly what you need, nothing more.
+it is truncated. The agent records the subset of records configured for
+that run.
 
 See [the agent's configuration reference](../arachna-trace-agents/jvm/docs/reference/agent-config.md)
 for all options. Each server component (collector, processor,
@@ -103,53 +98,35 @@ Both modes can work with either destination. File mode keeps everything
 local. HTTP mode centralizes traces but access is still controlled --
 nothing reaches an LLM unless you choose to send it.
 
-## Why this matters
+## Context
 
-**Data bugs are expensive.** A null pointer is found in minutes. A wrong
-calculation that produces plausible results can go undetected for months.
-When it's finally discovered, nobody knows what the data looked like when
-it flowed through the system. With Arachna Trace attached, the answer is in
-the trace -- locally in `.dft` files or centrally in ClickHouse.
+Data bugs are usually found long after they occur. By the time someone
+notices, the runtime state that produced the bug is gone, and reproducing
+it usually involves another redeploy-and-print-statement cycle. With a
+recording attached, the values that flowed through the code at the time
+are in the trace — locally in `.dft` files or in ClickHouse.
 
-**AI agents write a lot of code, and LLMs can't reliably verify it.**
-Tools like Claude Code, Cursor, and Copilot generate significant
-portions of application code. It compiles, tests pass, CI is green.
-But does the data actually flow correctly? Self-verification — "is
-my own code correct?" — is one of the genuinely unresolved problems
-with current LLMs. Models are confidently wrong on a regular basis,
-and asking a model to critique its own work is unreliable: the same
-reasoning that produced the bug usually rationalises it. Unit tests
-only cover the cases someone anticipated, and AI-written code
-multiplies the unanticipated cases.
+AI-generated code is reviewed against tests and structure. Whether the data
+actually flowed correctly through it at runtime is a different question;
+that question is the same regardless of who wrote the code. The recording
+provides runtime evidence the application produced — a substrate that human
+reviewers and LLM agents can both query. An LLM with SQL access to the
+trace store can ask "did the data flow correctly through this changed
+path?" against the recording, instead of reasoning about the code in the
+abstract.
 
-The missing piece is **evidence** — the actual values that flowed
-through the code at runtime, not a model's belief about them.
-Arachna Trace captures that evidence: every instrumented method
-call with its arguments, return values, mutations, and exceptions,
-identified by stable object IDs and Merkle content hashes. That
-turns "I think this is correct" into "here is what it actually
-did," which is the substrate any verification loop — whether the
-reviewer is a human or another LLM — needs to land on truth instead
-of on guesses.
+That turns *"I think this is correct"* into *"here is what it actually
+did"* — useful both as input to a human review and as the ground a
+verification loop runs on.
 
-This is the deepest reason Arachna Trace exists. The other use cases
-(silent data bugs, audit substrates, debugging code you didn't
-write) are real and important, but the one that most clearly is
-not addressed by anything else today is: **giving AI-era development
-a substrate of runtime evidence**, so the work produced by AI agents
-can be verified against what the program actually does — not against
-what it appears to do or what its author claims it does.
+Regulated environments tend to need evidence of the actual data flow, not
+only test outcomes. The recording is one such evidence source — a record
+of every captured method call with its actual data, attributed to a
+specific JVM run, host, build version, and environment. Whether it is
+appropriate for any specific regulatory regime is a judgment for the
+operator.
 
-**Regulated industries can't just trust the tests.** In financial services,
-defence, and healthcare, "it passes the tests" isn't enough. Auditors and
-compliance teams need to verify that data flows correctly -- that a price
-was calculated from the right inputs, that classified data stayed in the
-right code path, that patient records were accessed only by authorized
-services. Arachna Trace captures every method call with its actual data. It's
-not sampling, not probabilistic -- it's a complete record that can serve
-as evidence.
-
-## How it compares
+## Relation to other tools
 
 Most tracing tools capture structure (which methods were called, how long
 they took). Arachna Trace captures data (what values went in, what came out,
@@ -164,9 +141,6 @@ what changed).
 | Object identity | No | No | Yes (stable object_id) |
 | Session grouping | Trace ID | No | Session resolver SPI |
 | Code changes needed | Yes | No | No |
-
-No other tool combines automatic value capture, mutation detection, and
-object identity tracking with zero code changes.
 
 ## Use cases
 

@@ -22,20 +22,21 @@ The UI is not a log viewer. It exists to support a *narrative* — a request cam
 in, data flowed through methods, something went wrong. Users need to follow
 that story, not browse raw trace files.
 
-## Product philosophy: microscope, not detective
+## Product philosophy: surface signals, leave judgment to the user
 
-A request is a **data flow**: data comes in, code transforms it, data
+A request is a data flow: data comes in, code transforms it, data
 goes out. Somewhere along the way, in one of the transformations, a
-mapping is wrong, a calculation slips, a side effect drops a field. No
-tool can tell the user *what* is wrong — heuristics for "the suspicious
-diff" or "the auto-detected anomaly" will be wrong half the time and
-erode trust the rest.
+mapping is wrong, a calculation slips, a side effect drops a field.
+Whether any specific diff is "the bug" is a judgment the tool cannot
+reliably make from the trace alone — heuristics for "the suspicious
+diff" or "the auto-detected anomaly" produce false positives, which
+shift the user's work from inspecting data to inspecting the heuristic.
 
-What we have that nobody else does is a faithful recording of every
-value at every step. The UI's job is to let a human **point the lens**
-and see clearly. The intelligence lives in the user's eyes; the tool
-makes every transformation, every value, every nested field trivially
-inspectable at arbitrary depth.
+The recording captures every value at every step within the configured
+scope. The UI's job is to let a human point the lens at the part of the
+recording they care about and read what is there. The interpretation
+lives with the user; the tool exposes every transformation, every value,
+and every nested field at arbitrary depth.
 
 Concretely, this rules out:
 
