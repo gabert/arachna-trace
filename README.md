@@ -192,6 +192,13 @@ retain-forever in the trace store to survive the default 30-day TTL.
 
 ### Observability for AI-generated code
 
+Observability here means at the level of code execution — what the
+generated code actually did internally on a real run, not endpoint
+metrics or service-boundary spans (a different angle; see
+[Why this exists](#why-this-exists)). AI-written code is trusted on
+structure — it compiles, the tests pass — before anyone has seen how
+data actually moved through it.
+
 AI coding tools (Claude, Cursor, Copilot, agent-style pipelines) are
 now in heavy day-to-day use, and the volume of code they produce can
 easily outpace what reviewers can deeply read. CI passing and a

@@ -74,7 +74,7 @@ The maintainers' active work is on the **distributed deployment mode**
 
 - Multi-service production debugging
 - Regulated-industry audit substrates
-- AI-era observability at fleet scale
+- AI-era code-execution observability at fleet scale
 
 See [arachna-trace-infra/docs/reference/deployment-modes.md](arachna-trace-infra/docs/reference/deployment-modes.md) for the full
 positioning of each mode.
